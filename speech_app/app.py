@@ -438,6 +438,8 @@ class SpeechApp:
     def _transcribe_worker(
         self, samples, sample_rate: int, settings_snapshot: AppSettings
     ) -> None:
+        text = ""
+        failed: tuple[str, Exception] | None = None
         try:
             # Voice-activity trim: drop leading/trailing silence so keyboard
             # clicks and breath do not feed the model (major Whisper
@@ -448,6 +450,11 @@ class SpeechApp:
                 sensitivity=settings_snapshot.vad_sensitivity,
             )
             if trimmed.size == 0:
+                # No speech detected; publish empty so the overlay clears and
+                # the "No speech detected" notice shows.
+                self.post_ui(
+                    lambda: setattr(self, "transcribing", False)
+                )
                 self.post_ui(
                     lambda: self._publish_transcript("", settings_snapshot)
                 )
@@ -460,14 +467,20 @@ class SpeechApp:
             )
         except EngineUnavailable as exc:
             self.last_error = str(exc)
-            self.post_ui(lambda: self._show_error("Engine unavailable", exc))
-            return
+            failed = ("Engine unavailable", exc)
         except Exception as exc:
             self.last_error = traceback.format_exc()
-            self.post_ui(lambda: self._show_error("Transcription failed", exc))
+            failed = ("Transcription failed", exc)
+
+        # Always clear the transcribing flag so the overlay never gets stuck.
+        self.post_ui(lambda: setattr(self, "transcribing", False))
+
+        if failed is not None:
+            # Bind the tuple eagerly to avoid the late-binding NameError that
+            # used to swallow the real error inside a lambda closure.
+            title, exc = failed
+            self.post_ui(lambda t=title, e=exc: self._show_error(t, e))
             return
-        finally:
-            self.post_ui(lambda: setattr(self, "transcribing", False))
 
         self.post_ui(lambda: self._publish_transcript(text, settings_snapshot))
 

@@ -124,7 +124,57 @@ def _run_ct2_converter(model_id: str, out_dir: Path) -> int:
     except Exception as exc:
         print(f"CTranslate2 conversion failed: {exc}", file=sys.stderr)
         return 1
+
+    # CTranslate2's converter saves weights + vocabulary + config.json, but NOT
+    # the preprocessor config. faster-whisper reads preprocessor_config.json to
+    # pick the mel-bin count (80 for whisper v1/v2, 128 for v3/large-v3-turbo).
+    # Without it, faster-whisper defaults to 80 mels and crashes large-v3 models
+    # with "Invalid input features shape: expected (1, 128, 3000), got (1, 80, 3000)".
+    # Save the full HF preprocessor/processor config next to the converted model.
+    _save_preprocessor_config(model_id, out_dir)
     return 0
+
+
+def _save_preprocessor_config(model_id: str, out_dir: Path) -> None:
+    """Persist preprocessor_config.json into the converted model directory.
+
+    Tries the HF AutoProcessor first (covers most whisper checkpoints); falls
+    back to copying the raw file from the snapshot cache. Non-fatal: if neither
+    works we print a warning, since some models genuinely have no preprocessor.
+    """
+    try:
+        from transformers import AutoProcessor
+    except ImportError:
+        pass
+    else:
+        try:
+            processor = AutoProcessor.from_pretrained(model_id)
+            processor.save_pretrained(str(out_dir))
+            if (out_dir / "preprocessor_config.json").is_file():
+                return
+        except Exception as exc:  # noqa: BLE001 - fall back to cache lookup
+            print(
+                f"AutoProcessor save failed ({exc}); trying raw file copy.",
+                file=sys.stderr,
+            )
+
+    # Fallback: locate the snapshot in the HF hub cache and copy the file.
+    try:
+        from huggingface_hub import snapshot_download
+
+        snapshot_dir = snapshot_download(repo_id=model_id)
+        src = Path(snapshot_dir) / "preprocessor_config.json"
+        if src.is_file():
+            shutil.copy2(src, out_dir / "preprocessor_config.json")
+            return
+    except Exception as exc:  # noqa: BLE001
+        print(f"Could not locate preprocessor_config.json: {exc}", file=sys.stderr)
+
+    print(
+        "Warning: preprocessor_config.json not found for this model. "
+        "faster-whisper will assume 80 mel bins and may fail on Whisper v3.",
+        file=sys.stderr,
+    )
 
 
 def _write_installed_marker(preset: ModelPreset) -> None:
