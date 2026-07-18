@@ -12,8 +12,10 @@ use std::time::Duration;
 // -----------------------------------------------------------------------------
 
 /// Snapshot returned to the React UI; mirrors the Python /api/status payload.
+/// The Python core emits snake_case, while the React UI expects camelCase, so
+/// we deserialize from snake_case (Python) and serialize to camelCase (JS).
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct StatusSnapshot {
     running: bool,
     engine_enabled: bool,
@@ -28,14 +30,18 @@ struct StatusSnapshot {
     device: String,
     backend: String,
     status_text: String,
-    // Kept for back-compat with the old Overview which reads these directly.
+    // Augmented client-side in app_snapshot; absent from the raw API payload,
+    // so they must default to remain forward-compatible with the Python core.
+    #[serde(default)]
     history_count: usize,
+    #[serde(default)]
     speech_root: String,
+    #[serde(default)]
     model_snapshot: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all(serialize = "snake_case", deserialize = "camelCase"))]
 struct SettingsPayload {
     #[serde(default)]
     model: Option<String>,
@@ -72,7 +78,7 @@ struct SettingsPayload {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct ModelInfo {
     key: String,
     label: String,
@@ -85,7 +91,7 @@ struct ModelInfo {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
 struct HistoryItem {
     id: String,
     text: String,
@@ -96,6 +102,29 @@ struct HistoryItem {
 // -----------------------------------------------------------------------------
 
 fn speech_root() -> PathBuf {
+    // Prefer the current executable's location so the deployed binary finds
+    // the Python core regardless of where it was compiled. The release exe
+    // lives at <speech_root>/tauri/src-tauri/target/release/speech-tauri.exe,
+    // so speech_root is four parents up. Fall back to compile-time path, then
+    // to a conventional install location.
+    if let Ok(exe) = std::env::current_exe() {
+        // exe: .../tauri/src-tauri/target/release/speech-tauri.exe
+        let up4 = exe
+            .parent() // release
+            .and_then(Path::parent) // target
+            .and_then(Path::parent) // src-tauri
+            .and_then(Path::parent); // tauri
+        if let Some(tauri_dir) = up4 {
+            let speech_dir = tauri_dir.parent().map(Path::to_path_buf);
+            if let Some(root) = speech_dir {
+                if root.join("data").join("api.port").exists()
+                    || root.join("speech_app").exists()
+                {
+                    return root;
+                }
+            }
+        }
+    }
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -105,8 +134,9 @@ fn speech_root() -> PathBuf {
 
 /// Read the port the Python core wrote to data/api.port.
 fn api_base() -> Option<String> {
-    let port_path = speech_root().join("data").join("api.port");
-    let port_str = fs::read_to_string(port_path).ok()?;
+    let root = speech_root();
+    let port_path = root.join("data").join("api.port");
+    let port_str = fs::read_to_string(&port_path).ok()?;
     let port: u16 = port_str.trim().parse().ok()?;
     Some(format!("http://127.0.0.1:{port}"))
 }
@@ -128,7 +158,11 @@ fn api_get<T: serde::de::DeserializeOwned>(path: &str) -> Result<T, String> {
     if !response.status().is_success() {
         return Err(format!("core returned status {}", response.status()));
     }
-    response.json::<T>().map_err(|e| e.to_string())
+    let body = response.text().map_err(|e| e.to_string())?;
+    serde_json::from_str::<T>(&body).map_err(|e| {
+        let preview: String = body.chars().take(400).collect();
+        format!("decode error: {e} | body preview: {preview}")
+    })
 }
 
 fn api_post<T: serde::de::DeserializeOwned>(
@@ -158,7 +192,6 @@ fn app_snapshot() -> Result<StatusSnapshot, String> {
     // renders when the Python core is not running.
     if api_base().is_some() {
         let mut snapshot: StatusSnapshot = api_get("/api/status")?;
-        // Augment with cheap derived fields the UI expects.
         let history: Vec<HistoryItem> = api_get("/api/history?limit=80").unwrap_or_default();
         snapshot.history_count = history.len();
         snapshot.speech_root = speech_root().display().to_string();
