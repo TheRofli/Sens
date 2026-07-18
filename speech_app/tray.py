@@ -12,14 +12,14 @@ class TrayApp(Protocol):
     def unload_model(self) -> None: ...
     def set_device(self, device: str) -> None: ...
     def set_backend(self, backend: str) -> None: ...
-    def set_ai_mode(self, mode: str) -> None: ...
-    def set_ai_profile(self, profile: str) -> None: ...
+    def set_model(self, key: str) -> None: ...
     def quit(self) -> None: ...
     def engine_enabled(self) -> bool: ...
     def current_device(self) -> str: ...
     def current_backend(self) -> str: ...
-    def current_ai_mode(self) -> str: ...
-    def current_ai_profile(self) -> str: ...
+    def current_model(self) -> str: ...
+    def current_model_label(self) -> str: ...
+    def available_models(self) -> list[dict[str, object]]: ...
     def model_loaded(self) -> bool: ...
     def model_is_loading(self) -> bool: ...
 
@@ -50,21 +50,21 @@ class TrayController:
                 self.app.toggle_engine,
                 checked=lambda _: self.app.engine_enabled(),
             ),
-            item(
-                "Load Parakeet",
-                self.app.load_model_background,
+            pystray.MenuItem(
+                lambda _icon, _item: f"Load {self.app.current_model_label()}",
+                lambda _icon, _item: self.app.load_model_background(),
                 enabled=lambda _: not self.app.model_loaded()
                 and not self.app.model_is_loading(),
             ),
-            item(
-                "Loading Parakeet...",
-                lambda: None,
+            pystray.MenuItem(
+                lambda _icon, _item: f"Loading {self.app.current_model_label()}…",
+                lambda _icon, _item: None,
                 enabled=False,
                 visible=lambda _: self.app.model_is_loading(),
             ),
-            item(
-                "Unload Parakeet",
-                self.app.unload_model,
+            pystray.MenuItem(
+                lambda _icon, _item: f"Unload {self.app.current_model_label()}",
+                lambda _icon, _item: self.app.unload_model(),
                 enabled=lambda _: self.app.model_loaded()
                 and not self.app.model_is_loading(),
             ),
@@ -116,47 +116,7 @@ class TrayController:
                     ),
                 ),
             ),
-            pystray.MenuItem(
-                "Transcript polish",
-                pystray.Menu(
-                    item(
-                        "Off",
-                        lambda: self.app.set_ai_mode("off"),
-                        checked=lambda _: self.app.current_ai_mode() == "off",
-                        radio=True,
-                    ),
-                    item(
-                        "Local",
-                        lambda: self.app.set_ai_mode("local"),
-                        checked=lambda _: self.app.current_ai_mode() == "local",
-                        radio=True,
-                    ),
-                    item(
-                        "API",
-                        lambda: self.app.set_ai_mode("api"),
-                        checked=lambda _: self.app.current_ai_mode() == "api",
-                        radio=True,
-                    ),
-                ),
-            ),
-            pystray.MenuItem(
-                "Polish style",
-                pystray.Menu(
-                    item(
-                        "Clean",
-                        lambda: self.app.set_ai_profile("clean"),
-                        checked=lambda _: self.app.current_ai_profile() == "clean",
-                        radio=True,
-                    ),
-                    item(
-                        "Refine",
-                        lambda: self.app.set_ai_profile("refine"),
-                        checked=lambda _: self.app.current_ai_profile() == "refine",
-                        enabled=lambda _: self.app.current_ai_mode() == "api",
-                        radio=True,
-                    ),
-                ),
-            ),
+            pystray.MenuItem("Model", self._build_model_menu()),
             pystray.Menu.SEPARATOR,
             item("Quit", self.app.quit),
         )
@@ -182,6 +142,53 @@ class TrayController:
                 self.icon.notify(message, title)
             except Exception:
                 pass
+
+    def _build_model_menu(self):
+        """Build the Model submenu from the app's available presets.
+
+        Each entry shows the preset label plus a small install/state hint and a
+        radio check on the active model. Built lazily on each menu open so the
+        active state and install state stay current.
+        """
+        import functools
+
+        import pystray
+
+        try:
+            presets = self.app.available_models()
+        except Exception:
+            presets = []
+
+        items = []
+        for preset in presets:
+            key = str(preset["key"])
+            label = str(preset["label"])
+            installed = bool(preset.get("installed"))
+            hint = "" if installed else " (not installed)"
+            caption = f"{label}{hint}"
+
+            # pystray's action callback is invoked as action(icon, item) and
+            # its arity-checked, while the checked callback is invoked as
+            # checked(item) with a single argument. Bind the preset key with
+            # functools.partial so we capture per-entry state without extra
+            # positional parameters that pystray would reject.
+            def _on_select(icon, item, captured_key):
+                self.app.set_model(captured_key)
+
+            def _is_active(menu_item, captured_key):
+                return self.app.current_model() == captured_key
+
+            items.append(
+                pystray.MenuItem(
+                    caption,
+                    functools.partial(_on_select, captured_key=key),
+                    checked=functools.partial(_is_active, captured_key=key),
+                    radio=True,
+                )
+            )
+        if not items:
+            items.append(pystray.MenuItem("No models", None, enabled=False))
+        return pystray.Menu(*items)
 
 
 def create_tray_image():

@@ -10,3 +10,5 @@ tauri/dist/
 tauri/src-tauri/target/
 tauri/src-tauri/gen/
 .omx/
+
+.superpowers/

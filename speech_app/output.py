@@ -18,26 +18,13 @@ class TranscriptPublisher:
         self.paste_active_input = paste_active_input
 
     def publish(
-        self,
-        transcript: str,
-        settings: AppSettings,
-        *,
-        original_text: str | None = None,
-        processing_mode: str = "off",
-        processing_status: str = "skipped",
-        processing_ms: int = 0,
+        self, transcript: str, settings: AppSettings
     ) -> TranscriptEntry | None:
         text = transcript.strip()
         if not text:
             return None
 
-        entry = self.history.add(
-            text,
-            original_text=original_text,
-            processing_mode=processing_mode,
-            processing_status=processing_status,
-            processing_ms=processing_ms,
-        )
+        entry = self.history.add(text)
         if settings.copy_to_clipboard:
             self.set_clipboard(text)
         if settings.paste_to_active_input:

@@ -4,8 +4,8 @@ Speech is a local push-to-talk dictation app. Hold a hotkey, speak, release,
 and the transcript is pasted into the active input, copied to the clipboard,
 and saved in searchable local history.
 
-Speech recognition runs locally on your machine. Optional transcript cleanup
-can stay local with SAGE or use an OpenAI-compatible API that you configure.
+Speech recognition runs locally on your machine. Audio and transcripts are not
+sent to an online speech service.
 
 ## Quick Install
 
@@ -84,9 +84,12 @@ SPEECH_INSTALL_DIR="$HOME/Applications/Speech" /bin/bash -c "$(curl -fsSL https:
 macOS support is source-install support. The Python tray/runtime is the stable
 path; packaged signed `.app` builds are still planned.
 
-## Model
+## Models
 
-Speech uses NVIDIA Parakeet by default:
+Speech ships with two selectable ASR models. Switch between them from the tray
+(`Model` submenu) or the Controls tab in the window. Both run on CPU.
+
+### Parakeet (default, fast)
 
 ```text
 nvidia/parakeet-tdt-0.6b-v3
@@ -111,65 +114,49 @@ Sources:
 - [NVIDIA Parakeet TDT 0.6B v3 model card](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3)
 - [NVIDIA NeMo ASR collection](https://docs.nvidia.com/nemo-framework/user-guide/latest/nemotoolkit/asr/intro.html)
 
-## Optional AI Cleanup
-
-Speech has three cleanup modes:
-
-- `Off`: publish the Parakeet transcript unchanged.
-- `Local`: correct Russian spelling, punctuation, and casing on CPU with
-  `ai-forever/sage-fredt5-distilled-95m`.
-- `API`: send transcript text to a configurable OpenAI-compatible endpoint.
-
-You can switch the cleanup provider directly from the tray through
-`Transcript polish > Off / Local / API`. The `Polish style` tray submenu and
-the Controls tab provide two editing profiles:
-
-- `Clean`: fix spelling, punctuation, capitalization, obvious recognition
-  substitutions, and glossary terms while preserving wording and intent.
-- `Refine`: additionally remove accidental repetition and make small wording
-  improvements without expanding or answering the transcript.
-
-The local SAGE model supports `Clean`. `Refine` is available in `API` mode.
-Changing these options does not restart Parakeet.
-
-The Controls tab also accepts a newline-separated terminology glossary. Use a
-canonical term by itself, or map a common recognition error with `->`:
+### Whisper RU codeswitch (accurate)
 
 ```text
-DeepSeek
-Deep-Seag -> DeepSeek
-Qore-Code
+coriollon/whisper-large-v3-turbo-russian-codeswitch
 ```
 
-API cleanup treats the transcript as untrusted text to edit, requests a small
-JSON response, and rejects responses that look like an assistant answer,
-Markdown article, or unrelated expansion. If validation fails, Speech safely
-publishes the original Parakeet transcript.
+A fine-tune of Whisper large-v3-turbo (809M) trained specifically for
+Russian+English code-switching. Recommended when you mix both languages in the
+same phrase. Runs through `faster-whisper` (CTranslate2, INT8) for fast CPU
+inference.
 
-Install the optional local corrector:
+Install it once (this downloads the source checkpoint and converts it to the
+fast CTranslate2 format — needs several GB of RAM and a few minutes):
 
 ```powershell
-speech ai install
-```
-
-SAGE is a 95.6M-parameter Russian correction model released under MIT. Its
-checkpoint is about 383 MB. Speech keeps both the original and corrected text
-in local history and rejects suspicious corrections that lose numbers, URLs,
-email addresses, acronyms, or too much content.
-
-API keys are stored through Windows Credential Manager or macOS Keychain, not
-in `settings.json`:
-
-```text
-speech ai key set
-speech ai key status
-speech ai key delete
+speech model install whisper-ru
 ```
 
 Sources:
 
-- [SAGE distilled 95M model card](https://huggingface.co/ai-forever/sage-fredt5-distilled-95m)
-- [SAGE project](https://github.com/ai-forever/sage)
+- [coriollon/whisper-large-v3-turbo-russian-codeswitch](https://huggingface.co/coriollon/whisper-large-v3-turbo-russian-codeswitch)
+- [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+
+## Quality Pipeline
+
+Every transcript goes through a deterministic cleanup pipeline on the way to
+your input:
+
+1. **VAD trim** — leading/trailing silence and keyboard clicks are removed
+   before the model sees the audio. This is the main defence against Whisper
+   hallucinations on near-empty input. Tune it with `vad_sensitivity` in the
+   Controls tab (smaller value = more permissive).
+2. **ASR** — the selected model (Parakeet or Whisper) transcribes the trimmed
+   audio. Automatic language detection is always on, so RU/EN code-switching
+   works without fixing a language.
+3. **Post-processing** — whitespace is collapsed, the first character is
+   capitalised, and a short list of known Whisper silence-hallucination phrases
+   is stripped. Toggle with `Post-process text` in the Controls tab.
+
+Generation knobs exposed in the Controls tab (Quality section):
+
+- `beam_size`, `temperature`, `repetition_penalty` — forwarded to the model
+- `compression_ratio_threshold`, `log_prob_threshold` — Whisper anti-hallucination
 
 ## Requirements
 
@@ -212,12 +199,12 @@ Workflow:
 4. Speech transcribes locally, then sends text to the active input, clipboard,
    and local history.
 
-When cleanup is enabled, the overlay changes from transcription dots to pink
-cleanup dots before insertion. Any cleanup failure publishes the original text.
+When a transcript arrives it is trimmed of silence, transcribed by the active
+model, post-processed, then sent to the active input, clipboard, and history.
 
 The tray menu lets you open the window, copy the last transcript, load/unload
-Parakeet, switch CPU/CUDA mode, select the transcript cleanup provider and
-style, and quit.
+the active model, switch model (Parakeet / Whisper), switch CPU/CUDA mode, and
+quit.
 
 ## Commands
 
@@ -231,8 +218,9 @@ speech restart
 speech open
 speech diagnose
 speech parakeet install
-speech ai install
-speech ai key set
+speech model install parakeet
+speech model install whisper-ru
+speech model list
 speech foreground
 ```
 
@@ -245,13 +233,16 @@ speech stop
 speech restart
 speech diagnose
 speech parakeet install
-speech ai install
-speech ai key set
+speech model install parakeet
+speech model install whisper-ru
+speech model list
 speech foreground
 ```
 
 `speech` starts the background tray/runtime. `speech foreground` is mainly for
-debugging because it keeps logs attached to the terminal.
+debugging because it keeps logs attached to the terminal. `speech parakeet
+install` is kept as a backwards-compatible alias for `speech model install
+parakeet`.
 
 ## Local Data
 
@@ -265,10 +256,8 @@ tmp/        temporary audio files
 .venv/      local Python virtual environment
 ```
 
-Audio is never uploaded by Speech. In `Off` and `Local` modes, transcripts stay
-on the device. In `API` mode, transcript text and configured glossary terms are
-sent to the endpoint configured in the Controls tab. Hugging Face is contacted
-only when downloading models.
+Audio is never uploaded by Speech and transcripts stay on the device. Hugging
+Face is contacted only when downloading models.
 
 ## Development
 
@@ -320,7 +309,6 @@ Keep these out of commits:
 
 - signed Windows installer release
 - signed macOS `.app` release
-- live Tauri settings bridge for device/backend/output toggles
 - optional CUDA install helper
 - optional NeMo backend
 - optional transcript analysis tab through DeepSeek, OpenAI, or a local model

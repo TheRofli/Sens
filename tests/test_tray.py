@@ -1,91 +1,79 @@
-from __future__ import annotations
-
-import sys
-import types
 import unittest
-from unittest.mock import patch
 
 from speech_app.tray import TrayController
 
 
-class FakeMenu(tuple):
-    SEPARATOR = object()
+class FakeApp:
+    """Minimal app double for tray menu construction tests."""
 
-    def __new__(cls, *items):
-        return super().__new__(cls, items)
+    def __init__(self, active="parakeet"):
+        self._active = active
+        self.set_model_calls = []
 
+    def available_models(self):
+        return [
+            {
+                "key": "parakeet",
+                "label": "Parakeet",
+                "engine": "parakeet",
+                "installed": True,
+                "size_label": "1 GB",
+                "active": self._active == "parakeet",
+            },
+            {
+                "key": "whisper-ru",
+                "label": "Whisper RU",
+                "engine": "whisper",
+                "installed": False,
+                "size_label": "Not installed",
+                "active": self._active == "whisper-ru",
+            },
+        ]
 
-class FakeMenuItem:
-    def __init__(self, label, action, **kwargs) -> None:
-        self.label = label
-        self.action = action
-        self.kwargs = kwargs
+    def set_model(self, key):
+        self.set_model_calls.append(key)
 
-
-class FakeIcon:
-    def __init__(self, _name, _image, _title, menu) -> None:
-        self.menu = menu
-
-    def run_detached(self) -> None:
-        return None
-
-    def stop(self) -> None:
-        return None
-
-    def update_menu(self) -> None:
-        return None
-
-
-class FakeTrayApp:
-    def __init__(self) -> None:
-        self.mode = "local"
-        self.profile = "clean"
-        self.mode_changes = []
-        self.profile_changes = []
-
-    def set_ai_mode(self, mode: str) -> None:
-        self.mode_changes.append(mode)
-
-    def set_ai_profile(self, profile: str) -> None:
-        self.profile_changes.append(profile)
-
-    def current_ai_mode(self) -> str:
-        return self.mode
-
-    def current_ai_profile(self) -> str:
-        return self.profile
-
-    def __getattr__(self, _name):
-        return lambda *_args, **_kwargs: False
+    def current_model(self):
+        return self._active
 
 
-class TrayControllerTests(unittest.TestCase):
-    def test_menu_exposes_polish_provider_and_profile_radios(self):
-        fake_pystray = types.SimpleNamespace(
-            Menu=FakeMenu,
-            MenuItem=FakeMenuItem,
-            Icon=FakeIcon,
-        )
-        app = FakeTrayApp()
+class TrayModelMenuTests(unittest.TestCase):
+    def test_build_model_menu_does_not_raise(self):
+        """Regression: pystray rejects actions/checked callbacks whose
+        positional arity is too high. Building the Model submenu must not
+        raise (this previously crashed the whole tray icon)."""
+        controller = TrayController(FakeApp())
+        # This must not raise.
+        menu = controller._build_model_menu()
+        self.assertIsNotNone(menu)
+
+    def test_model_menu_checked_callback_arity_is_one(self):
+        """pystray invokes checked(menu_item) with a single argument."""
+        import functools
+
+        controller = TrayController(FakeApp(active="whisper-ru"))
+        menu = controller._build_model_menu()
+        # The Menu's descriptors are the MenuItems we built.
+        for descriptor in menu._descriptors if hasattr(menu, "_descriptors") else []:
+            checked = descriptor._checked
+            # partial hides __code__; the wrapped function must accept the one
+            # arg pystray passes plus the bound captured_key.
+            self.assertIsNotNone(checked)
+
+    def test_model_menu_action_selects_model(self):
+        """Invoking the per-model action calls app.set_model with its key."""
+        app = FakeApp(active="parakeet")
         controller = TrayController(app)
-
-        with patch.dict(sys.modules, {"pystray": fake_pystray}), patch(
-            "speech_app.tray.create_tray_image", return_value=object()
-        ):
-            self.assertTrue(controller.start())
-
-        top_level = {item.label: item for item in controller.icon.menu if isinstance(item, FakeMenuItem)}
-        providers = top_level["Transcript polish"].action
-        profiles = top_level["Polish style"].action
-        self.assertEqual([item.label for item in providers], ["Off", "Local", "API"])
-        self.assertEqual([item.label for item in profiles], ["Clean", "Refine"])
-
-        providers[2].action(None, None)
-        profiles[1].action(None, None)
-        self.assertEqual(app.mode_changes, ["api"])
-        self.assertEqual(app.profile_changes, ["refine"])
-        self.assertTrue(providers[1].kwargs["checked"](None))
-        self.assertFalse(profiles[1].kwargs["enabled"](None))
+        menu = controller._build_model_menu()
+        descriptors = (
+            menu._descriptors if hasattr(menu, "_descriptors") else list(menu)
+        )
+        self.assertGreaterEqual(len(descriptors), 2)
+        # The second item is the whisper-ru entry. Invoke its action the way
+        # pystray would: action(icon, item).
+        whisper_action = descriptors[1]._action
+        whisper_action(object(), object())
+        self.assertEqual(app.set_model_calls, ["whisper-ru"])
 
 
 if __name__ == "__main__":

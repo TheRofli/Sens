@@ -110,6 +110,9 @@ function Install-Speech {
     Write-Host "Installing Parakeet dependencies..."
     & $VenvPython -m pip install -r (Join-Path $Root "requirements-parakeet.txt")
 
+    Write-Host "Installing Whisper (faster-whisper) dependencies..."
+    & $VenvPython -m pip install -r (Join-Path $Root "requirements-whisper.txt")
+
     $binDir = Join-Path $Root "bin"
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $pathParts = @()
@@ -285,22 +288,21 @@ switch ($command) {
         Invoke-SpeechPython $argsForPython
         exit $LASTEXITCODE
     }
-    "ai" {
+    "model" {
         if ($tail.Count -eq 0) {
-            Write-Host "Usage: speech ai install | speech ai key set|status|delete"
+            Write-Host "Usage: speech model install [parakeet|whisper-ru]"
+            Write-Host "       speech model list"
             exit 1
         }
-        $argsForPython = @("ai") + $tail
-        Invoke-SpeechPython $argsForPython
-        exit $LASTEXITCODE
-    }
-    "model" {
+        # Map legacy "model install/preload/download" (no preset arg) to the
+        # active model; otherwise pass through to the speech_app model parser.
         if ($tail.Count -eq 1 -and $tail[0].ToLowerInvariant() -in @("install", "preload", "download")) {
-            Invoke-SpeechPython @("parakeet", "install")
-            exit $LASTEXITCODE
+            Invoke-SpeechPython @("model", "install")
+        } else {
+            $argsForPython = @("model") + $tail
+            Invoke-SpeechPython $argsForPython
         }
-        Write-Host "Usage: speech model install"
-        exit 1
+        exit $LASTEXITCODE
     }
     default {
         Invoke-SpeechPython $SpeechArgs

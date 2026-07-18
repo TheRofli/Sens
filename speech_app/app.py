@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import getpass
 import importlib.util
 import os
 import queue
@@ -13,24 +12,25 @@ from collections.abc import Callable
 from pathlib import Path
 
 from .audio import AudioRecorder
+from .engine_manager import EngineManager
+from .engines.base import EngineUnavailable
 from .history import TranscriptHistory
 from .hotkeys import GlobalHotkeyListener
-from .model_status import ModelStatus, find_model_status
+from .model_status import ModelStatus, find_model_status, find_whisper_model_status
+from .models import available_presets, get_preset, resolve_engine, resolve_model_id
 from .output import TranscriptPublisher
 from .overlay import VoiceOverlay
-from .parakeet_engine import EngineUnavailable, ParakeetEngine
-from .postprocess import CorrectionResult, TranscriptPostProcessor
 from .portable import build_portable_env
 from .resources import ProcessResourceMonitor, ResourceSnapshot
 from .runtime_state import write_runtime_state
 from .settings import AppSettings, SettingsStore
 from .settings import default_data_dir
-from .secrets import SecretStore
 from .single_instance import SingleInstanceLock
 from .system import SystemActions
+from .textpost import postprocess
 from .tray import TrayController
-from .visuals import create_icon_photo, enable_dpi_awareness, set_windows_app_id
-from .window import SpeechWindow
+from .vad import trim_silence
+from .visuals import enable_dpi_awareness, set_windows_app_id
 
 
 class SpeechApp:
@@ -40,9 +40,6 @@ class SpeechApp:
         self.root = tk.Tk()
         self.root.withdraw()
         self.root.title("Speech")
-        self.icon_photo = create_icon_photo()
-        if self.icon_photo is not None:
-            self.root.iconphoto(True, self.icon_photo)
         self.ui_queue: queue.Queue[Callable[[], None]] = queue.Queue()
 
         self.settings_store = SettingsStore()
@@ -54,11 +51,9 @@ class SpeechApp:
             set_clipboard=self.system.copy_to_clipboard,
             paste_active_input=self.system.paste_into_active_input,
         )
-        self.engine = ParakeetEngine()
-        self.postprocessor = TranscriptPostProcessor()
+        self.engine = EngineManager()
         self.resource_monitor = ProcessResourceMonitor()
         self.overlay = VoiceOverlay(self.root)
-        self.window = SpeechWindow(self.root, self)
         self.tray = TrayController(self)
         self.recorder = AudioRecorder(
             sample_rate=self.settings.sample_rate,
@@ -69,8 +64,8 @@ class SpeechApp:
         self.hotkey_listener: GlobalHotkeyListener | None = None
         self.transcribing = False
         self.model_loading = False
-        self.ai_loading = False
         self.last_error = ""
+        self.api_server = None
         self._write_runtime_state("unloaded")
 
     def run(self, show_window: bool = False) -> None:
@@ -79,15 +74,58 @@ class SpeechApp:
         self._start_hotkeys()
         if not tray_started:
             self.last_error = "pystray is not installed; tray mode is unavailable."
-            self.window.show()
         elif show_window:
             self._show_primary_window()
         if self.settings.preload_model and self.settings.engine_enabled:
             self.load_model_background()
+        self._start_api()
         self.root.mainloop()
 
     def post_ui(self, callback: Callable[[], None]) -> None:
         self.ui_queue.put(callback)
+
+    def post_ui_sync(self, callback: Callable[[], object], timeout: float = 5.0) -> object:
+        """Run ``callback`` on the UI thread and wait for its result.
+
+        Used by the HTTP API server (which runs in its own thread) to mutate
+        application state safely: tkinter is not thread-safe, so every state
+        change must hop onto the UI loop. Raises ``TimeoutError`` if the UI
+        thread does not service the callback within ``timeout`` seconds.
+        """
+        import threading
+
+        done = threading.Event()
+        box: dict[str, object] = {}
+
+        def runner() -> None:
+            try:
+                box["result"] = callback()
+            except BaseException as exc:  # noqa: BLE001 - re-raised to caller
+                box["error"] = exc
+            finally:
+                done.set()
+
+        self.ui_queue.put(runner)
+        if not done.wait(timeout):
+            raise TimeoutError("UI thread did not service the callback in time")
+        if "error" in box:
+            raise box["error"]  # type: ignore[misc]
+        return box.get("result")
+
+    def _start_api(self) -> None:
+        """Start the local HTTP API server on an ephemeral port.
+
+        The port is written to ``data/api.port`` so the Tauri shell (or any
+        other local client) can discover it. Failures are non-fatal: the tray
+        app keeps working without the API.
+        """
+        try:
+            from .api import SpeechAPIServer
+
+            self.api_server = SpeechAPIServer(self)
+            self.api_server.start()
+        except Exception as exc:
+            self.last_error = f"API server failed to start: {exc}"
 
     def show_window(self) -> None:
         self.post_ui(self._show_primary_window)
@@ -104,11 +142,16 @@ class SpeechApp:
         self.post_ui(lambda: self.overlay.show_notice("Copied"))
 
     def _show_primary_window(self) -> None:
+        """Open the GUI. Tauri is the only window; if it is not built, notify."""
         speech_home = Path(__file__).resolve().parents[1]
         if self.system.open_tauri_ui(speech_home):
             self.overlay.show_notice("Opening Speech")
             return
-        self.window.show()
+        self.overlay.show_notice("Build Tauri: see README", timeout_ms=2600)
+        self.tray.notify(
+            "Speech",
+            "GUI window needs Tauri. Build it with: npm run tauri:build",
+        )
 
     def toggle_engine(self) -> None:
         self.settings.engine_enabled = not self.settings.engine_enabled
@@ -120,25 +163,26 @@ class SpeechApp:
             self.post_ui(lambda: self.overlay.show_notice("Engine on"))
 
     def load_model_background(self) -> None:
+        label = self.current_model_label()
         if self.engine.is_loaded:
             self.model_loading = False
             self._write_runtime_state("loaded")
-            self.post_ui(lambda: self._model_state_changed("Parakeet loaded"))
+            self.post_ui(lambda: self._model_state_changed(f"{label} loaded"))
             return
         if self.model_loading:
-            self.post_ui(lambda: self._model_state_changed("Parakeet loading"))
+            self.post_ui(lambda: self._model_state_changed(f"{label} loading"))
             return
         self.model_loading = True
         self._write_runtime_state("loading")
-        self.post_ui(lambda: self._model_state_changed("Parakeet loading"))
+        self.post_ui(lambda: self._model_state_changed(f"{label} loading"))
         threading.Thread(target=self._load_model_worker, daemon=True).start()
 
     def unload_model(self) -> None:
+        label = self.current_model_label()
         self.model_loading = False
         self.engine.unload()
-        self.postprocessor.unload()
         self._write_runtime_state("unloaded")
-        self.post_ui(lambda: self._model_state_changed("Parakeet unloaded"))
+        self.post_ui(lambda: self._model_state_changed(f"{label} unloaded"))
 
     def set_device(self, device: str) -> None:
         self.settings.device = device
@@ -150,74 +194,51 @@ class SpeechApp:
         self.settings_store.save(self.settings)
         self.unload_model()
 
-    def current_ai_mode(self) -> str:
-        return self.settings.ai_mode
+    def set_model(self, key: str) -> None:
+        """Switch the active model preset, saving settings and unloading.
 
-    def current_ai_profile(self) -> str:
-        return self.settings.ai_profile
-
-    def set_ai_mode(self, mode: str) -> None:
-        mode = mode.strip().lower()
-        if mode not in {"off", "local", "api"}:
-            raise ValueError(f"Unsupported AI mode: {mode}")
-        self.settings.ai_mode = mode
-        if mode != "api" and self.settings.ai_profile == "refine":
-            self.settings.ai_profile = "clean"
+        The model is reloaded lazily on the next transcription (or on preload).
+        """
+        preset = get_preset(key)
+        previous_engine = resolve_engine(self.settings)
+        self.settings.model = preset.key
+        self.settings.model_id = preset.model_id
         self.settings_store.save(self.settings)
-        self.window.refresh()
-        self.tray.refresh_menu()
-        if mode == "local":
-            self.load_corrector_background()
-            return
-        self.ai_loading = False
-        self.postprocessor.unload()
-        self._write_runtime_state(self._model_state_label())
-        self.overlay.show_notice(f"Polish {mode}")
+        # Engine kind changed -> must unload so the right one loads next.
+        if resolve_engine(self.settings) != previous_engine or self.engine.is_loaded:
+            self.unload_model()
+            if self.settings.preload_model and self.settings.engine_enabled:
+                self.load_model_background()
+            else:
+                self.post_ui(
+                    lambda: self._model_state_changed(f"{preset.label} selected")
+                )
 
-    def set_ai_profile(self, profile: str) -> None:
-        profile = profile.strip().lower()
-        if profile not in {"clean", "refine"}:
-            raise ValueError(f"Unsupported polish profile: {profile}")
-        if profile == "refine" and self.settings.ai_mode != "api":
-            raise ValueError("Refine requires API mode")
-        self.settings.ai_profile = profile
-        self.settings_store.save(self.settings)
-        self.window.refresh()
-        self.tray.refresh_menu()
+    def available_models(self) -> list[dict[str, object]]:
+        """Return all presets with installation status for UI display."""
+        out: list[dict[str, object]] = []
+        for preset in available_presets():
+            status = self.model_status_for(preset.key)
+            out.append(
+                {
+                    "key": preset.key,
+                    "label": preset.label,
+                    "engine": preset.engine,
+                    "model_id": preset.model_id,
+                    "description": preset.description,
+                    "installed": status.installed,
+                    "size_label": status.size_label,
+                    "active": preset.key == self.settings.model,
+                }
+            )
+        return out
 
-    def load_corrector_background(self) -> None:
-        if self.settings.ai_mode != "local" or self.ai_loading:
-            return
-        if self.postprocessor.local_corrector.is_loaded:
-            self._write_runtime_state(self._model_state_label())
-            return
-        self.ai_loading = True
-        self._write_runtime_state(self._model_state_label())
-        self.post_ui(lambda: self.overlay.show_notice("SAGE loading"))
-        threading.Thread(target=self._load_corrector_worker, daemon=True).start()
+    def current_model(self) -> str:
+        return self.settings.model
 
-    def _load_corrector_worker(self) -> None:
-        try:
-            self.postprocessor.load(self.settings)
-        except Exception as exc:
-            self.last_error = f"AI correction unavailable: {exc}"
-            self.post_ui(lambda exc=exc: self._corrector_load_failed(exc))
-            return
-        self.post_ui(self._corrector_load_succeeded)
-
-    def _corrector_load_succeeded(self) -> None:
-        self.ai_loading = False
-        self._write_runtime_state(self._model_state_label())
-        self.window.refresh()
-        self.tray.refresh_menu()
-        self.overlay.show_notice("SAGE loaded")
-
-    def _corrector_load_failed(self, exc: Exception) -> None:
-        self.ai_loading = False
-        self._write_runtime_state(self._model_state_label(), last_error=str(exc))
-        self.window.refresh()
-        self.tray.refresh_menu()
-        self.overlay.show_notice("SAGE unavailable", timeout_ms=2200)
+    def current_model_label(self) -> str:
+        preset = get_preset(self.settings.model) if self.settings.model else None
+        return preset.label if preset is not None else self.settings.model
 
     def engine_enabled(self) -> bool:
         return self.settings.engine_enabled
@@ -237,10 +258,12 @@ class SpeechApp:
     def status_text(self) -> str:
         engine = "on" if self.settings.engine_enabled else "off"
         state = self._model_state_label()
-        return f"Engine {engine} | Parakeet {state} | {self.settings.device}"
+        label = self.current_model_label()
+        return f"Engine {engine} | {label} {state} | {self.settings.device}"
 
     def get_settings_values(self) -> dict[str, object]:
         return {
+            "model": self.settings.model,
             "engine_enabled": self.settings.engine_enabled,
             "copy_to_clipboard": self.settings.copy_to_clipboard,
             "paste_to_active_input": self.settings.paste_to_active_input,
@@ -248,17 +271,21 @@ class SpeechApp:
             "device": self.settings.device,
             "backend": self.settings.backend,
             "hotkey": self.settings.hotkey,
-            "ai_mode": self.settings.ai_mode,
-            "ai_profile": self.settings.ai_profile,
-            "ai_glossary": self.settings.ai_glossary,
-            "ai_local_model_id": self.settings.ai_local_model_id,
-            "ai_api_base_url": self.settings.ai_api_base_url,
-            "ai_api_model": self.settings.ai_api_model,
-            "ai_timeout_seconds": self.settings.ai_timeout_seconds,
+            "beam_size": self.settings.beam_size,
+            "temperature": self.settings.temperature,
+            "repetition_penalty": self.settings.repetition_penalty,
+            "no_repeat_ngram_size": self.settings.no_repeat_ngram_size,
+            "vad_sensitivity": self.settings.vad_sensitivity,
+            "postprocess_text": self.settings.postprocess_text,
         }
 
     def save_settings_values(self, values: dict[str, object]) -> None:
         previous_hotkey = self.settings.hotkey
+        previous_model = self.settings.model
+        if "model" in values:
+            self.settings.model = str(values["model"])
+            preset = get_preset(self.settings.model)
+            self.settings.model_id = preset.model_id
         self.settings.engine_enabled = bool(values["engine_enabled"])
         self.settings.copy_to_clipboard = bool(values["copy_to_clipboard"])
         self.settings.paste_to_active_input = bool(values["paste_to_active_input"])
@@ -266,30 +293,24 @@ class SpeechApp:
         self.settings.device = str(values["device"])
         self.settings.backend = str(values["backend"])
         self.settings.hotkey = str(values["hotkey"])
-        self.settings.ai_mode = str(values.get("ai_mode", self.settings.ai_mode))
-        self.settings.ai_profile = str(
-            values.get("ai_profile", self.settings.ai_profile)
-        )
-        if self.settings.ai_mode != "api" and self.settings.ai_profile == "refine":
-            self.settings.ai_profile = "clean"
-        self.settings.ai_glossary = str(
-            values.get("ai_glossary", self.settings.ai_glossary)
-        )
-        self.settings.ai_local_model_id = str(
-            values.get("ai_local_model_id", self.settings.ai_local_model_id)
-        )
-        self.settings.ai_api_base_url = str(
-            values.get("ai_api_base_url", self.settings.ai_api_base_url)
-        )
-        self.settings.ai_api_model = str(
-            values.get("ai_api_model", self.settings.ai_api_model)
-        )
-        self.settings.ai_timeout_seconds = float(
-            values.get("ai_timeout_seconds", self.settings.ai_timeout_seconds)
-        )
+        # Quality params (optional in values for back-compat with old callers).
+        if "beam_size" in values:
+            self.settings.beam_size = int(values["beam_size"])
+        if "temperature" in values:
+            self.settings.temperature = float(values["temperature"])
+        if "repetition_penalty" in values:
+            self.settings.repetition_penalty = float(values["repetition_penalty"])
+        if "no_repeat_ngram_size" in values:
+            self.settings.no_repeat_ngram_size = int(values["no_repeat_ngram_size"])
+        if "vad_sensitivity" in values:
+            self.settings.vad_sensitivity = float(values["vad_sensitivity"])
+        if "postprocess_text" in values:
+            self.settings.postprocess_text = bool(values["postprocess_text"])
         self.settings_store.save(self.settings)
         if self.settings.hotkey != previous_hotkey:
             self._restart_hotkeys()
+        if self.settings.model != previous_model:
+            self.unload_model()
 
     def history_rows(self) -> list[tuple[str, str]]:
         return [(entry.id, entry.text) for entry in self.history.list()]
@@ -308,8 +329,14 @@ class SpeechApp:
         if self.hotkey_listener is not None:
             self.hotkey_listener.stop()
         self.model_loading = False
+        api_server = getattr(self, "api_server", None)
+        if api_server is not None:
+            try:
+                api_server.stop()
+            except Exception:
+                pass
+            self.api_server = None
         self.engine.unload()
-        self.postprocessor.unload()
         self._write_runtime_state("unloaded", running=False)
         self.tray.stop()
         self.root.quit()
@@ -326,7 +353,6 @@ class SpeechApp:
             self.hotkey_listener.start()
         except Exception as exc:
             self.last_error = str(exc)
-            self.window.show()
             self.overlay.show_notice("Hotkey unavailable", timeout_ms=2200)
 
     def _restart_hotkeys(self) -> None:
@@ -369,26 +395,20 @@ class SpeechApp:
             self.last_error = str(exc)
             self.post_ui(lambda: self._model_load_failed(exc))
             return
-        try:
-            self.postprocessor.load(self.settings)
-        except Exception as exc:
-            self.last_error = f"AI correction unavailable: {exc}"
         self.post_ui(self._model_load_succeeded)
 
     def _model_load_succeeded(self) -> None:
         self.model_loading = False
         self._write_runtime_state("loaded")
-        self._model_state_changed("Parakeet loaded")
+        self._model_state_changed(f"{self.current_model_label()} loaded")
 
     def _model_load_failed(self, exc: Exception) -> None:
         self.model_loading = False
         self._write_runtime_state("error", last_error=str(exc))
-        self.window.refresh()
         self.tray.refresh_menu()
-        self._show_error("Parakeet load failed", exc)
+        self._show_error(f"{self.current_model_label()} load failed", exc)
 
     def _model_state_changed(self, notice: str) -> None:
-        self.window.refresh()
         self.tray.refresh_menu()
         self.overlay.show_notice(notice)
 
@@ -411,83 +431,65 @@ class SpeechApp:
                 settings=self.settings,
                 running=running,
                 last_error=last_error,
-                ai_state=self._ai_state_label(),
             )
         except Exception:
             pass
-
-    def _ai_state_label(self) -> str:
-        mode = self.settings.ai_mode.lower()
-        if mode == "off":
-            return "off"
-        if mode == "local":
-            if self.ai_loading:
-                return "loading"
-            return "loaded" if self.postprocessor.local_corrector.is_loaded else "unloaded"
-        return "configured" if mode == "api" else "error"
 
     def _transcribe_worker(
         self, samples, sample_rate: int, settings_snapshot: AppSettings
     ) -> None:
         try:
-            text = self.engine.transcribe(samples, sample_rate, settings_snapshot)
+            # Voice-activity trim: drop leading/trailing silence so keyboard
+            # clicks and breath do not feed the model (major Whisper
+            # hallucination cause on near-empty audio).
+            trimmed = trim_silence(
+                samples,
+                sample_rate=sample_rate,
+                sensitivity=settings_snapshot.vad_sensitivity,
+            )
+            if trimmed.size == 0:
+                self.post_ui(
+                    lambda: self._publish_transcript("", settings_snapshot)
+                )
+                return
+            raw_text = self.engine.transcribe(trimmed, sample_rate, settings_snapshot)
+            text = (
+                postprocess(raw_text)
+                if settings_snapshot.postprocess_text
+                else (raw_text or "").strip()
+            )
         except EngineUnavailable as exc:
             self.last_error = str(exc)
-            self.post_ui(lambda: setattr(self, "transcribing", False))
-            self.post_ui(lambda: self._show_error("Parakeet unavailable", exc))
+            self.post_ui(lambda: self._show_error("Engine unavailable", exc))
             return
         except Exception as exc:
             self.last_error = traceback.format_exc()
-            self.post_ui(lambda: setattr(self, "transcribing", False))
             self.post_ui(lambda: self._show_error("Transcription failed", exc))
             return
-        if settings_snapshot.ai_mode.lower() != "off":
-            self.post_ui(self.overlay.show_cleaning)
-        result = self.postprocessor.process(text, settings_snapshot)
-        self.post_ui(lambda: setattr(self, "transcribing", False))
-        self.post_ui(lambda result=result: self._publish_correction(result, settings_snapshot))
+        finally:
+            self.post_ui(lambda: setattr(self, "transcribing", False))
 
-    def _publish_correction(
-        self, result: CorrectionResult, settings_snapshot: AppSettings
-    ) -> None:
-        self.overlay.hide()
-        self.root.after(
-            140,
-            lambda: self._publish_correction_after_focus(result, settings_snapshot),
-        )
-
-    def _publish_correction_after_focus(
-        self, result: CorrectionResult, settings_snapshot: AppSettings
-    ) -> None:
-        entry = self.publisher.publish(
-            result.text,
-            settings_snapshot,
-            **result.history_metadata(),
-        )
-        if entry is None:
-            self.overlay.show_notice("No speech detected")
-        elif result.status in {"fallback", "rejected"}:
-            self.overlay.show_notice("Inserted original")
-        else:
-            self.overlay.show_notice("Inserted")
+        self.post_ui(lambda: self._publish_transcript(text, settings_snapshot))
 
     def _publish_transcript(
         self, text: str, settings_snapshot: AppSettings
     ) -> None:
-        result = CorrectionResult(text, text, "off", "skipped", 0)
-        self._publish_correction(result, settings_snapshot)
+        self.overlay.hide()
+        self.root.after(140, lambda: self._publish_transcript_after_focus(text, settings_snapshot))
 
     def _publish_transcript_after_focus(
         self, text: str, settings_snapshot: AppSettings
     ) -> None:
-        result = CorrectionResult(text, text, "off", "skipped", 0)
-        self._publish_correction_after_focus(result, settings_snapshot)
+        entry = self.publisher.publish(text, settings_snapshot)
+        if entry is None:
+            self.overlay.show_notice("No speech detected")
+        else:
+            self.overlay.show_notice("Inserted")
 
     def _show_error(self, title: str, exc: Exception) -> None:
         message = str(exc)
         self.overlay.show_notice(title, timeout_ms=2400)
         self.tray.notify(title, message)
-        self.window.show()
 
     def _pump_ui_queue(self) -> None:
         while True:
@@ -502,9 +504,17 @@ class SpeechApp:
         return self.resource_monitor.snapshot()
 
     def model_status(self) -> ModelStatus:
+        """Status of the currently active model preset."""
+        return self.model_status_for(self.settings.model)
+
+    def model_status_for(self, key: str) -> ModelStatus:
+        """Installation status for a given preset key (parakeet or whisper)."""
+        preset = get_preset(key)
+        if preset.engine == "whisper":
+            return find_whisper_model_status(preset)
         fallback = Path(__file__).resolve().parents[1] / "models" / "huggingface"
         hf_home = Path(os.environ.get("HF_HOME", str(fallback)))
-        return find_model_status(hf_home, self.settings.model_id)
+        return find_model_status(hf_home, preset.model_id)
 
 
 def diagnose() -> int:
@@ -534,46 +544,24 @@ def diagnose() -> int:
 
 
 def install_parakeet_model(model_id: str | None = None) -> int:
-    model_id = model_id or AppSettings().model_id
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print("huggingface_hub is not installed. Run: speech install")
-        return 1
+    """Back-compat wrapper around the shared installer.
 
-    print(f"Downloading {model_id} into the configured Hugging Face cache...")
-    path = snapshot_download(repo_id=model_id)
-    print(f"Parakeet is ready at: {path}")
-    return 0
+    Kept so legacy callers (and tests) that import this name keep working.
+    """
+    from .engines.install import install_model
 
+    if model_id is None:
+        return install_model(AppSettings().model)
+    # Resolve the preset key from a raw model id if possible, else treat the
+    # value as a parakeet id directly.
+    settings = AppSettings()
+    for preset in available_presets():
+        if preset.model_id == model_id:
+            return install_model(preset.key)
+    settings.model_id = model_id
+    from .engines.install import install_parakeet_model as _install
 
-def install_ai_model(model_id: str | None = None) -> int:
-    model_id = model_id or AppSettings().ai_local_model_id
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print("huggingface_hub is not installed. Run: speech install")
-        return 1
-
-    print(f"Downloading {model_id} into the configured Hugging Face cache...")
-    path = snapshot_download(repo_id=model_id)
-    print(f"Local AI corrector is ready at: {path}")
-    return 0
-
-
-def manage_api_key(command: str, read_stdin: bool = False) -> int:
-    store = SecretStore()
-    if command == "status":
-        print("API key configured." if store.get_api_key() else "API key not configured.")
-        return 0
-    if command == "delete":
-        store.delete_api_key()
-        print("API key removed from secure storage.")
-        return 0
-    value = sys.stdin.read().strip() if read_stdin else getpass.getpass("API key: ")
-    store.set_api_key(value)
-    print("API key saved in secure system storage.")
-    return 0
+    return _install(model_id)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -592,21 +580,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser("diagnose", help="Check Python and dependency state.")
 
-    parakeet = subparsers.add_parser("parakeet", help="Manage the Parakeet model.")
+    parakeet = subparsers.add_parser(
+        "parakeet", help="(legacy) Manage the Parakeet model."
+    )
     parakeet_sub = parakeet.add_subparsers(dest="parakeet_command")
     parakeet_sub.add_parser(
         "install",
         help="Download Parakeet into the configured local model cache.",
     )
-    ai = subparsers.add_parser("ai", help="Manage transcript correction.")
-    ai_sub = ai.add_subparsers(dest="ai_command")
-    ai_sub.add_parser("install", help="Download the local SAGE corrector.")
-    key = ai_sub.add_parser("key", help="Manage the API key in secure storage.")
-    key_sub = key.add_subparsers(dest="ai_key_command")
-    key_set = key_sub.add_parser("set", help="Save the API key securely.")
-    key_set.add_argument("--stdin", action="store_true", help=argparse.SUPPRESS)
-    key_sub.add_parser("status", help="Check whether an API key is configured.")
-    key_sub.add_parser("delete", help="Delete the saved API key.")
+
+    model = subparsers.add_parser("model", help="Manage ASR models.")
+    model_sub = model.add_subparsers(dest="model_command")
+    install_parser = model_sub.add_parser(
+        "install", help="Download/convert a model (parakeet or whisper-ru)."
+    )
+    install_parser.add_argument(
+        "key",
+        nargs="?",
+        default=None,
+        help="Preset key (parakeet, whisper-ru). Defaults to the active model.",
+    )
+    model_sub.add_parser("list", help="Show installation status of all models.")
     return parser
 
 
@@ -633,17 +627,17 @@ def main(argv: list[str] | None = None) -> int:
         return install_parakeet_model()
     if args.command == "parakeet":
         parser.error("Choose a Parakeet command, for example: speech parakeet install")
-    if args.command == "ai" and args.ai_command == "install":
-        return install_ai_model()
-    if args.command == "ai" and args.ai_command == "key":
-        if not args.ai_key_command:
-            parser.error("Choose: speech ai key set, status, or delete")
-        return manage_api_key(
-            args.ai_key_command,
-            read_stdin=bool(getattr(args, "stdin", False)),
+    if args.command == "model":
+        from .engines.install import install_model, list_models
+
+        if args.model_command == "install":
+            key = args.key or AppSettings().model
+            return install_model(key)
+        if args.model_command == "list":
+            return list_models()
+        parser.error(
+            "Choose a model command, for example: speech model install whisper-ru"
         )
-    if args.command == "ai":
-        parser.error("Choose an AI command, for example: speech ai install")
 
     lock = SingleInstanceLock(default_data_dir() / "speech.lock")
     if not lock.acquire():

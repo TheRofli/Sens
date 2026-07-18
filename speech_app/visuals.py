@@ -31,13 +31,15 @@ def set_windows_app_id() -> None:
         import ctypes
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "Speech.Local.Parakeet"
+            "Speech.Local.Dictation"
         )
     except Exception:
         pass
 
 
 def create_icon_photo():
+    """Tkinter icon photo. Kept for back-compat; the tray uses create_tray_image
+    directly (no tkinter dependency). Returns None when tkinter/PIL is absent."""
     try:
         from PIL import ImageTk
 

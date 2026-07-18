@@ -14,6 +14,10 @@ APP_NAME = "Speech"
 
 @dataclass(slots=True)
 class AppSettings:
+    # Model selection. `model` is the preset key (see speech_app/models.py);
+    # `model_id` is kept for back-compat and as the resolved HF repo id for the
+    # parakeet backend.
+    model: str = "parakeet"
     model_id: str = "nvidia/parakeet-tdt-0.6b-v3"
     backend: str = "auto"
     device: str = "cpu"
@@ -26,14 +30,14 @@ class AppSettings:
     sample_rate: int = 16000
     vad_sensitivity: float = 0.02
     history_limit: int = 100
-    ai_mode: str = "off"
-    ai_profile: str = "clean"
-    ai_glossary: str = ""
-    ai_local_model_id: str = "ai-forever/sage-fredt5-distilled-95m"
-    ai_api_base_url: str = "https://api.openai.com/v1"
-    ai_api_model: str = ""
-    ai_timeout_seconds: float = 12.0
-    ai_local_max_chunk_chars: int = 320
+    # Quality / generation params (applied where supported by each engine).
+    beam_size: int = 5
+    temperature: float = 0.0
+    repetition_penalty: float = 1.0
+    no_repeat_ngram_size: int = 0
+    compression_ratio_threshold: float = 2.4
+    log_prob_threshold: float = -1.0
+    postprocess_text: bool = True
 
 
 def default_data_dir() -> Path:

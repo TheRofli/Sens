@@ -85,6 +85,11 @@ install_speech() {
     "$venv_python" -m pip install -r "$root/requirements-parakeet.txt"
   fi
 
+  if [ -s "$root/requirements-whisper.txt" ]; then
+    echo "Installing Whisper (faster-whisper) dependencies..."
+    "$venv_python" -m pip install -r "$root/requirements-whisper.txt"
+  fi
+
   chmod +x "$root/speech.sh" "$root/bin/speech" 2>/dev/null || true
   mkdir -p "$HOME/.local/bin"
   ln -sf "$root/bin/speech" "$HOME/.local/bin/speech"
@@ -186,11 +191,17 @@ case "$command_name" in
     invoke_python parakeet "$@"
     ;;
   model)
-    if [ "${1:-}" = "install" ] || [ "${1:-}" = "download" ] || [ "${1:-}" = "preload" ]; then
-      invoke_python parakeet install
-    else
-      echo "Usage: speech model install" >&2
+    if [ $# -eq 0 ]; then
+      echo "Usage: speech model install [parakeet|whisper-ru]" >&2
+      echo "       speech model list" >&2
       exit 1
+    fi
+    # Legacy "model install/download/preload" (no preset arg) installs the
+    # active model; otherwise pass through to the speech_app model parser.
+    if [ $# -eq 1 ] && { [ "$1" = "install" ] || [ "$1" = "download" ] || [ "$1" = "preload" ]; }; then
+      invoke_python model install
+    else
+      invoke_python model "$@"
     fi
     ;;
   *)

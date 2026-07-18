@@ -7,7 +7,6 @@ from speech_app.history import TranscriptHistory
 from speech_app.output import TranscriptPublisher
 from speech_app.runtime_state import write_runtime_state
 from speech_app.settings import AppSettings, SettingsStore
-from speech_app.app import build_parser
 
 
 class SettingsStoreTests(unittest.TestCase):
@@ -17,17 +16,17 @@ class SettingsStoreTests(unittest.TestCase):
 
             settings = store.load()
 
+            self.assertEqual(settings.model, "parakeet")
             self.assertEqual(settings.model_id, "nvidia/parakeet-tdt-0.6b-v3")
             self.assertEqual(settings.device, "cpu")
             self.assertEqual(settings.hotkey, "ctrl+win")
             self.assertTrue(settings.copy_to_clipboard)
             self.assertTrue(settings.paste_to_active_input)
             self.assertTrue(settings.preload_model)
-            self.assertEqual(settings.ai_mode, "off")
-            self.assertEqual(
-                settings.ai_local_model_id,
-                "ai-forever/sage-fredt5-distilled-95m",
-            )
+            # Quality params have documented defaults.
+            self.assertEqual(settings.beam_size, 5)
+            self.assertEqual(settings.temperature, 0.0)
+            self.assertTrue(settings.postprocess_text)
 
     def test_round_trips_known_settings_and_ignores_unknown_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -77,37 +76,6 @@ class TranscriptHistoryTests(unittest.TestCase):
 
             self.assertEqual([entry.text for entry in history.list()], ["three", "two"])
 
-    def test_history_reads_legacy_rows_and_persists_correction_metadata(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "history.jsonl"
-            path.write_text(
-                json.dumps(
-                    {
-                        "id": "legacy",
-                        "created_at": "2026-01-01T00:00:00+00:00",
-                        "text": "legacy text",
-                    }
-                )
-                + "\n",
-                encoding="utf-8",
-            )
-            history = TranscriptHistory(path)
-
-            legacy = history.list()[0]
-            corrected = history.add(
-                "Corrected text",
-                original_text="raw text",
-                processing_mode="local",
-                processing_status="applied",
-                processing_ms=240,
-            )
-
-            self.assertEqual(legacy.original_text, "legacy text")
-            self.assertEqual(legacy.processing_mode, "off")
-            self.assertEqual(corrected.original_text, "raw text")
-            self.assertEqual(corrected.processing_status, "applied")
-            self.assertEqual(corrected.processing_ms, 240)
-
 
 class TranscriptPublisherTests(unittest.TestCase):
     def test_publish_saves_to_clipboard_history_and_pastes_when_enabled(self):
@@ -127,28 +95,6 @@ class TranscriptPublisherTests(unittest.TestCase):
             self.assertEqual(clipboard, ["hello world"])
             self.assertEqual(pasted, ["hello world"])
             self.assertEqual(history.list()[0].text, "hello world")
-
-    def test_publish_records_original_and_processing_state(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            history = TranscriptHistory(Path(tmp) / "history.jsonl")
-            publisher = TranscriptPublisher(
-                history=history,
-                set_clipboard=lambda _text: None,
-                paste_active_input=lambda _text: None,
-            )
-
-            entry = publisher.publish(
-                "Corrected text",
-                AppSettings(),
-                original_text="raw text",
-                processing_mode="local",
-                processing_status="applied",
-                processing_ms=180,
-            )
-
-            self.assertEqual(entry.original_text, "raw text")
-            self.assertEqual(entry.processing_mode, "local")
-            self.assertEqual(entry.processing_ms, 180)
 
     def test_publish_skips_empty_transcripts(self):
         clipboard = []
@@ -183,14 +129,6 @@ class RuntimeStateTests(unittest.TestCase):
             self.assertEqual(payload["model_state"], "loading")
             self.assertEqual(payload["device"], "cpu")
             self.assertEqual(payload["backend"], "auto")
-
-
-class CliTests(unittest.TestCase):
-    def test_ai_install_command_is_available(self):
-        args = build_parser().parse_args(["ai", "install"])
-
-        self.assertEqual(args.command, "ai")
-        self.assertEqual(args.ai_command, "install")
 
 
 if __name__ == "__main__":
