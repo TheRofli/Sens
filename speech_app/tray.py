@@ -51,19 +51,19 @@ class TrayController:
                 checked=lambda _: self.app.engine_enabled(),
             ),
             pystray.MenuItem(
-                lambda _icon, _item: f"Load {self.app.current_model_label()}",
+                lambda _item: f"Load {self.app.current_model_label()}",
                 lambda _icon, _item: self.app.load_model_background(),
                 enabled=lambda _: not self.app.model_loaded()
                 and not self.app.model_is_loading(),
             ),
             pystray.MenuItem(
-                lambda _icon, _item: f"Loading {self.app.current_model_label()}…",
+                lambda _item: f"Loading {self.app.current_model_label()}…",
                 lambda _icon, _item: None,
                 enabled=False,
                 visible=lambda _: self.app.model_is_loading(),
             ),
             pystray.MenuItem(
-                lambda _icon, _item: f"Unload {self.app.current_model_label()}",
+                lambda _item: f"Unload {self.app.current_model_label()}",
                 lambda _icon, _item: self.app.unload_model(),
                 enabled=lambda _: self.app.model_loaded()
                 and not self.app.model_is_loading(),
