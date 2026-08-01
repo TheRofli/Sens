@@ -199,25 +199,150 @@ def _ensure_whisper_installed(preset: ModelPreset) -> bool:
     return has_weights
 
 
+def install_gigaam_model(preset: ModelPreset) -> int:
+    """Download GigaAM v3 weights and apply the transformers-v5 compatibility
+    patch to the remote-code module.
+
+    GigaAM is remote code (``trust_remote_code``) written for transformers v4.
+    transformers v5 instantiates models under ``torch.device("meta")`` and
+    expects ``all_tied_weights_keys`` during loading, both of which crash the
+    stock module. We keep a patched copy under ``models/gigaam/<key>`` so the
+    engine never depends on a specific transformers version. ``install``
+    re-downloads the source checkpoint and re-applies the patch.
+    """
+    from .paths import gigaam_model_dir
+
+    out_dir = gigaam_model_dir(preset)
+    if (out_dir / "pytorch_model.bin").is_file() and (
+        out_dir / "modeling_gigaam.py"
+    ).is_file():
+        print(f"GigaAM model already installed at {out_dir}")
+        return 0
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        print(
+            "huggingface_hub is not installed. Run: speech install",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Downloading {preset.model_id} (revision e2e_rnnt)...")
+    try:
+        snapshot = Path(snapshot_download(repo_id=preset.model_id, revision="e2e_rnnt"))
+    except Exception as exc:
+        print(f"Download failed: {exc}", file=sys.stderr)
+        return 1
+
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    if out_dir.exists():
+        shutil.rmtree(out_dir, ignore_errors=True)
+    shutil.copytree(snapshot, out_dir)
+    _patch_gigaam_module(out_dir / "modeling_gigaam.py")
+    print(f"GigaAM model is ready at: {out_dir}")
+    return 0
+
+
+def _patch_gigaam_module(path: Path) -> None:
+    """Apply the three transformers-v5 compatibility fixes to modeling_gigaam.py.
+
+    Fixes (all additive, verified against ai-sage/GigaAM-v3 @ e2e_rnnt):
+
+    1. ``FeatureExtractor`` builds the torchaudio MelSpectrogram under a CPU
+       device context — torchaudio calls ``.item()`` during ``__init__``,
+       which raises on the meta tensors transformers v5 creates by default.
+    2. ``load_audio`` reads via soundfile instead of shelling out to ffmpeg
+       (no external binary needed on Windows).
+    3. ``GigaAMModel.__init__`` sets ``all_tied_weights_keys = {}``, required
+       by transformers v5's ``_finalize_model_loading`` for models that never
+       call ``post_init()`` (which would re-randomise loaded weights).
+    """
+    text = path.read_text(encoding="utf-8")
+
+    # Fix 1: CPU context around MelSpectrogram construction.
+    old_fe = """        self.featurizer = nn.Sequential(
+            torchaudio.transforms.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_mels=features,
+                win_length=self.win_length,
+                hop_length=self.hop_length,
+                n_fft=self.n_fft,
+                center=self.center,
+            ),
+            SpecScaler(),
+        )"""
+    new_fe = """        # transformers v5 instantiates models inside torch.device("meta");
+        # torchaudio's MelSpectrogram calls .item() during __init__, which
+        # raises on meta tensors. Build it under a CPU context instead.
+        with torch.device("cpu"):
+            _mel = torchaudio.transforms.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_mels=features,
+                win_length=self.win_length,
+                hop_length=self.hop_length,
+                n_fft=self.n_fft,
+                center=self.center,
+            )
+        self.featurizer = nn.Sequential(_mel, SpecScaler())"""
+    if old_fe in text:
+        text = text.replace(old_fe, new_fe)
+    else:
+        print(
+            "Warning: could not patch FeatureExtractor (unexpected layout).",
+            file=sys.stderr,
+        )
+
+    # Fix 2: soundfile-based audio loading (no ffmpeg subprocess).
+    old_cmd = '    cmd = [\n        "ffmpeg",'
+    new_cmd = '    import soundfile as _sf\n\n    _wav, _sr = _sf.read(audio_path, dtype="float32")\n    if _wav.ndim > 1:\n        _wav = _wav.mean(axis=1)\n    if _sr != sample_rate:\n        _wav = torch.from_numpy(_wav).double()\n        _new = max(1, int(round(_wav.numel() * sample_rate / _sr)))\n        _wav = torch.nn.functional.interpolate(\n            _wav.view(1, 1, -1), size=_new, mode="linear", align_corners=False\n        ).view(-1)\n        return _wav.float()\n    return torch.from_numpy(_wav).float()\n\n    _dead_code = [\n        "ffmpeg",'
+    if old_cmd in text:
+        # Keep the rest of the original function (try/except below the cmd
+        # list becomes unreachable after the early return — harmless).
+        text = text.replace(old_cmd, new_cmd)
+    else:
+        print(
+            "Warning: could not patch load_audio (unexpected layout).",
+            file=sys.stderr,
+        )
+
+    # Fix 3: provide all_tied_weights_keys for transformers v5 loading.
+    old_init = '        self.model = instantiate(config.cfg["model"], _recursive_=False)'
+    new_init = (
+        '        self.model = instantiate(config.cfg["model"], _recursive_=False)\n'
+        "        # transformers v5 requires all_tied_weights_keys during loading;\n"
+        "        # post_init() would re-randomise weights, so provide empty map.\n"
+        "        self.all_tied_weights_keys = {}"
+    )
+    if old_init in text:
+        text = text.replace(old_init, new_init)
+    else:
+        print(
+            "Warning: could not patch all_tied_weights_keys (unexpected layout).",
+            file=sys.stderr,
+        )
+
+    path.write_text(text, encoding="utf-8")
+
+
 def install_model(preset_key: str) -> int:
     """Install the model for ``preset_key`` (dispatches by engine family)."""
     preset = get_preset(preset_key)
     if preset.engine == "whisper":
         return install_whisper_model(preset)
+    if preset.engine == "gigaam":
+        return install_gigaam_model(preset)
     return install_parakeet_model(preset.model_id)
 
 
 def list_models() -> int:
     """Print installation status for every preset."""
     # Imported here to avoid a circular import at module load.
-    from ..model_status import find_model_status, find_whisper_model_status
+    from ..model_status import find_model_status_for_preset
+    from ..models import available_presets
 
-    for preset in (get_preset("parakeet"), get_preset("whisper-ru")):
-        if preset.engine == "whisper":
-            status = find_whisper_model_status(preset)
-        else:
-            status = find_model_status(huggingface_home(), preset.model_id)
+    for preset in available_presets():
+        status = find_model_status_for_preset(preset, huggingface_home())
         state = status.label if status.installed else "Not installed"
-        active = " (active)" if False else ""
-        print(f"{preset.key}\t{preset.label}\t{state}{active}")
+        print(f"{preset.key}\t{preset.label}\t{state}")
     return 0

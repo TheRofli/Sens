@@ -16,7 +16,12 @@ from .engine_manager import EngineManager
 from .engines.base import EngineUnavailable
 from .history import TranscriptHistory
 from .hotkeys import GlobalHotkeyListener
-from .model_status import ModelStatus, find_model_status, find_whisper_model_status
+from .model_status import (
+    ModelStatus,
+    find_gigaam_model_status,
+    find_model_status,
+    find_whisper_model_status,
+)
 from .models import available_presets, get_preset, resolve_engine, resolve_model_id
 from .output import TranscriptPublisher
 from .overlay import VoiceOverlay
@@ -521,10 +526,12 @@ class SpeechApp:
         return self.model_status_for(self.settings.model)
 
     def model_status_for(self, key: str) -> ModelStatus:
-        """Installation status for a given preset key (parakeet or whisper)."""
+        """Installation status for a given preset key."""
         preset = get_preset(key)
         if preset.engine == "whisper":
             return find_whisper_model_status(preset)
+        if preset.engine == "gigaam":
+            return find_gigaam_model_status(preset)
         fallback = Path(__file__).resolve().parents[1] / "models" / "huggingface"
         hf_home = Path(os.environ.get("HF_HOME", str(fallback)))
         return find_model_status(hf_home, preset.model_id)

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from .engines.base import EngineUnavailable, SpeechEngine
+from .engines.gigaam import GigaAMEngine
 from .engines.parakeet import ParakeetEngine
 from .engines.whisper import WhisperEngine
 from .models import resolve_engine
@@ -21,9 +22,12 @@ if TYPE_CHECKING:
 
 
 def make_engine(kind: str) -> SpeechEngine:
-    """Instantiate the concrete engine for ``kind`` ("parakeet" | "whisper")."""
+    """Instantiate the concrete engine for ``kind``
+    ("parakeet" | "whisper" | "gigaam")."""
     if kind == "whisper":
         return WhisperEngine()
+    if kind == "gigaam":
+        return GigaAMEngine()
     return ParakeetEngine()
 
 

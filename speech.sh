@@ -90,6 +90,11 @@ install_speech() {
     "$venv_python" -m pip install -r "$root/requirements-whisper.txt"
   fi
 
+  if [ -s "$root/requirements-gigaam.txt" ]; then
+    echo "Installing GigaAM dependencies..."
+    "$venv_python" -m pip install -r "$root/requirements-gigaam.txt"
+  fi
+
   chmod +x "$root/speech.sh" "$root/bin/speech" 2>/dev/null || true
   mkdir -p "$HOME/.local/bin"
   ln -sf "$root/bin/speech" "$HOME/.local/bin/speech"

@@ -15,11 +15,13 @@ class ModelRegistryTests(unittest.TestCase):
     def test_registry_has_parakeet_and_whisper_presets(self):
         self.assertIn("parakeet", MODELS)
         self.assertIn("whisper-ru", MODELS)
+        self.assertIn("gigaam", MODELS)
 
     def test_presets_have_distinct_engines_and_ids(self):
         engines = {preset.engine for preset in MODELS.values()}
         self.assertIn("parakeet", engines)
         self.assertIn("whisper", engines)
+        self.assertIn("gigaam", engines)
         ids = [preset.model_id for preset in MODELS.values()]
         self.assertEqual(len(ids), len(set(ids)))
 
@@ -36,6 +38,7 @@ class ModelRegistryTests(unittest.TestCase):
     def test_resolve_engine_for_known_model(self):
         self.assertEqual(resolve_engine(AppSettings(model="whisper-ru")), "whisper")
         self.assertEqual(resolve_engine(AppSettings(model="parakeet")), "parakeet")
+        self.assertEqual(resolve_engine(AppSettings(model="gigaam")), "gigaam")
 
     def test_resolve_engine_falls_back_to_parakeet_for_unknown_model(self):
         self.assertEqual(resolve_engine(AppSettings(model="legacy-key")), "parakeet")

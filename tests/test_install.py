@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 import unittest.mock
+from pathlib import Path
 
 from speech_app.engines import install as install_module
 from speech_app.engines.install import install_whisper_model
@@ -89,6 +90,47 @@ class WhisperInstallTests(unittest.TestCase):
             _args, kwargs = fake_converter.convert.call_args
             self.assertEqual(kwargs.get("quantization"), "int8")
             self.assertTrue(kwargs.get("force"))
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class GigaAMInstallTests(unittest.TestCase):
+    """_patch_gigaam_module applies all three transformers-v5 fixes."""
+
+    STOCK_SNIPPET = '''        self.featurizer = nn.Sequential(
+            torchaudio.transforms.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_mels=features,
+                win_length=self.win_length,
+                hop_length=self.hop_length,
+                n_fft=self.n_fft,
+                center=self.center,
+            ),
+            SpecScaler(),
+        )
+    cmd = [
+        "ffmpeg",
+        "-nostdin",
+    ]
+        self.model = instantiate(config.cfg["model"], _recursive_=False)
+'''
+
+    def test_patch_applies_all_three_fixes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "modeling_gigaam.py"
+            path.write_text(self.STOCK_SNIPPET, encoding="utf-8")
+            install_module._patch_gigaam_module(path)
+            patched = path.read_text(encoding="utf-8")
+
+        # Fix 1: MelSpectrogram built under CPU context.
+        self.assertIn('with torch.device("cpu"):', patched)
+        # Fix 2: soundfile replaces the ffmpeg subprocess list.
+        self.assertIn("import soundfile as _sf", patched)
+        self.assertNotIn('cmd = [\n        "ffmpeg",', patched)
+        # Fix 3: all_tied_weights_keys provided for transformers v5.
+        self.assertIn("self.all_tied_weights_keys = {}", patched)
 
 
 if __name__ == "__main__":

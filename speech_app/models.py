@@ -44,6 +44,14 @@ MODELS: dict[str, ModelPreset] = {
         family="whisper",
         description="809M, файн-тюн large-v3-turbo под RU+EN код-свичинг.",
     ),
+    "gigaam": ModelPreset(
+        key="gigaam",
+        label="GigaAM v3 (русский, точная)",
+        engine="gigaam",
+        model_id="ai-sage/GigaAM-v3",
+        family="gigaam",
+        description="230M, Sber, лучший русский на CPU, e2e с пунктуацией.",
+    ),
 }
 
 
@@ -61,7 +69,7 @@ def get_preset(key: str) -> ModelPreset:
 
 def available_presets() -> list[ModelPreset]:
     """Return all presets in a stable display order."""
-    return [MODELS[key] for key in ("parakeet", "whisper-ru")]
+    return [MODELS[key] for key in ("parakeet", "whisper-ru", "gigaam")]
 
 
 def resolve_engine(settings: "AppSettings") -> str:

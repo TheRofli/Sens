@@ -113,8 +113,32 @@ def find_whisper_model_status(preset: "ModelPreset") -> ModelStatus:
     )
 
 
+def find_gigaam_model_status(preset: "ModelPreset") -> ModelStatus:
+    """Installation status for a locally patched GigaAM v3 model.
+
+    The model directory must contain ``pytorch_model.bin`` (weights) plus the
+    patched remote-code module. Size is the on-disk size of the directory.
+    """
+    # Imported lazily to avoid a circular import at module load time.
+    from .engines.paths import gigaam_model_dir
+
+    model_dir = gigaam_model_dir(preset)
+    if not model_dir.exists() or not (model_dir / "pytorch_model.bin").is_file():
+        return _empty_status()
+
+    size = sum(path.stat().st_size for path in model_dir.rglob("*") if path.is_file())
+    return ModelStatus(
+        installed=True,
+        snapshot=preset.key,
+        path=model_dir,
+        size_mb=round(size / (1024 * 1024), 3),
+    )
+
+
 def find_model_status_for_preset(preset: "ModelPreset", hf_home: Path) -> ModelStatus:
     """Dispatch installation-status lookup by preset engine family."""
     if preset.engine == "whisper":
         return find_whisper_model_status(preset)
+    if preset.engine == "gigaam":
+        return find_gigaam_model_status(preset)
     return find_model_status(hf_home, preset.model_id)

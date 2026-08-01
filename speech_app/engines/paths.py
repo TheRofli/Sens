@@ -48,6 +48,16 @@ def whisper_installed_marker(preset: ModelPreset) -> Path:
     return whisper_model_dir(preset) / "INSTALLED.json"
 
 
+def gigaam_model_dir(preset: ModelPreset) -> Path:
+    """Directory holding the (patched) GigaAM v3 weights for a gigaam preset.
+
+    GigaAM needs ``trust_remote_code`` and a local patch for transformers v5,
+    so unlike Parakeet we keep a full copy (not just the HF hub cache) under
+    ``models/gigaam/<key>`` — the patched ``modeling_gigaam.py`` lives there.
+    """
+    return models_root() / "gigaam" / preset.key
+
+
 def data_dir() -> Path:
     """Runtime data directory (history, runtime state, api.port)."""
     portable = portable_data_dir()

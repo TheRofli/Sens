@@ -6,6 +6,7 @@ from pathlib import Path
 
 from speech_app.model_status import (
     ModelStatus,
+    find_gigaam_model_status,
     find_model_status,
     find_whisper_model_status,
 )
@@ -103,6 +104,35 @@ class WhisperModelStatusTests(unittest.TestCase):
             with unittest.mock.patch.dict(os.environ, {"SPEECH_HOME": tmp}):
                 status = find_whisper_model_status(get_preset("whisper-ru"))
         self.assertFalse(status.installed)
+
+
+class GigaAMModelStatusTests(unittest.TestCase):
+    def test_reports_missing_when_dir_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with unittest.mock.patch.dict(os.environ, {"SPEECH_HOME": tmp}):
+                status = find_gigaam_model_status(get_preset("gigaam"))
+        self.assertFalse(status.installed)
+
+    def test_reports_missing_when_weights_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "models" / "gigaam" / "gigaam"
+            model_dir.mkdir(parents=True)
+            (model_dir / "modeling_gigaam.py").write_text("x")  # code but no weights
+            with unittest.mock.patch.dict(os.environ, {"SPEECH_HOME": tmp}):
+                status = find_gigaam_model_status(get_preset("gigaam"))
+        self.assertFalse(status.installed)
+
+    def test_reports_installed_when_weights_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            model_dir = Path(tmp) / "models" / "gigaam" / "gigaam"
+            model_dir.mkdir(parents=True)
+            (model_dir / "pytorch_model.bin").write_bytes(b"x" * (2 * 1024 * 1024))
+            (model_dir / "modeling_gigaam.py").write_text("x")
+            with unittest.mock.patch.dict(os.environ, {"SPEECH_HOME": tmp}):
+                status = find_gigaam_model_status(get_preset("gigaam"))
+        self.assertTrue(status.installed)
+        self.assertEqual(status.snapshot, "gigaam")
+        self.assertAlmostEqual(status.size_mb, 2.0, places=3)
 
 
 if __name__ == "__main__":

@@ -113,6 +113,9 @@ function Install-Speech {
     Write-Host "Installing Whisper (faster-whisper) dependencies..."
     & $VenvPython -m pip install -r (Join-Path $Root "requirements-whisper.txt")
 
+    Write-Host "Installing GigaAM dependencies..."
+    & $VenvPython -m pip install -r (Join-Path $Root "requirements-gigaam.txt")
+
     $binDir = Join-Path $Root "bin"
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $pathParts = @()
