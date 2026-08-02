@@ -1,0 +1,32 @@
+[package]
+name = "sens-broker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+sens-core = { path = "../sens-core" }
+sens-protocol = { path = "../sens-protocol" }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[lib]
+name = "sens_broker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sens-broker"
+path = "src/main.rs"

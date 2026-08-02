@@ -1,0 +1,14 @@
+/target/
+/qa/incoming/
+apps/desktop-ui/src-tauri/binaries/
+node_modules/
+dist/
+/.idea/
+/.vscode/
+/.omx/runtime/
+/.omx/state/
+*.log
+*.tmp
+.env
+.env.*
+!/.env.example

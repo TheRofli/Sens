@@ -1,0 +1,77 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Sens",
+  "version": "1.1.0",
+  "identifier": "dev.sens.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev -- --host 0.0.0.0 --port 1420 --strictPort",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist/client"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Sens",
+        "width": 1100,
+        "height": 770,
+        "minWidth": 900,
+        "minHeight": 620,
+        "decorations": false,
+        "resizable": true,
+        "center": true,
+        "shadow": false
+      },
+      {
+        "label": "tray",
+        "title": "Sens",
+        "url": "index.html?view=tray",
+        "width": 272,
+        "height": 458,
+        "decorations": false,
+        "resizable": false,
+        "visible": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "focus": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "targets": ["nsis", "msi"],
+    "resources": {
+      "../../../sidecars/eye-worker.mjs": "sidecars/eye-worker.mjs",
+      "../../../sidecars/hearing-worker.py": "sidecars/hearing-worker.py"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "wix": {
+        "language": "ru-RU"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU5Q0JFNjk3RjZDOEIxNEUKUldST3NjajJsK2JMV1FHdGtxTU5LcjlxaEQ4bXlGemNPaFdHQnJVMEFjTEY3SDMvV1Ivc3NqNWcK",
+      "endpoints": [
+        "https://github.com/TheRofli/Sens/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}
