@@ -371,7 +371,7 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
   );
 }
 
-function UpdateCard({ state, onCheck, onInstall }) {
+function UpdateCard({ state, version, onCheck, onInstall }) {
   const available = state.phase === "available";
   const installing = state.phase === "downloading" || state.phase === "installing";
   const statusCopy = {
@@ -386,7 +386,7 @@ function UpdateCard({ state, onCheck, onInstall }) {
   return (
     <section className="update-card" aria-label="Обновления Sens">
       <div className="update-card__icon"><IconDownload size={25} /></div>
-      <div><p>Обновления</p><h3>Sens 1.1.0</h3><span>{statusCopy}</span></div>
+      <div><p>Обновления</p><h3>Sens{version ? ` ${version}` : ""}</h3><span>{statusCopy}</span></div>
       {available ? (
         <button className="primary-button update-button" type="button" onClick={onInstall}><IconDownload size={18} />Обновить до {state.version}</button>
       ) : (
@@ -396,7 +396,7 @@ function UpdateCard({ state, onCheck, onInstall }) {
   );
 }
 
-function DetailContent({ view, settings, speechRuntime, updateState, onCheckUpdate, onInstallUpdate, onOpenCapability, openConnect }) {
+function DetailContent({ view, settings, speechRuntime, runtimeStatus, updateState, onCheckUpdate, onInstallUpdate, onOpenCapability, openConnect }) {
   if (view === "capabilities") return <CapabilitiesContent settings={settings} speechRuntime={speechRuntime} onOpenCapability={onOpenCapability} />;
   const data = {
     integrations: [["Z-Code", "MCP · stdio", "Подключено", "15 инструментов Sens доступны модели"], ["Локальный broker", "Named pipe", "Готово", "Один процесс обслуживает все клиенты"]],
@@ -415,7 +415,7 @@ function DetailContent({ view, settings, speechRuntime, updateState, onCheckUpda
           </article>
         ))}
       </div>
-      {view === "settings" ? <UpdateCard state={updateState} onCheck={onCheckUpdate} onInstall={onInstallUpdate} /> : null}
+      {view === "settings" ? <UpdateCard state={updateState} version={runtimeStatus?.version} onCheck={onCheckUpdate} onInstall={onInstallUpdate} /> : null}
       {view === "integrations" ? <button className="primary-button detail-cta" type="button" onClick={openConnect}><IconPlus size={20} />Добавить клиент</button> : null}
     </section>
   );
@@ -659,7 +659,7 @@ export function App() {
             ) : selectedCapability ? (
               <CapabilitySettingsContent capability={selectedCapability} data={capabilitySettings} speechRuntime={speechRuntime} onStartSpeech={startSpeech} onBack={() => setSelectedCapability(null)} onSave={saveSettings} saving={savingSettings} />
             ) : (
-              <DetailContent view={view} settings={capabilitySettings} speechRuntime={speechRuntime} updateState={updateState} onCheckUpdate={checkForUpdates} onInstallUpdate={installUpdate} onOpenCapability={openCapability} openConnect={() => setConnectOpen(true)} />
+              <DetailContent view={view} settings={capabilitySettings} speechRuntime={speechRuntime} runtimeStatus={runtimeStatus} updateState={updateState} onCheckUpdate={checkForUpdates} onInstallUpdate={installUpdate} onOpenCapability={openCapability} openConnect={() => setConnectOpen(true)} />
             )}
           </div>
         </div>

@@ -1,0 +1,65 @@
+- main [ref=f2e3]:
+  - complementary "Панель Sens в трее" [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - generic [ref=f2e6]:
+        - img "Sens" [ref=f2e7]
+        - strong [ref=f2e8]: Sens
+      - generic "Состояние Sens" [ref=f2e9]
+    - paragraph [ref=f2e12]: Система готова
+    - generic [ref=f2e14]:
+      - 'generic "Зрение: готово" [ref=f2e15]'
+      - generic [ref=f2e18]: Зрение · готово
+    - generic [ref=f2e19]:
+      - 'generic "Слух: готово" [ref=f2e20]'
+      - generic [ref=f2e23]: Слух · готово · Ctrl + Win
+    - generic [ref=f2e25]:
+      - generic [ref=f2e26]: Z-Code
+      - generic "Z-Code подключён" [ref=f2e27]
+    - button "Открыть" [ref=f2e30] [cursor=pointer]
+    - generic [ref=f2e31]:
+      - button "Диагностика" [ref=f2e32] [cursor=pointer]
+      - button "Выйти" [ref=f2e33] [cursor=pointer]
+  - region "Sens" [ref=f2e36]:
+    - navigation "Навигация Sens" [ref=f2e37]:
+      - button "Sens — главная" [ref=f2e38] [cursor=pointer]:
+        - img "Sens" [ref=f2e39]
+      - generic [ref=f2e40]:
+        - button "Главная" [ref=f2e41] [cursor=pointer]
+        - button "Возможности" [ref=f2e46] [cursor=pointer]
+        - button "Подключения" [ref=f2e51] [cursor=pointer]
+        - button "Диагностика" [ref=f2e54] [cursor=pointer]
+        - button "Настройки" [ref=f2e57] [cursor=pointer]
+        - button "О Sens" [ref=f2e61] [cursor=pointer]
+    - generic [ref=f2e65]:
+      - generic "Управление окном" [ref=f2e67]:
+        - button "Свернуть" [ref=f2e68] [cursor=pointer]
+        - button "Развернуть" [ref=f2e70] [cursor=pointer]
+        - button "Закрыть" [ref=f2e73] [cursor=pointer]
+      - generic [ref=f2e77]:
+        - heading "Sens готов" [level=1] [ref=f2e78]
+        - region "Главная панель" [ref=f2e79]:
+          - button "Подключить модель или приложение" [ref=f2e80] [cursor=pointer]
+          - generic [ref=f2e83]:
+            - paragraph [ref=f2e84]: Активные возможности
+            - generic [ref=f2e85]:
+              - button "Открыть настройки зрения" [ref=f2e86] [cursor=pointer]:
+                - 'generic "Зрение: готово" [ref=f2e87]'
+                - generic [ref=f2e90]:
+                  - strong [ref=f2e91]: Зрение
+                  - generic [ref=f2e92]: готово
+              - button "Открыть настройки слуха" [ref=f2e94] [cursor=pointer]:
+                - 'generic "Слух: готово" [ref=f2e95]'
+                - generic [ref=f2e98]:
+                  - strong [ref=f2e99]: Слух
+                  - generic [ref=f2e100]: готово
+              - button "Все возможности" [ref=f2e102] [cursor=pointer]
+          - complementary [ref=f2e107]:
+            - paragraph [ref=f2e108]: Текущее подключение
+            - strong [ref=f2e109]: Z-Code
+            - generic [ref=f2e110]:
+              - generic "MCP активен" [ref=f2e111]
+              - generic [ref=f2e114]: MCP
+            - generic [ref=f2e115]:
+              - generic "Локальное подключение готово" [ref=f2e116]
+              - generic [ref=f2e119]: Локально
+        - generic [ref=f2e120]: "Последнее действие: анализ изображения"
