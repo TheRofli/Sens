@@ -32,9 +32,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ". -> target"
+      # sccache caches compiled dependencies by source content, so version
+      # bumps (which change Cargo.lock and invalidate target-dir caches) do
+      # not force a full rebuild of the ~400 dependency crates.
+      - name: Setup sccache
+        uses: mozilla/sccache-action@v0.0.6
 
       - name: Install npm dependencies
         working-directory: apps/desktop-ui
