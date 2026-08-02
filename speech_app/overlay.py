@@ -15,7 +15,7 @@ class VoiceOverlay:
         self.window.overrideredirect(True)
         self.window.attributes("-topmost", True)
         try:
-            self.window.attributes("-alpha", 0.86)
+            self.window.attributes("-alpha", 1.0)
         except tk.TclError:
             pass
         try:
@@ -100,27 +100,21 @@ class VoiceOverlay:
 
     def _draw(self) -> None:
         self.canvas.delete("all")
-        self._draw_shadow()
-        self._draw_wave_pill()
+        self._draw_pill()
         if self._running:
             self.root.after(28, self._draw)
 
-    def _draw_shadow(self) -> None:
-        self._rounded_rect(16, 16, 154, 58, 21, fill="#d8d3dd", outline="")
-        self._rounded_rect(22, 12, 148, 54, 21, fill="#ece8f0", outline="")
-
-    def _draw_wave_pill(self) -> None:
-        pill_fill = "#ffffff"
-        if self.mode == "transcribing":
-            pill_fill = "#f8f8f7"
-        self._rounded_rect(24, 10, 146, 54, 22, fill=pill_fill, outline="#e5e1ea")
+    def _draw_pill(self) -> None:
+        # Sens visual language: flat ink panel, lavender accents, cream text,
+        # no shadows or gradients.
+        self._rounded_rect(24, 10, 146, 54, 22, fill="#1a1a1a", outline="#1a1a1a")
 
         if self.mode == "notice":
             self.canvas.create_text(
                 85,
                 32,
                 text=self.message,
-                fill="#17151b",
+                fill="#ffffeb",
                 font=("Segoe UI", 10, "bold"),
             )
             return
@@ -145,7 +139,7 @@ class VoiceOverlay:
                 center_y - height / 2,
                 x,
                 center_y + height / 2,
-                fill="#17151b",
+                fill="#f0d7ff",
                 width=4,
                 capstyle=tk.ROUND,
             )
@@ -154,7 +148,7 @@ class VoiceOverlay:
         tick = int(time.time() * 8) % 6
         for index in range(6):
             radius = 3 if index == tick else 2
-            color = "#17151b" if index == tick else "#c8bdd4"
+            color = "#f0d7ff" if index == tick else "#6b6b65"
             x = 64 + index * 8
             self.canvas.create_oval(
                 x - radius,
