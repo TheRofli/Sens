@@ -25,10 +25,7 @@ pub struct SpeechLaunchPlan {
 impl SpeechLaunchPlan {
     pub fn discover(speech_root: &Path) -> Result<Self, String> {
         if !speech_root.join("speech_app").is_dir() {
-            return Err(format!(
-                "Speech не найден в {}",
-                speech_root.display()
-            ));
+            return Err(format!("Speech не найден в {}", speech_root.display()));
         }
         let scripts = speech_root.join(".venv").join("Scripts");
         let pythonw = scripts.join("pythonw.exe");

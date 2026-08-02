@@ -598,6 +598,9 @@ export function App() {
     let downloaded = 0;
     let total = 0;
     try {
+      // Stop the broker first so the installer can replace sens-broker.exe;
+      // the relaunch brings a fresh broker from the new version.
+      if (nativeRuntime) invoke("stop_broker").catch(() => {});
       setUpdateState((previous) => ({ ...previous, phase: "downloading", progress: 0, error: "" }));
       await pendingUpdate.downloadAndInstall((event) => {
         if (event.event === "Started") total = event.data.contentLength || 0;

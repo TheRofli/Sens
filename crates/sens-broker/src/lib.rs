@@ -49,6 +49,11 @@ pub async fn handle_request(core: &SensCore, request: BrokerRequest) -> BrokerRe
         BrokerRequest::Ping => BrokerResponse::Pong {
             protocol_version: PROTOCOL_VERSION.into(),
         },
+        // Intercepted in the server loop before dispatch; kept for exhaustive
+        // matching so a client that sends Shutdown still gets an answer.
+        BrokerRequest::Shutdown => BrokerResponse::Pong {
+            protocol_version: PROTOCOL_VERSION.into(),
+        },
     }
 }
 

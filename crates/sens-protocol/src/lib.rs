@@ -207,6 +207,7 @@ pub enum BrokerRequest {
     Capabilities,
     Invoke { request: InvokeRequest },
     Ping,
+    Shutdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

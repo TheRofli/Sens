@@ -2,7 +2,7 @@ use std::{io::ErrorKind, process::Stdio, time::Duration};
 
 use anyhow::{Context, bail};
 use sens_core::SensCore;
-use sens_protocol::{BrokerRequest, BrokerResponse};
+use sens_protocol::{BrokerRequest, BrokerResponse, PROTOCOL_VERSION};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions},
@@ -60,10 +60,42 @@ async fn serve_connection(stream: NamedPipeServer, core: SensCore) -> anyhow::Re
         if line.trim().is_empty() {
             continue;
         }
-        let response = match serde_json::from_str::<BrokerRequest>(&line) {
-            Ok(request) => handle_request(&core, request).await,
-            Err(error) => protocol_error(format!("Invalid broker request: {error}")),
+        let request = match serde_json::from_str::<BrokerRequest>(&line) {
+            Ok(BrokerRequest::Shutdown) => {
+                // Graceful stop: answer the client, then exit so the process
+                // terminates and its job objects release the sidecar trees.
+                // The desktop sends this on quit and before update installs
+                // so installers are not blocked by a running sens-broker.exe.
+                let mut encoded = serde_json::to_vec(&BrokerResponse::Pong {
+                    protocol_version: PROTOCOL_VERSION.into(),
+                })
+                .context("encode broker shutdown response")?;
+                encoded.push(b'\n');
+                writer
+                    .write_all(&encoded)
+                    .await
+                    .context("write broker shutdown response")?;
+                writer
+                    .flush()
+                    .await
+                    .context("flush broker shutdown response")?;
+                std::process::exit(0);
+            }
+            Ok(request) => request,
+            Err(error) => {
+                let response = protocol_error(format!("Invalid broker request: {error}"));
+                let mut encoded =
+                    serde_json::to_vec(&response).context("encode broker response")?;
+                encoded.push(b'\n');
+                writer
+                    .write_all(&encoded)
+                    .await
+                    .context("write broker response")?;
+                writer.flush().await.context("flush broker response")?;
+                continue;
+            }
         };
+        let response = handle_request(&core, request).await;
         let mut encoded = serde_json::to_vec(&response).context("encode broker response")?;
         encoded.push(b'\n');
         writer

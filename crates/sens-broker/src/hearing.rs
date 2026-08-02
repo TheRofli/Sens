@@ -125,15 +125,13 @@ impl HearingExecutor {
             .stderr(Stdio::null())
             .kill_on_drop(true);
         crate::process_group::hide_console(&mut command);
-        let mut child = command
-            .spawn()
-            .map_err(|error| {
-                runtime_error(
-                    "hearing_start_failed",
-                    format!("Could not start Hearing: {error}"),
-                    "Check the bundled Python runtime in Sens diagnostics.",
-                )
-            })?;
+        let mut child = command.spawn().map_err(|error| {
+            runtime_error(
+                "hearing_start_failed",
+                format!("Could not start Hearing: {error}"),
+                "Check the bundled Python runtime in Sens diagnostics.",
+            )
+        })?;
         let stdin = child.stdin.take().ok_or_else(|| {
             runtime_error(
                 "hearing_start_failed",

@@ -72,9 +72,24 @@ fn start_speech_runtime(speech: State<'_, SpeechRuntime>) -> Result<SpeechRuntim
 }
 
 #[tauri::command]
-fn quit_app(app: AppHandle, speech: State<'_, SpeechRuntime>) {
+async fn stop_broker() -> Result<(), String> {
+    // Best-effort: the broker may already be down; the caller ignores errors.
+    let client = BrokerClient::new();
+    client
+        .request(BrokerRequest::Shutdown)
+        .await
+        .map(|_| ())
+        .map_err(display_error)
+}
+
+#[tauri::command]
+async fn quit_app(app: AppHandle, speech: State<'_, SpeechRuntime>) -> Result<(), String> {
+    // Stop the broker too: it outlives the app by design, and a running
+    // sens-broker.exe blocks installers from replacing the binaries.
+    let _ = stop_broker().await;
     speech.stop();
     app.exit(0);
+    Ok(())
 }
 
 #[tauri::command]
@@ -206,6 +221,7 @@ pub fn run() {
             show_main,
             window_action,
             hide_tray,
+            stop_broker,
             quit_app
         ])
         .setup(|app| {
@@ -264,14 +280,8 @@ mod tests {
 
     #[test]
     fn custom_tray_panel_opens_on_left_and_right_release() {
-        assert!(should_toggle_tray(
-            MouseButton::Left,
-            MouseButtonState::Up
-        ));
-        assert!(should_toggle_tray(
-            MouseButton::Right,
-            MouseButtonState::Up
-        ));
+        assert!(should_toggle_tray(MouseButton::Left, MouseButtonState::Up));
+        assert!(should_toggle_tray(MouseButton::Right, MouseButtonState::Up));
         assert!(!should_toggle_tray(
             MouseButton::Right,
             MouseButtonState::Down
