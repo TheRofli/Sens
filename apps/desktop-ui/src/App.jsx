@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -528,6 +528,10 @@ export function App() {
   });
   const [updateState, setUpdateState] = useState({ phase: "idle", version: "", progress: 0, error: "" });
   const [pendingUpdate, setPendingUpdate] = useState(null);
+  // While an update is being installed the broker must stay stopped so the
+  // installer can replace sens-broker.exe; suspend status polling that would
+  // otherwise respawn it mid-install.
+  const updatingRef = useRef(false);
   const t = useT();
   const copy = useMemo(() => selectedCapability ? [
     t(capabilityMeta[selectedCapability].pageKickerKey),
@@ -539,6 +543,7 @@ export function App() {
     if (!nativeRuntime) return undefined;
     let active = true;
     const refresh = async () => {
+      if (updatingRef.current) return;
       try {
         const status = await invoke("sens_status");
         if (active) {
@@ -657,10 +662,11 @@ export function App() {
     if (!pendingUpdate) return;
     let downloaded = 0;
     let total = 0;
+    updatingRef.current = true;
     try {
-      // Stop the broker first so the installer can replace sens-broker.exe;
-      // the relaunch brings a fresh broker from the new version.
-      if (nativeRuntime) invoke("stop_broker").catch(() => {});
+      // Stop the broker and wait for it to exit so the installer can replace
+      // sens-broker.exe; status polling is suspended until the relaunch.
+      if (nativeRuntime) await invoke("stop_broker").catch(() => {});
       setUpdateState((previous) => ({ ...previous, phase: "downloading", progress: 0, error: "" }));
       await pendingUpdate.downloadAndInstall((event) => {
         if (event.event === "Started") total = event.data.contentLength || 0;
@@ -675,6 +681,8 @@ export function App() {
       await relaunch();
     } catch (error) {
       setUpdateState((previous) => ({ ...previous, phase: "error", error: String(error) }));
+    } finally {
+      updatingRef.current = false;
     }
   }
 
