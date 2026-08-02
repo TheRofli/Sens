@@ -1,6 +1,9 @@
 mod settings;
 mod speech_runtime;
 
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
 use sens_broker::BrokerClient;
 use sens_connect::{InstallResult, default_zcode_config_path, install};
 use sens_protocol::{BrokerRequest, BrokerResponse, CapabilityManifest, StatusSnapshot};
@@ -13,25 +16,83 @@ use tauri::{
 };
 use tauri_plugin_positioner::{Position, WindowExt};
 
+/// While an update installs, the broker must stay stopped so the installer can
+/// replace `sens-broker.exe`. The tray and main windows are separate webviews
+/// that each poll `sens_status`, so freezing one window is not enough: the
+/// suspension lives here, in the backend, and blocks every `ensure_running`
+/// call until it expires or `resume_broker` clears it.
+struct BrokerGuard {
+    suspended_until: Mutex<Option<Instant>>,
+    last_status: Mutex<Option<StatusSnapshot>>,
+}
+
+impl Default for BrokerGuard {
+    fn default() -> Self {
+        Self {
+            suspended_until: Mutex::new(None),
+            last_status: Mutex::new(None),
+        }
+    }
+}
+
+fn broker_suspended(guard: &BrokerGuard) -> bool {
+    guard
+        .suspended_until
+        .lock()
+        .map(|until| until.is_some_and(|deadline| Instant::now() < deadline))
+        .unwrap_or(false)
+}
+
+fn suspend_broker(guard: &BrokerGuard) -> Result<(), String> {
+    let mut until = guard
+        .suspended_until
+        .lock()
+        .map_err(|_| "broker guard lock повреждён".to_string())?;
+    *until = Some(Instant::now() + Duration::from_secs(180));
+    Ok(())
+}
+
 #[tauri::command]
-async fn sens_status() -> Result<StatusSnapshot, String> {
+async fn sens_status(state: State<'_, BrokerGuard>) -> Result<StatusSnapshot, String> {
     let client = BrokerClient::new();
-    client.ensure_running().await.map_err(display_error)?;
-    match client
-        .request(BrokerRequest::Status)
-        .await
-        .map_err(display_error)?
-    {
-        BrokerResponse::Status { status } => Ok(status),
+    let suspended = broker_suspended(&state);
+    if !suspended {
+        client.ensure_running().await.map_err(display_error)?;
+    }
+    let response = match client.request(BrokerRequest::Status).await {
+        Ok(response) => response,
+        Err(error) if suspended => {
+            // The broker is intentionally down during an update. Serve the
+            // last known status so no window shows an error or respawns it.
+            let cached = state
+                .last_status
+                .lock()
+                .map_err(|_| "broker guard lock повреждён".to_string())?
+                .clone();
+            return cached.ok_or_else(|| error.to_string());
+        }
+        Err(error) => return Err(display_error(error)),
+    };
+    match response {
+        BrokerResponse::Status { status } => {
+            if let Ok(mut cached) = state.last_status.lock() {
+                *cached = Some(status.clone());
+            }
+            Ok(status)
+        }
         BrokerResponse::Error { error } => Err(error.message),
         _ => Err("Sens broker returned an unexpected status response".into()),
     }
 }
 
 #[tauri::command]
-async fn sens_capabilities() -> Result<Vec<CapabilityManifest>, String> {
+async fn sens_capabilities(
+    state: State<'_, BrokerGuard>,
+) -> Result<Vec<CapabilityManifest>, String> {
     let client = BrokerClient::new();
-    client.ensure_running().await.map_err(display_error)?;
+    if !broker_suspended(&state) {
+        client.ensure_running().await.map_err(display_error)?;
+    }
     match client
         .request(BrokerRequest::Capabilities)
         .await
@@ -72,8 +133,11 @@ fn start_speech_runtime(speech: State<'_, SpeechRuntime>) -> Result<SpeechRuntim
 }
 
 #[tauri::command]
-async fn stop_broker() -> Result<(), String> {
-    // Best-effort: the broker may already be down; the caller ignores errors.
+async fn stop_broker(state: State<'_, BrokerGuard>) -> Result<(), String> {
+    // Suspend broker respawns (any window polling sens_status would otherwise
+    // bring it right back) and stop the process. Best-effort: the broker may
+    // already be down; the caller ignores errors.
+    suspend_broker(&state)?;
     let client = BrokerClient::new();
     client
         .request(BrokerRequest::Shutdown)
@@ -83,10 +147,21 @@ async fn stop_broker() -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn quit_app(app: AppHandle, speech: State<'_, SpeechRuntime>) -> Result<(), String> {
+fn resume_broker(state: State<'_, BrokerGuard>) {
+    if let Ok(mut until) = state.suspended_until.lock() {
+        *until = None;
+    }
+}
+
+#[tauri::command]
+async fn quit_app(
+    app: AppHandle,
+    speech: State<'_, SpeechRuntime>,
+    broker: State<'_, BrokerGuard>,
+) -> Result<(), String> {
     // Stop the broker too: it outlives the app by design, and a running
     // sens-broker.exe blocks installers from replacing the binaries.
-    let _ = stop_broker().await;
+    let _ = stop_broker(broker).await;
     speech.stop();
     app.exit(0);
     Ok(())
@@ -222,11 +297,13 @@ pub fn run() {
             window_action,
             hide_tray,
             stop_broker,
+            resume_broker,
             quit_app
         ])
         .setup(|app| {
             let speech = SpeechRuntime::discover();
             app.manage(speech.clone());
+            app.manage(BrokerGuard::default());
             std::thread::spawn(move || {
                 if speech.ensure_started().is_ok()
                     && let Ok(saved) = settings::load()
@@ -286,5 +363,19 @@ mod tests {
             MouseButton::Right,
             MouseButtonState::Down
         ));
+    }
+
+    #[test]
+    fn broker_suspension_blocks_respawn_until_expiry() {
+        let guard = BrokerGuard::default();
+        assert!(!broker_suspended(&guard));
+
+        *guard.suspended_until.lock().expect("lock") =
+            Some(Instant::now() + Duration::from_secs(60));
+        assert!(broker_suspended(&guard));
+
+        *guard.suspended_until.lock().expect("lock") =
+            Some(Instant::now() - Duration::from_secs(1));
+        assert!(!broker_suspended(&guard));
     }
 }

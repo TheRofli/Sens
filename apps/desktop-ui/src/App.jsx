@@ -681,6 +681,9 @@ export function App() {
       await relaunch();
     } catch (error) {
       setUpdateState((previous) => ({ ...previous, phase: "error", error: String(error) }));
+      // The broker is suspended during the install; resume it so status
+      // polling can bring it back right away.
+      if (nativeRuntime) invoke("resume_broker").catch(() => {});
     } finally {
       updatingRef.current = false;
     }
