@@ -93,7 +93,11 @@ $manifest = [ordered]@{
     }
 }
 $manifestPath = Join-Path $canonicalBundle 'latest.json'
-$manifest | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
+# UTF-8 without BOM: PowerShell's Set-Content -Encoding UTF8 writes a BOM
+# (EF BB BF), which breaks the updater's JSON parsing ("error decoding
+# response body"). Use WriteAllText with a BOM-less UTF8 encoding.
+$manifestJson = $manifest | ConvertTo-Json -Depth 6
+[System.IO.File]::WriteAllText($manifestPath, $manifestJson, [System.Text.UTF8Encoding]::new($false))
 
 $artifacts | ForEach-Object {
     Get-Item -LiteralPath $_.Destination | Select-Object FullName, Length, LastWriteTime

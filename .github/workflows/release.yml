@@ -32,6 +32,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
       - name: Install npm dependencies
         working-directory: apps/desktop-ui
         run: npm ci
