@@ -1,0 +1,51 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches app version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}" -replace '^v', ''
+          $appVersion = (Get-Content -Raw apps/desktop-ui/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          if ($tag -ne $appVersion) { throw "Tag $tag does not match app version $appVersion" }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop-ui/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop-ui
+        run: npm ci
+
+      - name: Build installers
+        working-directory: apps/desktop-ui
+        run: npm run native:build
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            target/release/bundle/nsis/Sens_*_x64-setup.exe
+            target/release/bundle/nsis/Sens_*_x64-setup.exe.sig
+            target/release/bundle/latest.json
