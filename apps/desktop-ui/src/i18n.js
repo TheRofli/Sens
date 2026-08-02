@@ -1,4 +1,4 @@
-import { createContext, createElement, useContext, useState } from "react";
+import { createContext, createElement, useContext, useEffect, useState } from "react";
 
 export const LANGS = ["ru", "en"];
 
@@ -464,6 +464,18 @@ export function LanguageProvider({ children }) {
     setLangState(next);
     saveLanguage(next);
   };
+  useEffect(() => {
+    // The main window and the tray window are separate webviews that share
+    // localStorage. Writes in one window fire a "storage" event in the
+    // others, so the tray follows a language switch made in the menu.
+    const onStorage = (event) => {
+      if (event.key === "sens.lang" && (event.newValue === "ru" || event.newValue === "en")) {
+        setLangState(event.newValue);
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   return createElement(LanguageContext.Provider, { value: { lang, setLang } }, children);
 }
 
