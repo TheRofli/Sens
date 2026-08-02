@@ -15,6 +15,7 @@ import {
   IconHome,
   IconInfoCircle,
   IconKeyboard,
+  IconLanguage,
   IconMinus,
   IconMicrophone,
   IconPlugConnected,
@@ -30,24 +31,31 @@ import {
   IconPower,
   IconX,
 } from "@tabler/icons-react";
+import { useLanguage, useT } from "./i18n.js";
 
 const navItems = [
-  { id: "home", label: "Главная", icon: IconHome },
-  { id: "capabilities", label: "Возможности", icon: IconBox },
-  { id: "integrations", label: "Подключения", icon: IconPuzzle },
-  { id: "console", label: "Диагностика", icon: IconPrompt },
-  { id: "settings", label: "Настройки", icon: IconSettings },
-  { id: "about", label: "О Sens", icon: IconInfoCircle },
+  { id: "home", icon: IconHome },
+  { id: "capabilities", icon: IconBox },
+  { id: "integrations", icon: IconPuzzle },
+  { id: "console", icon: IconPrompt },
+  { id: "settings", icon: IconSettings },
+  { id: "about", icon: IconInfoCircle },
 ];
 
-const viewCopy = {
-  home: ["Система восприятия", "Sens готов", "Зрение и слух доступны подключённой модели."],
-  capabilities: ["Возможности", "Чувства модели", "Выберите чувство, чтобы настроить его точнее."],
-  integrations: ["Подключения", "Подключённые модели", "Один локальный мост для Z-Code и других клиентов."],
-  console: ["Диагностика", "Система стабильна", "Broker и MCP отвечают без критических ошибок."],
-  settings: ["Настройки", "Поведение Sens", "Автозапуск, приватность и управление ресурсами."],
-  about: ["Sens 1.1", "Больше, чем зрение", "Расширяемая система чувств для любой модели."],
-};
+const KNOWN_PROVIDERS = ["mimo", "openai", "custom"];
+const KNOWN_MODELS = ["parakeet", "whisper-ru", "gigaam"];
+
+function providerDisplay(t, value, fallback = "") {
+  return KNOWN_PROVIDERS.includes(value) ? t(`provider.${value}`) : fallback || value;
+}
+
+function modelDisplay(t, value, fallback = "") {
+  return KNOWN_MODELS.includes(value) ? t(`model.${value}`) : fallback || value;
+}
+
+function modelDescription(t, value, fallback = "") {
+  return KNOWN_MODELS.includes(value) ? t(`model.${value}.desc`) : fallback;
+}
 
 const defaultCapabilitySettings = {
   sight: {
@@ -86,22 +94,26 @@ const defaultCapabilitySettings = {
 
 const capabilityMeta = {
   sight: {
-    name: "Зрение",
-    genitive: "зрения",
-    dative: "зрению",
     source: "Eye",
-    description: "Анализ изображений, OCR, поиск деталей и визуальная самопроверка.",
-    settingsDescription: "Провайдер, модель, качество и лимиты визуального анализа.",
     icon: IconEye,
+    nameKey: "cap.sight.name",
+    descriptionKey: "cap.sight.description",
+    settingsDescriptionKey: "cap.sight.settingsDescription",
+    openSettingsKey: "cap.sight.openSettings",
+    accessKey: "cap.sight.access",
+    pageKickerKey: "cap.sight.pageKicker",
+    pageTitleKey: "cap.sight.pageTitle",
   },
   hearing: {
-    name: "Слух",
-    genitive: "слуха",
-    dative: "слуху",
     source: "Speech",
-    description: "Локальное распознавание аудиофайлов без доступа модели к микрофону.",
-    settingsDescription: "Модель распознавания, устройство, точность и подготовка текста.",
     icon: IconHeadphones,
+    nameKey: "cap.hearing.name",
+    descriptionKey: "cap.hearing.description",
+    settingsDescriptionKey: "cap.hearing.settingsDescription",
+    openSettingsKey: "cap.hearing.openSettings",
+    accessKey: "cap.hearing.access",
+    pageKickerKey: "cap.hearing.pageKicker",
+    pageTitleKey: "cap.hearing.pageTitle",
   },
 };
 
@@ -114,21 +126,22 @@ function StatusDot({ tone = "ready", label }) {
 }
 
 function WindowControls({ onMinimize, onMaximize, onClose }) {
+  const t = useT();
   return (
-    <div className="window-controls" aria-label="Управление окном">
-      <button type="button" onClick={onMinimize} aria-label="Свернуть"><IconMinus size={19} /></button>
-      <button type="button" onClick={onMaximize} aria-label="Развернуть"><IconSquare size={16} /></button>
-      <button type="button" onClick={onClose} aria-label="Закрыть"><IconX size={20} /></button>
+    <div className="window-controls" aria-label={t("win.minimize")}>
+      <button type="button" onClick={onMinimize} aria-label={t("win.minimize")}><IconMinus size={19} /></button>
+      <button type="button" onClick={onMaximize} aria-label={t("win.maximize")}><IconSquare size={16} /></button>
+      <button type="button" onClick={onClose} aria-label={t("win.close")}><IconX size={20} /></button>
     </div>
   );
 }
 
 function hearingUiState(enabled, runtime) {
-  if (!enabled) return { label: "выключен", tone: "idle" };
-  if (runtime?.transcribing) return { label: "слушает", tone: "attention" };
-  if (!runtime?.running) return { label: "нужен запуск", tone: "attention" };
-  if (!runtime?.enabled) return { label: "включите движок", tone: "attention" };
-  return { label: "готово", tone: "ready" };
+  if (!enabled) return { labelKey: "state.off", tone: "idle" };
+  if (runtime?.transcribing) return { labelKey: "state.listening", tone: "attention" };
+  if (!runtime?.running) return { labelKey: "state.needStart", tone: "attention" };
+  if (!runtime?.enabled) return { labelKey: "state.needEnable", tone: "attention" };
+  return { labelKey: "state.ready", tone: "ready" };
 }
 
 function formatHotkey(value = "ctrl+win") {
@@ -137,75 +150,83 @@ function formatHotkey(value = "ctrl+win") {
 }
 
 function CapabilityPill({ capability, enabled, status, onClick }) {
+  const t = useT();
   const meta = capabilityMeta[capability];
-  const state = status || { label: enabled ? "готово" : "выключено", tone: enabled ? "ready" : "idle" };
+  const state = status || { labelKey: enabled ? "state.ready" : "state.off", tone: enabled ? "ready" : "idle" };
   return (
-    <button type="button" className="capability-pill" onClick={onClick} aria-label={`Открыть настройки ${meta.genitive}`}>
-      <StatusDot tone={state.tone} label={`${meta.name}: ${state.label}`} />
-      <span className="capability-pill__copy"><strong>{meta.name}</strong><small>{state.label}</small></span>
+    <button type="button" className="capability-pill" onClick={onClick} aria-label={t(meta.openSettingsKey)}>
+      <StatusDot tone={state.tone} label={`${t(meta.nameKey)}: ${t(state.labelKey)}`} />
+      <span className="capability-pill__copy"><strong>{t(meta.nameKey)}</strong><small>{t(state.labelKey)}</small></span>
     </button>
   );
 }
 
 function ConnectModal({ onClose, onConnected }) {
+  const t = useT();
   const [client, setClient] = useState("Z-Code");
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="connect-modal" role="dialog" aria-modal="true" aria-labelledby="connect-title" onMouseDown={(event) => event.stopPropagation()}>
-        <button className="modal-close" type="button" onClick={onClose} aria-label="Закрыть"><IconX size={22} /></button>
-        <p className="section-kicker">Новое подключение</p>
-        <h2 id="connect-title">Дать модели чувства</h2>
-        <p>Выберите клиент. Sens подготовит локальное MCP-подключение без облачного посредника.</p>
-        <label htmlFor="client">Клиент</label>
+        <button className="modal-close" type="button" onClick={onClose} aria-label={t("modal.close")}><IconX size={22} /></button>
+        <p className="section-kicker">{t("modal.kicker")}</p>
+        <h2 id="connect-title">{t("modal.title")}</h2>
+        <p>{t("modal.desc")}</p>
+        <label htmlFor="client">{t("modal.clientLabel")}</label>
         <select id="client" value={client} onChange={(event) => setClient(event.target.value)}>
-          <option>Z-Code</option><option>Claude Desktop</option><option>Cursor</option><option>Другой MCP-клиент</option>
+          <option>Z-Code</option><option>Claude Desktop</option><option>Cursor</option><option>{t("modal.otherClient")}</option>
         </select>
-        <button className="primary-button" type="button" onClick={() => onConnected(client)}><IconPlugConnected size={20} />Подключить {client}</button>
+        <button className="primary-button" type="button" onClick={() => onConnected(client)}><IconPlugConnected size={20} />{t("modal.connect", { client })}</button>
       </section>
     </div>
   );
 }
 
 function HomeContent({ settings, speechRuntime, openCapability, openCapabilities, openConnect }) {
+  const t = useT();
   const hearingState = hearingUiState(settings.hearing.enabled, speechRuntime);
   return (
     <>
-      <section className="home-grid" aria-label="Главная панель">
+      <section className="home-grid" aria-label={t("view.home.title")}>
         <button className="connect-banner" type="button" onClick={openConnect}>
-          <IconPlus size={31} stroke={1.7} /><span>Подключить модель или приложение</span>
+          <IconPlus size={31} stroke={1.7} /><span>{t("home.connectCta")}</span>
         </button>
         <section className="capability-chamber">
-          <p>Активные возможности</p>
+          <p>{t("home.activeCapabilities")}</p>
           <div className="capability-row">
             <CapabilityPill capability="sight" enabled={settings.sight.enabled} onClick={() => openCapability("sight")} />
             <span className="capability-divider" />
             <CapabilityPill capability="hearing" enabled={settings.hearing.enabled} status={hearingState} onClick={() => openCapability("hearing")} />
             <span className="capability-divider" />
-            <button className="capability-overview" type="button" onClick={openCapabilities}><IconAdjustmentsHorizontal size={19} />Все возможности</button>
+            <button className="capability-overview" type="button" onClick={openCapabilities}><IconAdjustmentsHorizontal size={19} />{t("home.allCapabilities")}</button>
           </div>
         </section>
         <aside className="connection-card">
-          <p>Текущее подключение</p><strong>Z-Code</strong>
+          <p>{t("home.currentConnection")}</p><strong>Z-Code</strong>
           <div className="connection-line"><StatusDot tone="attention" label="MCP активен" /><span>MCP</span></div>
-          <div className="connection-line"><StatusDot label="Локальное подключение готово" /><span>Локально</span></div>
+          <div className="connection-line"><StatusDot label={t("home.local")} /><span>{t("home.local")}</span></div>
         </aside>
       </section>
-      <footer className="activity-bar"><IconClock size={28} stroke={1.8} /><span>Последнее действие: анализ изображения</span></footer>
+      <footer className="activity-bar"><IconClock size={28} stroke={1.8} /><span>{t("home.lastAction")}</span></footer>
     </>
   );
 }
 
 function CapabilityCard({ capability, enabled, settings, runtimeStatus, onOpen }) {
+  const t = useT();
   const meta = capabilityMeta[capability];
   const Icon = meta.icon;
-  const summary = capability === "sight" ? `${settings.provider} · ${settings.model}` : `${settings.model} · ${settings.device.toUpperCase()}`;
-  const state = capability === "hearing" ? hearingUiState(enabled, runtimeStatus) : { label: enabled ? "Готово" : "Выключено", tone: enabled ? "ready" : "idle" };
+  const summary = capability === "sight"
+    ? `${providerDisplay(t, settings.provider, settings.provider)} · ${settings.model}`
+    : `${modelDisplay(t, settings.model, settings.model)} · ${settings.device.toUpperCase()}`;
+  const state = capability === "hearing"
+    ? hearingUiState(enabled, runtimeStatus)
+    : { labelKey: enabled ? "state.readyUpper" : "state.offUpper", tone: enabled ? "ready" : "idle" };
   return (
-    <button className="detail-card capability-card" type="button" onClick={onOpen} aria-label={`Открыть настройки ${meta.genitive}`}>
+    <button className="detail-card capability-card" type="button" onClick={onOpen} aria-label={t(meta.openSettingsKey)}>
       <div className="detail-card__icon"><Icon size={28} /></div>
-      <div><p>{meta.source} · {summary}</p><h3>{meta.name}</h3><span>{meta.description}</span></div>
+      <div><p>{meta.source} · {summary}</p><h3>{t(meta.nameKey)}</h3><span>{t(meta.descriptionKey)}</span></div>
       <div className="capability-card__tail">
-        <span className="detail-card__status"><StatusDot tone={state.tone} label={state.label} />{state.label}</span>
+        <span className="detail-card__status"><StatusDot tone={state.tone} label={t(state.labelKey)} />{t(state.labelKey)}</span>
         <IconChevronRight size={22} aria-hidden="true" />
       </div>
     </button>
@@ -213,16 +234,17 @@ function CapabilityCard({ capability, enabled, settings, runtimeStatus, onOpen }
 }
 
 function CapabilitiesContent({ settings, speechRuntime, onOpenCapability }) {
+  const t = useT();
   return (
-    <section className="detail-panel" aria-label="Каталог возможностей">
+    <section className="detail-panel" aria-label={t("view.capabilities.title")}>
       <div className="detail-list">
         <CapabilityCard capability="sight" enabled={settings.sight.enabled} settings={settings.sight} onOpen={() => onOpenCapability("sight")} />
         <CapabilityCard capability="hearing" enabled={settings.hearing.enabled} settings={settings.hearing} runtimeStatus={speechRuntime} onOpen={() => onOpenCapability("hearing")} />
       </div>
       <aside className="future-sense-card">
         <div className="future-sense-card__icon"><IconSparkles size={24} /></div>
-        <div><strong>Будущие чувства</strong><span>Новые модули появятся здесь после установки — отдельно от подключения моделей.</span></div>
-        <span className="future-sense-card__badge">Roadmap</span>
+        <div><strong>{t("future.title")}</strong><span>{t("future.desc")}</span></div>
+        <span className="future-sense-card__badge">{t("future.badge")}</span>
       </aside>
     </section>
   );
@@ -238,6 +260,7 @@ function SettingsToggle({ label, description, checked, onChange }) {
 }
 
 function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpeech, onBack, onSave, saving }) {
+  const t = useT();
   const meta = capabilityMeta[capability];
   const Icon = meta.icon;
   const current = data[capability];
@@ -252,33 +275,33 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
   };
 
   return (
-    <section className="capability-settings" aria-label={`Настройки ${meta.genitive}`}>
-      <button className="back-button" type="button" onClick={onBack}><IconArrowLeft size={19} />Все возможности</button>
+    <section className="capability-settings" aria-label={t(meta.openSettingsKey)}>
+      <button className="back-button" type="button" onClick={onBack}><IconArrowLeft size={19} />{t("settings.back")}</button>
       <div className="capability-summary">
         <div className="capability-summary__icon"><Icon size={34} /></div>
-        <div><p>{meta.source}</p><strong>{meta.name}</strong><span>{meta.description}</span></div>
-        <span className={`capability-state${draft.enabled ? "" : " capability-state--idle"}`}><StatusDot tone={draft.enabled ? "ready" : "idle"} label={draft.enabled ? "Активно" : "Выключено"} />{draft.enabled ? "Активно" : "Выключено"}</span>
+        <div><p>{meta.source}</p><strong>{t(meta.nameKey)}</strong><span>{t(meta.descriptionKey)}</span></div>
+        <span className={`capability-state${draft.enabled ? "" : " capability-state--idle"}`}><StatusDot tone={draft.enabled ? "ready" : "idle"} label={draft.enabled ? t("state.active") : t("state.offUpper")} />{draft.enabled ? t("state.active") : t("state.offUpper")}</span>
       </div>
 
       {capability === "hearing" ? (
-        <section className="dictation-card" aria-label="Диктовка голосом">
+        <section className="dictation-card" aria-label={t("dictation.title")}>
           <div className="dictation-card__intro">
             <div className="dictation-card__icon"><IconMicrophone size={27} /></div>
             <div>
-              <div className="dictation-card__eyebrow"><StatusDot tone={hearingUiState(draft.enabled, speechRuntime).tone} label={hearingUiState(draft.enabled, speechRuntime).label} />Диктовка · {hearingUiState(draft.enabled, speechRuntime).label}</div>
-              <h2>Говорите — Sens вставит текст</h2>
-              <p>Удерживайте <kbd>{formatHotkey(draft.hotkey)}</kbd>, говорите и отпустите клавиши. Текст появится в активном поле.</p>
+              <div className="dictation-card__eyebrow"><StatusDot tone={hearingUiState(draft.enabled, speechRuntime).tone} label={hearingUiState(draft.enabled, speechRuntime).labelKey} />{t("dictation.kicker", { state: t(hearingUiState(draft.enabled, speechRuntime).labelKey) })}</div>
+              <h2>{t("dictation.title")}</h2>
+              <p>{t("dictation.desc", { hotkey: formatHotkey(draft.hotkey) })}</p>
             </div>
           </div>
           <div className="dictation-card__controls">
-            <label className="setting-field"><span><IconKeyboard size={17} />Комбинация клавиш</span>
+            <label className="setting-field"><span><IconKeyboard size={17} />{t("dictation.hotkeyLabel")}</span>
               <select value={draft.hotkey} onChange={(event) => update("hotkey", event.target.value)}>
-                <option value="ctrl+win">Ctrl + Win · рекомендуется</option>
+                <option value="ctrl+win">{t("dictation.hotkeyRecommended")}</option>
                 <option value="ctrl+shift">Ctrl + Shift</option>
                 <option value="alt+space">Alt + Space</option>
               </select>
             </label>
-            {!speechRuntime?.running ? <button className="secondary-button start-speech" type="button" onClick={onStartSpeech}><IconPlayerPlay size={18} />Запустить слух</button> : <span className="speech-running"><StatusDot label="Служба диктовки запущена" />Служба работает в фоне</span>}
+            {!speechRuntime?.running ? <button className="secondary-button start-speech" type="button" onClick={onStartSpeech}><IconPlayerPlay size={18} />{t("dictation.start")}</button> : <span className="speech-running"><StatusDot label={t("dictation.running")} />{t("dictation.running")}</span>}
           </div>
           {speechRuntime?.error && !speechRuntime.running ? <p className="dictation-card__error">{speechRuntime.error}</p> : null}
         </section>
@@ -286,30 +309,30 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
 
       <div className="settings-grid">
         <section className="settings-group">
-          <div className="settings-group__heading"><span>01</span><div><h2>Модель</h2><p>{capability === "sight" ? "Кто будет разбирать изображение" : "Кто будет распознавать аудио"}</p></div></div>
+          <div className="settings-group__heading"><span>01</span><div><h2>{t("group.model")}</h2><p>{t(capability === "sight" ? "group.model.sightSub" : "group.model.hearingSub")}</p></div></div>
           {capability === "sight" ? (
             <>
-              <label className="setting-field">Провайдер
+              <label className="setting-field">{t("field.provider")}
                 <select value={draft.provider} onChange={(event) => providerChanged(event.target.value)}>
-                  {data.sightProviders.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  {data.sightProviders.map((option) => <option key={option.value} value={option.value}>{providerDisplay(t, option.value, option.label)}</option>)}
                 </select>
               </label>
-              <label className="setting-field">Vision-модель
+              <label className="setting-field">{t("field.visionModel")}
                 <input value={draft.model} onChange={(event) => update("model", event.target.value)} spellCheck="false" />
-                <small>Можно указать любую совместимую модель выбранного провайдера.</small>
+                <small>{t("field.visionModelHint")}</small>
               </label>
             </>
           ) : (
             <>
-              <label className="setting-field">Модель распознавания
+              <label className="setting-field">{t("field.recognitionModel")}
                 <select value={draft.model} onChange={(event) => update("model", event.target.value)}>
-                  {data.hearingModels.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  {data.hearingModels.map((option) => <option key={option.value} value={option.value}>{modelDisplay(t, option.value, option.label)}</option>)}
                 </select>
-                <small>{data.hearingModels.find((item) => item.value === draft.model)?.description}</small>
+                <small>{modelDescription(t, draft.model, data.hearingModels.find((item) => item.value === draft.model)?.description)}</small>
               </label>
-              <label className="setting-field">Устройство
+              <label className="setting-field">{t("field.device")}
                 <select value={draft.device} onChange={(event) => update("device", event.target.value)}>
-                  <option value="auto">Автоматически</option><option value="cpu">CPU</option><option value="cuda">NVIDIA CUDA</option>
+                  <option value="auto">{t("device.auto")}</option><option value="cpu">{t("device.cpu")}</option><option value="cuda">{t("device.cuda")}</option>
                 </select>
               </label>
             </>
@@ -317,28 +340,28 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
         </section>
 
         <section className="settings-group">
-          <div className="settings-group__heading"><span>02</span><div><h2>Качество и ресурсы</h2><p>Баланс скорости и точности</p></div></div>
+          <div className="settings-group__heading"><span>02</span><div><h2>{t("group.quality")}</h2><p>{t("group.quality.sub")}</p></div></div>
           {capability === "sight" ? (
             <>
-              <label className="setting-field">Детализация
+              <label className="setting-field">{t("field.detail")}
                 <select value={draft.detail} onChange={(event) => update("detail", event.target.value)}>
-                  <option value="quick">Quick · быстро</option><option value="normal">Normal · баланс</option><option value="deep">Deep · максимум деталей</option>
+                  <option value="quick">{t("detail.quick")}</option><option value="normal">{t("detail.normal")}</option><option value="deep">{t("detail.deep")}</option>
                 </select>
               </label>
-              <label className="setting-field">Максимум vision-вызовов
+              <label className="setting-field">{t("field.maxCalls")}
                 <input type="number" min="1" max="32" value={draft.maxCallsPerImage} onChange={(event) => update("maxCallsPerImage", Number(event.target.value))} />
-                <small>Жёсткий лимит на одну визуальную задачу.</small>
+                <small>{t("maxCalls.hint")}</small>
               </label>
             </>
           ) : (
             <>
-              <label className="setting-field">Beam size
+              <label className="setting-field">{t("field.beam")}
                 <input type="number" min="1" max="10" value={draft.beamSize} onChange={(event) => update("beamSize", Number(event.target.value))} />
-                <small>Больше — точнее, но медленнее.</small>
+                <small>{t("beam.hint")}</small>
               </label>
-              <label className="setting-field">Чувствительность к речи
+              <label className="setting-field">{t("field.vad")}
                 <select value={String(draft.vadSensitivity)} onChange={(event) => update("vadSensitivity", Number(event.target.value))}>
-                  <option value="0.01">Высокая</option><option value="0.02">Сбалансированная</option><option value="0.04">Только уверенная речь</option>
+                  <option value="0.01">{t("vad.high")}</option><option value="0.02">{t("vad.balanced")}</option><option value="0.04">{t("vad.confident")}</option>
                 </select>
               </label>
             </>
@@ -347,101 +370,137 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
       </div>
 
       <section className="settings-toggles">
-        <SettingsToggle label={`Доступ к ${meta.dative}`} description="Разрешить подключённым моделям использовать эту возможность" checked={draft.enabled} onChange={(value) => update("enabled", value)} />
+        <SettingsToggle label={t(meta.accessKey)} description={t("toggle.accessDesc")} checked={draft.enabled} onChange={(value) => update("enabled", value)} />
         {capability === "sight" ? (
           <>
-            <SettingsToggle label="Кэшировать результаты" description="Повторный анализ того же изображения не расходует vision-вызовы" checked={draft.cache} onChange={(value) => update("cache", value)} />
-            <SettingsToggle label="Перепроверять ответ" description="Двойной проход: сверка результата с изображением и исправление ошибок (больше времени и расходов)" checked={draft.verify} onChange={(value) => update("verify", value)} />
+            <SettingsToggle label={t("toggle.cache")} description={t("toggle.cacheDesc")} checked={draft.cache} onChange={(value) => update("cache", value)} />
+            <SettingsToggle label={t("toggle.verify")} description={t("toggle.verifyDesc")} checked={draft.verify} onChange={(value) => update("verify", value)} />
           </>
         ) : (
           <>
-            <SettingsToggle label="Предзагружать модель" description="Быстрее первый ответ, но больше памяти в фоне" checked={draft.preloadModel} onChange={(value) => update("preloadModel", value)} />
-            <SettingsToggle label="Обрабатывать текст" description="Пунктуация, пробелы и очистка результата" checked={draft.postprocessText} onChange={(value) => update("postprocessText", value)} />
-            <SettingsToggle label="Копировать в буфер обмена" description="Сохранять расшифровку, даже если активное поле недоступно" checked={draft.copyToClipboard} onChange={(value) => update("copyToClipboard", value)} />
-            <SettingsToggle label="Вставлять в активное поле" description="После отпускания клавиш вставлять готовый текст туда, где находится курсор" checked={draft.pasteToActiveInput} onChange={(value) => update("pasteToActiveInput", value)} />
+            <SettingsToggle label={t("toggle.preload")} description={t("toggle.preloadDesc")} checked={draft.preloadModel} onChange={(value) => update("preloadModel", value)} />
+            <SettingsToggle label={t("toggle.postprocess")} description={t("toggle.postprocessDesc")} checked={draft.postprocessText} onChange={(value) => update("postprocessText", value)} />
+            <SettingsToggle label={t("toggle.clipboard")} description={t("toggle.clipboardDesc")} checked={draft.copyToClipboard} onChange={(value) => update("copyToClipboard", value)} />
+            <SettingsToggle label={t("toggle.paste")} description={t("toggle.pasteDesc")} checked={draft.pasteToActiveInput} onChange={(value) => update("pasteToActiveInput", value)} />
           </>
         )}
       </section>
 
       <div className="settings-actions">
-        <span>{capability === "hearing" ? "Настройки диктовки применятся сразу после сохранения." : "Изменения применятся к следующей задаче."}</span>
-        <button className="primary-button save-settings" type="button" disabled={saving} onClick={() => onSave(capability, draft)}><IconDeviceFloppy size={20} />{saving ? "Сохраняю…" : "Сохранить настройки"}</button>
+        <span>{t(capability === "hearing" ? "actions.hintHearing" : "actions.hintSight")}</span>
+        <button className="primary-button save-settings" type="button" disabled={saving} onClick={() => onSave(capability, draft)}><IconDeviceFloppy size={20} />{saving ? t("actions.saving") : t("actions.save")}</button>
       </div>
     </section>
   );
 }
 
 function UpdateCard({ state, version, onCheck, onInstall }) {
+  const t = useT();
   const available = state.phase === "available";
   const installing = state.phase === "downloading" || state.phase === "installing";
   const statusCopy = {
-    idle: "Sens проверит подписанный релиз на GitHub.",
-    checking: "Проверяем канал обновлений…",
-    current: "У вас последняя версия.",
-    available: `Доступна версия ${state.version}.`,
-    downloading: `Загрузка обновления${state.progress ? ` · ${state.progress}%` : ""}…`,
-    installing: "Установка обновления…",
-    error: state.error || "Не удалось проверить обновления.",
-  }[state.phase] || "Sens проверит подписанный релиз на GitHub.";
+    idle: t("update.idle"),
+    checking: t("update.checkingStatus"),
+    current: t("update.current"),
+    available: t("update.available", { version: state.version }),
+    downloading: t("update.downloading", { progress: state.progress ? ` · ${state.progress}%` : "" }),
+    installing: t("update.installing"),
+    error: state.error || t("update.errorFallback"),
+  }[state.phase] || t("update.idle");
   return (
-    <section className="update-card" aria-label="Обновления Sens">
+    <section className="update-card" aria-label={t("update.label")}>
       <div className="update-card__icon"><IconDownload size={25} /></div>
-      <div><p>Обновления</p><h3>Sens{version ? ` ${version}` : ""}</h3><span>{statusCopy}</span></div>
+      <div><p>{t("update.label")}</p><h3>Sens{version ? ` ${version}` : ""}</h3><span>{statusCopy}</span></div>
       {available ? (
-        <button className="primary-button update-button" type="button" onClick={onInstall}><IconDownload size={18} />Обновить до {state.version}</button>
+        <button className="primary-button update-button" type="button" onClick={onInstall}><IconDownload size={18} />{t("update.install", { version: state.version })}</button>
       ) : (
-        <button className="secondary-button update-button" type="button" disabled={state.phase === "checking" || installing} onClick={onCheck}><IconRefresh size={18} />{state.phase === "checking" ? "Проверяю…" : "Проверить обновления"}</button>
+        <button className="secondary-button update-button" type="button" disabled={state.phase === "checking" || installing} onClick={onCheck}><IconRefresh size={18} />{state.phase === "checking" ? t("update.checking") : t("update.check")}</button>
       )}
     </section>
   );
 }
 
+function LanguageCard() {
+  const t = useT();
+  const { lang, setLang } = useLanguage();
+  return (
+    <section className="language-card" aria-label={t("lang.label")}>
+      <div className="language-card__icon"><IconLanguage size={24} /></div>
+      <div><p>{t("lang.label")}</p><h3>{lang === "ru" ? "Русский" : "English"}</h3></div>
+      <select value={lang} onChange={(event) => setLang(event.target.value)} aria-label={t("lang.label")}>
+        <option value="ru">{t("lang.ru")}</option>
+        <option value="en">{t("lang.en")}</option>
+      </select>
+    </section>
+  );
+}
+
 function DetailContent({ view, settings, speechRuntime, runtimeStatus, updateState, onCheckUpdate, onInstallUpdate, onOpenCapability, openConnect }) {
+  const t = useT();
   if (view === "capabilities") return <CapabilitiesContent settings={settings} speechRuntime={speechRuntime} onOpenCapability={onOpenCapability} />;
   const appVersion = runtimeStatus?.version;
-  const data = {
-    integrations: [["Z-Code", "MCP · stdio", "Подключено", "15 инструментов Sens доступны модели"], ["Локальный broker", "Named pipe", "Готово", "Один процесс обслуживает все клиенты"]],
-    console: [["Broker", "Rust", "Готово", "Среднее время ответа 14 мс"], ["Sight worker", "Node.js", "Ожидание", "Запускается только при запросе"], ["Hearing worker", "Python", "Ожидание", "Изолирован и завершает дочерние процессы"]],
-    settings: [["Запускать вместе с Windows", "Система", "Включено", "Sens появляется в трее без открытия окна"], ["Локальная обработка", "Приватность", "Включено", "Данные не покидают выбранного провайдера"]],
-    about: [["Sens", appVersion ? `Версия ${appVersion}` : "Локальная сборка", "Локально", "Одна точка подключения для чувств модели"], ["Архитектура", "Rust + sidecars", "Расширяемо", "Новые чувства подключаются как модули"]],
+  const rows = {
+    integrations: [
+      ["integ.zcode.title", "integ.zcode.meta", "status.connected", "integ.zcode.desc"],
+      ["integ.broker.title", "integ.broker.meta", "status.ready", "integ.broker.desc"],
+    ],
+    console: [
+      ["console.broker.title", "console.broker.meta", "status.ready", "console.broker.desc"],
+      ["console.sight.title", "console.sight.meta", "status.waiting", "console.sight.desc"],
+      ["console.hearing.title", "console.hearing.meta", "status.waiting", "console.hearing.desc"],
+    ],
+    settings: [
+      ["settings.autostart.title", "settings.autostart.meta", "status.enabled", "settings.autostart.desc"],
+      ["settings.privacy.title", "settings.privacy.meta", "status.enabled", "settings.privacy.desc"],
+    ],
+    about: [
+      ["about.sens.title", "about.sens.meta", "home.local", "about.sens.desc"],
+      ["about.arch.title", "about.arch.meta", "status.ready", "about.arch.desc"],
+    ],
   };
   return (
     <section className="detail-panel">
       <div className="detail-list">
-        {(data[view] ?? []).map(([title, meta, status, description]) => (
-          <article className="detail-card" key={title}>
+        {(rows[view] ?? []).map(([titleKey, metaKey, statusKey, descriptionKey]) => (
+          <article className="detail-card" key={titleKey}>
             <div className="detail-card__icon">{view === "console" ? <IconActivity size={28} /> : <IconBox size={28} />}</div>
-            <div><p>{meta}</p><h3>{title}</h3><span>{description}</span></div>
-            <div className="detail-card__status"><StatusDot tone={status === "Ожидание" ? "idle" : "ready"} label={status} />{status}</div>
+            <div><p>{t(metaKey)}</p><h3>{t(titleKey)}</h3><span>{t(descriptionKey)}</span></div>
+            <div className="detail-card__status"><StatusDot tone={statusKey === "status.waiting" ? "idle" : "ready"} label={t(statusKey)} />{t(statusKey)}</div>
           </article>
         ))}
       </div>
-      {view === "settings" ? <UpdateCard state={updateState} version={runtimeStatus?.version} onCheck={onCheckUpdate} onInstall={onInstallUpdate} /> : null}
-      {view === "integrations" ? <button className="primary-button detail-cta" type="button" onClick={openConnect}><IconPlus size={20} />Добавить клиент</button> : null}
+      {view === "settings" ? (
+        <>
+          <LanguageCard />
+          <UpdateCard state={updateState} version={runtimeStatus?.version} onCheck={onCheckUpdate} onInstall={onInstallUpdate} />
+        </>
+      ) : null}
+      {view === "integrations" ? <button className="primary-button detail-cta" type="button" onClick={openConnect}><IconPlus size={20} />{t("integ.addClient")}</button> : null}
     </section>
   );
 }
 
 function TrayPanel({ minimized, onOpen, onDiagnostics, onQuit, runtimeStatus, runtimeError, speechRuntime, capabilitySettings }) {
+  const t = useT();
   const runtimeReady = runtimeStatus?.state === "ready";
   const sight = runtimeStatus?.capabilities?.find((item) => item.id === "sight");
-  const capabilityLabel = (capability, enabled) => !enabled ? "выключено" : capability?.state === "error" ? "ошибка" : "готово";
+  const capabilityLabel = (capability, enabled) => !enabled ? t("state.off") : capability?.state === "error" ? t("state.error") : t("state.ready");
   const sightLabel = capabilityLabel(sight, capabilitySettings.sight.enabled);
   const hearingState = hearingUiState(capabilitySettings.hearing.enabled, speechRuntime);
   const systemTone = runtimeError || hearingState.tone === "attention" ? "attention" : "ready";
   return (
-    <aside className="tray-panel" aria-label="Панель Sens в трее">
-      <header><div className="tray-brand"><BrandMark tone="light" size={44} /><strong>Sens</strong></div><StatusDot tone={systemTone} label="Состояние Sens" /></header>
-      <p className="tray-state">{runtimeError ? "Нужна диагностика" : minimized ? "Sens работает в фоне" : runtimeStatus && !runtimeReady ? "Sens запускается" : "Система готова"}</p>
+    <aside className="tray-panel" aria-label={t("tray.systemReady")}>
+      <header><div className="tray-brand"><BrandMark tone="light" size={44} /><strong>Sens</strong></div><StatusDot tone={systemTone} label={t("tray.systemReady")} /></header>
+      <p className="tray-state">{runtimeError ? t("tray.diagnostics") : minimized ? t("tray.background") : runtimeStatus && !runtimeReady ? t("tray.starting") : t("tray.systemReady")}</p>
       <div className="tray-separator" />
-      <div className="tray-status-row"><StatusDot tone={sightLabel === "готово" ? "ready" : sightLabel === "выключено" ? "idle" : "attention"} label={`Зрение: ${sightLabel}`} /><span>Зрение · {sightLabel}</span></div>
-      <div className="tray-status-row"><StatusDot tone={hearingState.tone} label={`Слух: ${hearingState.label}`} /><span>Слух · {hearingState.label}{speechRuntime?.running ? ` · ${formatHotkey(speechRuntime.hotkey || capabilitySettings.hearing.hotkey)}` : ""}</span></div>
+      <div className="tray-status-row"><StatusDot tone={sightLabel === t("state.ready") ? "ready" : sightLabel === t("state.off") ? "idle" : "attention"} label={`${t("tray.vision")}: ${sightLabel}`} /><span>{t("tray.vision")} · {sightLabel}</span></div>
+      <div className="tray-status-row"><StatusDot tone={hearingState.tone} label={`${t("tray.hearing")}: ${t(hearingState.labelKey)}`} /><span>{t("tray.hearing")} · {t(hearingState.labelKey)}{speechRuntime?.running ? ` · ${formatHotkey(speechRuntime.hotkey || capabilitySettings.hearing.hotkey)}` : ""}</span></div>
       <div className="tray-separator" />
-      <div className="tray-client-row"><span>Z-Code</span><StatusDot label="Z-Code подключён" /></div>
-      <button className="tray-open" type="button" onClick={onOpen}>Открыть</button>
+      <div className="tray-client-row"><span>{t("tray.zcode")}</span><StatusDot label={t("tray.zcode")} /></div>
+      <button className="tray-open" type="button" onClick={onOpen}>{t("tray.open")}</button>
       <div className="tray-secondary-actions">
-        <button className="tray-diagnostics" type="button" onClick={onDiagnostics}>Диагностика</button>
-        <button className="tray-quit" type="button" onClick={onQuit}><IconPower size={16} />Выйти</button>
+        <button className="tray-diagnostics" type="button" onClick={onDiagnostics}>{t("tray.diagnostics")}</button>
+        <button className="tray-quit" type="button" onClick={onQuit}><IconPower size={16} />{t("tray.quit")}</button>
       </div>
     </aside>
   );
@@ -469,11 +528,12 @@ export function App() {
   });
   const [updateState, setUpdateState] = useState({ phase: "idle", version: "", progress: 0, error: "" });
   const [pendingUpdate, setPendingUpdate] = useState(null);
+  const t = useT();
   const copy = useMemo(() => selectedCapability ? [
-    `Возможности / ${capabilityMeta[selectedCapability].name}`,
-    `Настройка ${capabilityMeta[selectedCapability].genitive}`,
-    capabilityMeta[selectedCapability].settingsDescription,
-  ] : viewCopy[view] ?? viewCopy.home, [view, selectedCapability]);
+    t(capabilityMeta[selectedCapability].pageKickerKey),
+    t(capabilityMeta[selectedCapability].pageTitleKey),
+    t(capabilityMeta[selectedCapability].settingsDescriptionKey),
+  ] : [t(`view.${view}.kicker`), t(`view.${view}.title`), t(`view.${view}.desc`)], [view, selectedCapability, t]);
 
   useEffect(() => {
     if (!nativeRuntime) return undefined;
@@ -521,7 +581,7 @@ export function App() {
     if (!nativeRuntime || trayView) return undefined;
     let removeListener;
     listen("sens:navigate", (event) => {
-      if (typeof event.payload === "string" && viewCopy[event.payload]) {
+      if (typeof event.payload === "string" && ["home", "capabilities", "integrations", "console", "settings", "about"].includes(event.payload)) {
         setSelectedCapability(null);
         setView(event.payload);
       }
@@ -537,9 +597,9 @@ export function App() {
     try {
       if (nativeRuntime) await invoke("connect_client", { client });
       setConnectOpen(false);
-      showToast(`${client} подключён к Sens`);
+      showToast(t("toast.connected", { client }));
     } catch (error) {
-      showToast(`Не удалось подключить ${client}: ${String(error)}`);
+      showToast(t("toast.connectFailed", { client, error: String(error) }));
     }
   }
 
@@ -552,9 +612,9 @@ export function App() {
       } else {
         setCapabilitySettings((previous) => ({ ...previous, [capability]: settings }));
       }
-      showToast(`${capabilityMeta[capability].name}: настройки сохранены`);
+      showToast(t("toast.saved", { name: t(capabilityMeta[capability].nameKey) }));
     } catch (error) {
-      showToast(`Не удалось сохранить: ${String(error)}`);
+      showToast(t("toast.saveFailed", { error: String(error) }));
     } finally {
       setSavingSettings(false);
     }
@@ -565,10 +625,10 @@ export function App() {
       if (!nativeRuntime) return;
       const status = await invoke("start_speech_runtime");
       setSpeechRuntime(status);
-      showToast("Слух запущен. Удерживайте Ctrl + Win, чтобы говорить.");
+      showToast(t("toast.speechStarted"));
     } catch (error) {
       setSpeechRuntime((previous) => ({ ...previous, running: false, error: String(error) }));
-      showToast(`Не удалось запустить слух: ${String(error)}`);
+      showToast(t("toast.speechFailed", { error: String(error) }));
     }
   }
 
@@ -624,36 +684,32 @@ export function App() {
     return Promise.resolve();
   };
 
-  if (trayView) {
-    return (
-      <main className="native-tray-stage">
-        <TrayPanel
-          minimized
-          runtimeStatus={runtimeStatus}
-          runtimeError={runtimeError}
-          speechRuntime={speechRuntime}
-          capabilitySettings={capabilitySettings}
-          onOpen={() => invoke("show_main", { view: "home" })}
-          onDiagnostics={() => invoke("show_main", { view: "console" })}
-          onQuit={() => invoke("quit_app")}
-        />
-      </main>
-    );
-  }
-
-  return (
+  const content = trayView ? (
+    <main className="native-tray-stage">
+      <TrayPanel
+        minimized
+        runtimeStatus={runtimeStatus}
+        runtimeError={runtimeError}
+        speechRuntime={speechRuntime}
+        capabilitySettings={capabilitySettings}
+        onOpen={() => invoke("show_main", { view: "home" })}
+        onDiagnostics={() => invoke("show_main", { view: "console" })}
+        onQuit={() => invoke("quit_app")}
+      />
+    </main>
+  ) : (
     <main className={`showcase-stage${nativeRuntime ? " showcase-stage--native" : ""}`}>
       {nativeRuntime ? null : <TrayPanel minimized={minimized} runtimeStatus={runtimeStatus} runtimeError={runtimeError} speechRuntime={speechRuntime} capabilitySettings={capabilitySettings} onOpen={() => setMinimized(false)} onDiagnostics={() => { setMinimized(false); navigate("console"); }} onQuit={() => setMinimized(true)} />}
       <section className={`app-window${minimized ? " app-window--minimized" : ""}`} aria-label="Sens">
-        <nav className="side-rail" aria-label="Навигация Sens">
-          <button className="rail-logo" type="button" onClick={() => navigate("home")} aria-label="Sens — главная"><BrandMark tone="dark" size={52} /></button>
+        <nav className="side-rail" aria-label="Sens">
+          <button className="rail-logo" type="button" onClick={() => navigate("home")} aria-label="Sens — home"><BrandMark tone="dark" size={52} /></button>
           <div className="rail-nav">
-            {navItems.map(({ id, label, icon: Icon }) => <button key={id} type="button" className={view === id ? "is-active" : ""} onClick={() => navigate(id)} aria-label={label} title={label}><Icon size={27} stroke={1.8} /></button>)}
+            {navItems.map(({ id, icon: Icon }) => <button key={id} type="button" className={view === id ? "is-active" : ""} onClick={() => navigate(id)} aria-label={t(`nav.${id}`)} title={t(`nav.${id}`)}><Icon size={27} stroke={1.8} /></button>)}
           </div>
         </nav>
         <div className="app-surface">
           <header className="titlebar" data-tauri-drag-region>
-            <div data-tauri-drag-region><span className="titlebar-product" data-tauri-drag-region>Sens</span><span className="titlebar-view" data-tauri-drag-region>{navItems.find((item) => item.id === view)?.label}</span></div>
+            <div data-tauri-drag-region><span className="titlebar-product" data-tauri-drag-region>Sens</span><span className="titlebar-view" data-tauri-drag-region>{navItems.find((item) => item.id === view) ? t(`nav.${view}`) : ""}</span></div>
             <WindowControls onMinimize={() => performWindowAction("minimize")} onMaximize={() => performWindowAction("maximize")} onClose={() => performWindowAction("hide")} />
           </header>
           <div className={`content-shell${view === "home" ? " content-shell--home" : ""}${selectedCapability ? " content-shell--capability" : ""}`}>
@@ -668,9 +724,11 @@ export function App() {
           </div>
         </div>
       </section>
-      {minimized ? <button className="restore-window" type="button" onClick={() => setMinimized(false)}>Окно Sens свёрнуто — открыть</button> : null}
+      {minimized ? <button className="restore-window" type="button" onClick={() => setMinimized(false)}>{t("restore.window")}</button> : null}
       {connectOpen ? <ConnectModal onClose={() => setConnectOpen(false)} onConnected={handleConnected} /> : null}
       {toast ? <div className="toast" role="status">{toast}</div> : null}
     </main>
   );
+
+  return content;
 }

@@ -470,6 +470,24 @@ button.detail-card { width: 100%; color: inherit; font: inherit; text-align: lef
 .update-button { min-width: 190px; white-space: nowrap; }
 .update-button:disabled { cursor: wait; opacity: 0.65; }
 
+.language-card {
+  display: grid;
+  min-height: 84px;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 14px 18px;
+  border: 2px solid var(--ink);
+  border-radius: 20px;
+  background: var(--cream);
+}
+.language-card__icon { display: grid; width: 42px; height: 42px; place-items: center; border: 2px solid var(--ink); border-radius: 12px; background: var(--stone); }
+.language-card p, .language-card h3 { margin: 0; }
+.language-card p { color: var(--fog); font-size: 12px; }
+.language-card h3 { margin-top: 2px; font-size: 16px; }
+.language-card select { height: 40px; padding: 0 10px; border: 2px solid var(--ink); border-radius: 10px; background: var(--cream); color: var(--ink); font-weight: 600; cursor: pointer; }
+
 .tray-panel {
   position: absolute;
   z-index: 4;
