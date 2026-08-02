@@ -398,11 +398,12 @@ function UpdateCard({ state, version, onCheck, onInstall }) {
 
 function DetailContent({ view, settings, speechRuntime, runtimeStatus, updateState, onCheckUpdate, onInstallUpdate, onOpenCapability, openConnect }) {
   if (view === "capabilities") return <CapabilitiesContent settings={settings} speechRuntime={speechRuntime} onOpenCapability={onOpenCapability} />;
+  const appVersion = runtimeStatus?.version;
   const data = {
     integrations: [["Z-Code", "MCP · stdio", "Подключено", "15 инструментов Sens доступны модели"], ["Локальный broker", "Named pipe", "Готово", "Один процесс обслуживает все клиенты"]],
     console: [["Broker", "Rust", "Готово", "Среднее время ответа 14 мс"], ["Sight worker", "Node.js", "Ожидание", "Запускается только при запросе"], ["Hearing worker", "Python", "Ожидание", "Изолирован и завершает дочерние процессы"]],
     settings: [["Запускать вместе с Windows", "Система", "Включено", "Sens появляется в трее без открытия окна"], ["Локальная обработка", "Приватность", "Включено", "Данные не покидают выбранного провайдера"]],
-    about: [["Sens", "Версия 1.1.0", "Локально", "Одна точка подключения для чувств модели"], ["Архитектура", "Rust + sidecars", "Расширяемо", "Новые чувства подключаются как модули"]],
+    about: [["Sens", appVersion ? `Версия ${appVersion}` : "Локальная сборка", "Локально", "Одна точка подключения для чувств модели"], ["Архитектура", "Rust + sidecars", "Расширяемо", "Новые чувства подключаются как модули"]],
   };
   return (
     <section className="detail-panel">
