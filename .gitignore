@@ -13,3 +13,4 @@ dist/
 .env.*
 !/.env.example
 .playwright-mcp/
+__pycache__/
