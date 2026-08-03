@@ -7,6 +7,14 @@ import os
 import sys
 from pathlib import Path
 
+# The broker does not set PYTHONUTF8, so stdout defaults to the ANSI code
+# page (cp1252 on this machine). GigaAM returns Cyrillic, and printing it
+# with `ensure_ascii=False` would raise UnicodeEncodeError and kill the
+# worker. Pin UTF-8 for the protocol channel regardless of the environment.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 speech_root_value = os.environ.get("SENS_SPEECH_ROOT")
 if not speech_root_value:
@@ -84,4 +92,9 @@ for line in sys.stdin:
             "requestId": request_id,
             "error": {"message": str(error), "type": type(error).__name__},
         }
-    print(json.dumps(response, ensure_ascii=False), flush=True)
+    try:
+        print(json.dumps(response, ensure_ascii=False), flush=True)
+    except Exception as error:  # noqa: BLE001 - stdout is broken; exit for the broker to restart us
+        sys.stderr.write(f"could not write response: {error}\n")
+        sys.stderr.flush()
+        raise SystemExit(3)
