@@ -199,13 +199,17 @@ impl HearingExecutor {
             ));
         }
         info!(request_id = %request.request_id, "Hearing request written");
-        process.stdin.flush().await.map_err(|error| {
-            runtime_error(
+        if let Err(error) = process.stdin.flush().await {
+            // The write may have landed in the pipe buffer while the worker
+            // process was already gone; drop the stale process so the next
+            // request respawns a fresh worker instead of writing to a corpse.
+            *guard = None;
+            return Err(runtime_error(
                 "hearing_disconnected",
                 format!("Hearing worker could not receive the request: {error}"),
                 "Retry; Sens will restart Hearing.",
-            )
-        })?;
+            ));
+        }
 
         let wait = Duration::from_millis(request.timeout_ms.unwrap_or(600_000));
         info!(request_id = %request.request_id, wait_ms = wait.as_millis(), "waiting for Hearing response");

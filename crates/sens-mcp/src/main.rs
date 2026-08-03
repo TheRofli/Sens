@@ -91,10 +91,16 @@ struct ArtifactArgs {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 struct HearArgs {
-    #[schemars(description = "Absolute path to a local audio file.")]
+    #[schemars(
+        description = "Absolute path to a local audio or video file (video uses its audio track)."
+    )]
     audio_path: String,
     language: Option<String>,
     model: Option<String>,
+    #[schemars(
+        description = "Extract this many evenly spaced stills from a video file; paths are returned in framePaths for visual discussion via sens_see."
+    )]
+    frames: Option<u32>,
     #[schemars(description = "Maximum operation time in milliseconds; defaults to 180000.")]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -238,7 +244,7 @@ impl SensMcp {
     }
 
     #[tool(
-        description = "Transcribe a supplied local audio file without clipboard, paste, or history side effects by default. Uses the multilingual Whisper model (auto language detection) unless another model is requested."
+        description = "Transcribe a supplied local audio or video file (video uses its audio track) without clipboard, paste, or history side effects by default. Uses the multilingual Whisper model (auto language detection) unless another model is requested. Pass frames to extract stills from a video so the visual content can be discussed via sens_see."
     )]
     async fn sens_hear(
         &self,

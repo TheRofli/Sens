@@ -33,6 +33,7 @@ from speech_app.engine_manager import EngineManager  # noqa: E402
 from speech_app.history import TranscriptHistory  # noqa: E402
 from speech_app.settings import SettingsStore  # noqa: E402
 from speech_app.transcription import (  # noqa: E402
+    extract_frames,
     settings_for_request,
     transcribe_audio_file,
 )
@@ -40,6 +41,19 @@ from speech_app.transcription import (  # noqa: E402
 
 engine = EngineManager()
 settings_store = SettingsStore()
+
+
+def _frames_output_dir(request_id: str) -> Path:
+    """Per-request frame output under the shared Sens artifacts root."""
+    root = os.environ.get("SENS_ARTIFACTS_ROOT")
+    if not root:
+        local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = str(Path(local) / "Sens" / "artifacts") if local else None
+    if not root:
+        raise RuntimeError("no artifacts root available for frames")
+    out = Path(root) / "hearing-frames" / request_id
+    out.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 def handle(message: dict[str, object]) -> dict[str, object]:
@@ -68,6 +82,17 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         raise ValueError("Hearing is disabled in Sens settings")
     settings = settings_for_request(base_settings, model=model)
     result = transcribe_audio_file(audio_path, settings=settings, engine=engine)
+    frames = int(payload.get("frames", 0) or 0)
+    if frames > 0:
+        try:
+            request_id = str(message.get("requestId", "unknown"))
+            result["framePaths"] = extract_frames(
+                audio_path,
+                count=frames,
+                out_dir=_frames_output_dir(request_id),
+            )
+        except Exception as error:  # noqa: BLE001 - frames are best-effort
+            result["framesError"] = f"{type(error).__name__}: {error}"
     save_to_history = bool(payload.get("saveToHistory", False))
     if save_to_history and result["text"]:
         TranscriptHistory(max_entries=settings.history_limit).add(str(result["text"]))
