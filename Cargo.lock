@@ -3183,7 +3183,7 @@ dependencies = [
 
 [[package]]
 name = "sens-broker"
-version = "1.1.9"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3198,7 +3198,7 @@ dependencies = [
 
 [[package]]
 name = "sens-connect"
-version = "1.1.9"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3208,7 +3208,7 @@ dependencies = [
 
 [[package]]
 name = "sens-core"
-version = "1.1.9"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "directories",
@@ -3221,7 +3221,7 @@ dependencies = [
 
 [[package]]
 name = "sens-desktop"
-version = "1.1.9"
+version = "1.2.0"
 dependencies = [
  "sens-broker",
  "sens-connect",
@@ -3241,7 +3241,7 @@ dependencies = [
 
 [[package]]
 name = "sens-mcp"
-version = "1.1.9"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "rmcp",
@@ -3256,7 +3256,7 @@ dependencies = [
 
 [[package]]
 name = "sens-protocol"
-version = "1.1.9"
+version = "1.2.0"
 dependencies = [
  "schemars 1.2.2",
  "serde",

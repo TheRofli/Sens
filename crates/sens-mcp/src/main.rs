@@ -102,6 +102,13 @@ struct WatchArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+struct FetchArgs {
+    #[schemars(description = "Video URL to fetch locally (e.g. a YouTube link).")]
+    url: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 struct HearArgs {
     #[schemars(
         description = "Absolute path to a local audio or video file (video uses its audio track)."
@@ -298,6 +305,23 @@ impl SensMcp {
         self.invoke(
             "sight",
             "watch",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Fetch a video URL (e.g. YouTube) into the local Sens cache and return its metadata plus local audio/video paths for further analysis via sens_hear (transcript) and sens_watch (vision). Repeat calls hit the cache."
+    )]
+    async fn sens_fetch(
+        &self,
+        Parameters(args): Parameters<FetchArgs>,
+    ) -> Result<String, McpError> {
+        self.invoke(
+            "hearing",
+            "fetch",
             serde_json::to_value(args).unwrap_or(Value::Null),
             false,
             None,

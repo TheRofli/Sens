@@ -39,6 +39,7 @@ from speech_app.transcription import (  # noqa: E402
     settings_for_request,
     transcribe_audio_file,
 )
+from speech_app.fetch_media import fetch_video  # noqa: E402
 
 
 engine = EngineManager()
@@ -58,6 +59,19 @@ def _frames_output_dir(request_id: str) -> Path:
     return out
 
 
+def _fetch_cache_dir() -> Path:
+    """Shared cache for media fetched from URLs, keyed by video id."""
+    root = os.environ.get("SENS_ARTIFACTS_ROOT")
+    if not root:
+        local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        root = str(Path(local) / "Sens" / "artifacts") if local else None
+    if not root:
+        raise RuntimeError("no artifacts root available for fetched media")
+    out = Path(root) / "fetched-media"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
 def handle(message: dict[str, object]) -> dict[str, object]:
     operation = str(message.get("operation", ""))
     payload = message.get("input") or {}
@@ -72,6 +86,11 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             "modelLoaded": engine.is_loaded,
             "modelControlledMicrophone": False,
         }
+    if operation == "fetch":
+        url = str(payload.get("url", "")).strip()
+        if not url:
+            raise ValueError("url is required")
+        return fetch_video(url, _fetch_cache_dir())
     if operation != "hear":
         raise ValueError(f"Unsupported Hearing operation: {operation}")
 
