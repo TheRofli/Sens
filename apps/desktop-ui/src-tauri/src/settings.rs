@@ -26,6 +26,7 @@ pub struct SightSettings {
     pub cache: bool,
     pub max_calls_per_image: u64,
     pub verify: bool,
+    pub video_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -144,6 +145,10 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
                 .and_then(|item| item.get("verify"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            video_enabled: vision
+                .and_then(|item| item.get("videoEnabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
         },
         hearing: HearingSettings {
             enabled: bool_field(&speech, "engine_enabled", true),
@@ -203,6 +208,7 @@ fn save_sight_at(path: &Path, settings: SightSettings) -> Result<(), String> {
         Value::Number(settings.max_calls_per_image.into()),
     );
     vision.insert("verify".into(), Value::Bool(settings.verify));
+    vision.insert("videoEnabled".into(), Value::Bool(settings.video_enabled));
     write_json(path, &document)
 }
 
@@ -478,6 +484,7 @@ mod tests {
                 cache: true,
                 max_calls_per_image: 6,
                 verify: true,
+                video_enabled: false,
             },
         )
         .expect("save");
@@ -485,6 +492,7 @@ mod tests {
         assert_eq!(document["providers"]["mimo"]["apiKey"], "secret");
         assert_eq!(document["vision"]["maxCallsPerImage"], 6);
         assert_eq!(document["vision"]["verify"], true);
+        assert_eq!(document["vision"]["videoEnabled"], false);
         assert_eq!(document["keep"], 7);
     }
 

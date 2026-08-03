@@ -90,6 +90,18 @@ struct ArtifactArgs {
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+struct WatchArgs {
+    #[schemars(description = "Absolute path to a local video file to analyze.")]
+    video_path: String,
+    #[schemars(
+        description = "Focused question about the video; defaults to a general description."
+    )]
+    prompt: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
 struct HearArgs {
     #[schemars(
         description = "Absolute path to a local audio or video file (video uses its audio track)."
@@ -274,6 +286,23 @@ impl SensMcp {
         request.no_store = !save_to_history;
         request.timeout_ms = timeout_ms;
         self.broker_request(BrokerRequest::Invoke { request }).await
+    }
+
+    #[tool(
+        description = "Analyze a local video file with the configured vision provider (requires Video analysis enabled in Sens settings; e.g. a Qwen VL model that accepts video input). Sends the whole clip to the provider and returns its answer."
+    )]
+    async fn sens_watch(
+        &self,
+        Parameters(args): Parameters<WatchArgs>,
+    ) -> Result<String, McpError> {
+        self.invoke(
+            "sight",
+            "watch",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
     }
 
     #[tool(

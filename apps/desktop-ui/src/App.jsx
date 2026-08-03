@@ -66,6 +66,7 @@ const defaultCapabilitySettings = {
     cache: true,
     maxCallsPerImage: 8,
     verify: false,
+    videoEnabled: false,
   },
   hearing: {
     enabled: true,
@@ -402,6 +403,7 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
           <>
             <SettingsToggle label={t("toggle.cache")} description={t("toggle.cacheDesc")} checked={draft.cache} onChange={(value) => update("cache", value)} />
             <SettingsToggle label={t("toggle.verify")} description={t("toggle.verifyDesc")} checked={draft.verify} onChange={(value) => update("verify", value)} />
+            <SettingsToggle label={t("toggle.video")} description={t("toggle.videoDesc")} checked={draft.videoEnabled} onChange={(value) => update("videoEnabled", value)} />
           </>
         ) : (
           <>

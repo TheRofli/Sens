@@ -19,6 +19,10 @@ const artifactOutputRoot = process.env.SENS_ARTIFACTS_ROOT
 
 const serviceUrl = pathToFileURL(path.join(eyeRoot, 'src', 'service.mjs')).href;
 const { runEye, readArtifactById } = await import(serviceUrl);
+const configUrl = pathToFileURL(path.join(eyeRoot, 'src', 'config.mjs')).href;
+const providerUrl = pathToFileURL(path.join(eyeRoot, 'src', 'provider.mjs')).href;
+const { loadConfig, resolveProvider, keyConfigured } = await import(configUrl);
+const { callChat } = await import(providerUrl);
 
 function assertSightEnabled() {
   const configPath = path.join(eyeRoot, 'config.json');
@@ -26,6 +30,55 @@ function assertSightEnabled() {
   if (config.vision?.enabled === false) {
     throw new Error('Sight is disabled in Sens settings.');
   }
+}
+
+function assertVideoEnabled() {
+  const configPath = path.join(eyeRoot, 'config.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf8'));
+  if (config.vision?.videoEnabled !== true) {
+    throw new Error('Video analysis is disabled in Sens settings.');
+  }
+}
+
+function videoMimeFor(videoPath) {
+  const ext = String(videoPath).split('.').pop().toLowerCase();
+  return {
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    mov: 'video/quicktime',
+    mkv: 'video/x-matroska',
+    avi: 'video/x-msvideo',
+    m4v: 'video/x-m4v',
+  }[ext] ?? 'video/mp4';
+}
+
+async function videoWatch(message) {
+  assertVideoEnabled();
+  const input = message.input ?? {};
+  const videoPath = String(input.videoPath ?? '').trim();
+  if (!videoPath) {
+    throw new Error('videoPath is required');
+  }
+  const config = loadConfig({ cwd: eyeRoot, moduleDir: eyeRoot });
+  const provider = resolveProvider(config, { model: input.model ?? null });
+  if (provider.capabilities?.auth !== false && !keyConfigured(provider.apiKey)) {
+    throw new Error(
+      `Provider "${provider.name}" has no configured API key. Set it in config.json or EYE_API_KEY.`,
+    );
+  }
+  const prompt = String(input.prompt ?? '').trim()
+    || 'Describe this video in detail: what happens, what is visible, and any on-screen text.';
+  const dataUri = `data:${videoMimeFor(videoPath)};base64,${readFileSync(videoPath).toString('base64')}`;
+  const response = await callChat(
+    provider,
+    [{ role: 'user', content: [
+      { type: 'video_url', video_url: { url: dataUri } },
+      { type: 'text', text: prompt },
+    ] }],
+    { jsonMode: false, maxTokens: 4000 },
+  );
+  const text = String(response?.choices?.[0]?.message?.content ?? '').trim();
+  return { text, model: provider.model, provider: provider.name, video: videoPath };
 }
 
 function buildOptions(message) {
@@ -81,6 +134,9 @@ async function handle(message) {
       usage: null,
       data: artifact.payload?.data ?? artifact.data ?? artifact,
     };
+  }
+  if (message.operation === 'watch') {
+    return videoWatch(message);
   }
   return compact(await runEye(buildOptions(message)));
 }
