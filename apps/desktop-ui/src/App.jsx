@@ -79,6 +79,9 @@ const defaultCapabilitySettings = {
     beamSize: 5,
     postprocessText: true,
     vadSensitivity: 0.02,
+    maxFrames: 12,
+    frameSize: 640,
+    defaultEvery: 0,
   },
   sightProviders: [
     { value: "mimo", label: "MiMo", model: "mimo-v2.5" },
@@ -368,6 +371,30 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
           )}
         </section>
       </div>
+
+      {capability === "hearing" ? (
+        <section className="settings-group">
+          <div className="settings-group__heading"><span>03</span><div><h2>{t("group.video")}</h2><p>{t("group.video.sub")}</p></div></div>
+          <label className="setting-field">{t("field.maxFrames")}
+            <input type="number" min="1" max="24" value={draft.maxFrames} onChange={(event) => update("maxFrames", Number(event.target.value))} />
+            <small>{t("maxFrames.hint")}</small>
+          </label>
+          <label className="setting-field">{t("field.frameSize")}
+            <select value={draft.frameSize} onChange={(event) => update("frameSize", Number(event.target.value))}>
+              <option value="320">{t("frameSize.small")} (320)</option>
+              <option value="480">480</option>
+              <option value="640">{t("frameSize.default")} (640)</option>
+              <option value="960">960</option>
+              <option value="1280">{t("frameSize.large")} (1280)</option>
+            </select>
+            <small>{t("frameSize.hint")}</small>
+          </label>
+          <label className="setting-field">{t("field.defaultEvery")}
+            <input type="number" min="0" max="60" step="0.5" value={draft.defaultEvery} onChange={(event) => update("defaultEvery", Number(event.target.value))} />
+            <small>{t("defaultEvery.hint")}</small>
+          </label>
+        </section>
+      ) : null}
 
       <section className="settings-toggles">
         <SettingsToggle label={t(meta.accessKey)} description={t("toggle.accessDesc")} checked={draft.enabled} onChange={(value) => update("enabled", value)} />

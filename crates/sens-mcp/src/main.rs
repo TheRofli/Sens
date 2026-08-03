@@ -102,9 +102,13 @@ struct HearArgs {
     )]
     frames: Option<u32>,
     #[schemars(
-        description = "Extract stills at exact video seconds instead of uniform spacing (e.g. [10.5, 42.0]); useful after reading the transcript segments. Takes precedence over frames."
+        description = "Extract stills at exact video seconds instead of uniform spacing (e.g. [10.5, 42.0]); useful after reading the transcript segments. Takes precedence over frames and every."
     )]
     at: Option<Vec<f64>>,
+    #[schemars(
+        description = "Extract one still every N seconds of video (e.g. 2.0 for a frame every 2 seconds), capped by the configured frame limit. Takes precedence over frames."
+    )]
+    every: Option<f64>,
     #[schemars(description = "Maximum operation time in milliseconds; defaults to 180000.")]
     timeout_ms: Option<u64>,
     #[serde(default)]
@@ -248,7 +252,7 @@ impl SensMcp {
     }
 
     #[tool(
-        description = "Transcribe a supplied local audio or video file (video uses its audio track) without clipboard, paste, or history side effects by default. Returns timestamped transcript segments. Uses the multilingual Whisper model (auto language detection) unless another model is requested. Pass frames (uniform) or at (exact seconds) to extract stills from a video so the visual content can be discussed via sens_see."
+        description = "Transcribe a supplied local audio or video file (video uses its audio track) without clipboard, paste, or history side effects by default. Returns timestamped transcript segments. Uses the multilingual Whisper model (auto language detection) unless another model is requested. Pass frames (uniform count), every (one still per N seconds), or at (exact seconds) to extract stills from a video so the visual content can be discussed via sens_see."
     )]
     async fn sens_hear(
         &self,

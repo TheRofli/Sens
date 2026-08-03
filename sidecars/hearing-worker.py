@@ -35,6 +35,7 @@ from speech_app.settings import SettingsStore  # noqa: E402
 from speech_app.transcription import (  # noqa: E402
     extract_frames,
     extract_frames_at,
+    extract_frames_every,
     settings_for_request,
     transcribe_audio_file,
 )
@@ -85,28 +86,41 @@ def handle(message: dict[str, object]) -> dict[str, object]:
     result = transcribe_audio_file(audio_path, settings=settings, engine=engine)
     at = payload.get("at")
     frames = int(payload.get("frames", 0) or 0)
-    if isinstance(at, list) and any(isinstance(v, (int, float)) for v in at):
-        # Exact-second stills requested by the model; takes precedence over
-        # the uniform `frames` count.
-        try:
-            request_id = str(message.get("requestId", "unknown"))
+    every = payload.get("every")
+    every_s = float(every) if isinstance(every, (int, float)) and float(every) > 0 else 0.0
+    if every_s <= 0 and settings.default_every > 0:
+        every_s = float(settings.default_every)
+    max_frames = max(1, int(getattr(settings, "max_frames", 12) or 12))
+    frame_size = max(320, int(getattr(settings, "frame_size", 640) or 640))
+    try:
+        request_id = str(message.get("requestId", "unknown"))
+        out_dir = _frames_output_dir(request_id)
+        if isinstance(at, list) and any(isinstance(v, (int, float)) for v in at):
+            # Exact-second stills requested by the model; highest priority.
             result["framePaths"] = extract_frames_at(
                 audio_path,
-                [float(v) for v in at if isinstance(v, (int, float))],
-                out_dir=_frames_output_dir(request_id),
+                [float(v) for v in at if isinstance(v, (int, float))][:max_frames],
+                out_dir=out_dir,
+                max_side=frame_size,
             )
-        except Exception as error:  # noqa: BLE001 - frames are best-effort
-            result["framesError"] = f"{type(error).__name__}: {error}"
-    elif frames > 0:
-        try:
-            request_id = str(message.get("requestId", "unknown"))
+        elif every_s > 0:
+            # One still every N seconds (model or default setting).
+            result["framePaths"] = extract_frames_every(
+                audio_path,
+                every_s,
+                max_count=max_frames,
+                out_dir=out_dir,
+                max_side=frame_size,
+            )
+        elif frames > 0:
             result["framePaths"] = extract_frames(
                 audio_path,
-                count=frames,
-                out_dir=_frames_output_dir(request_id),
+                count=min(frames, max_frames),
+                out_dir=out_dir,
+                max_side=frame_size,
             )
-        except Exception as error:  # noqa: BLE001 - frames are best-effort
-            result["framesError"] = f"{type(error).__name__}: {error}"
+    except Exception as error:  # noqa: BLE001 - frames are best-effort
+        result["framesError"] = f"{type(error).__name__}: {error}"
     save_to_history = bool(payload.get("saveToHistory", False))
     if save_to_history and result["text"]:
         TranscriptHistory(max_entries=settings.history_limit).add(str(result["text"]))

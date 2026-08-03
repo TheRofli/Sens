@@ -220,6 +220,9 @@ impl SpeechRuntime {
             "beam_size": settings.beam_size,
             "postprocess_text": settings.postprocess_text,
             "vad_sensitivity": settings.vad_sensitivity,
+            "max_frames": settings.max_frames,
+            "frame_size": settings.frame_size,
+            "default_every": settings.default_every,
         });
         self.request_json("POST", "/api/settings", Some(&payload))?;
         if settings.enabled && settings.preload_model {

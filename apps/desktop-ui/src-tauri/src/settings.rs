@@ -42,6 +42,10 @@ pub struct HearingSettings {
     pub beam_size: u64,
     pub postprocess_text: bool,
     pub vad_sensitivity: f64,
+    // Video still extraction limits (applied by the hearing worker).
+    pub max_frames: u64,
+    pub frame_size: u64,
+    pub default_every: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +160,12 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
                 .get("vad_sensitivity")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.02),
+            max_frames: u64_field(&speech, "max_frames", 12),
+            frame_size: u64_field(&speech, "frame_size", 640),
+            default_every: speech
+                .get("default_every")
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0),
         },
         sight_providers,
         hearing_models: hearing_models(),
@@ -227,6 +237,15 @@ fn save_hearing_at(path: &Path, settings: HearingSettings) -> Result<(), String>
         Value::Bool(settings.postprocess_text),
     );
     root.insert("vad_sensitivity".into(), json!(settings.vad_sensitivity));
+    root.insert(
+        "max_frames".into(),
+        Value::Number(settings.max_frames.into()),
+    );
+    root.insert(
+        "frame_size".into(),
+        Value::Number(settings.frame_size.into()),
+    );
+    root.insert("default_every".into(), json!(settings.default_every));
     write_json(path, &document)
 }
 
@@ -261,6 +280,15 @@ fn validate_hearing(settings: &HearingSettings) -> Result<(), String> {
     }
     if !(0.001..=0.1).contains(&settings.vad_sensitivity) {
         return Err("Чувствительность VAD должна быть от 0.001 до 0.1".into());
+    }
+    if !(1..=24).contains(&settings.max_frames) {
+        return Err("Лимит кадров должен быть от 1 до 24".into());
+    }
+    if !(320..=1280).contains(&settings.frame_size) {
+        return Err("Размер кадра должен быть от 320 до 1280".into());
+    }
+    if !(0.0..=60.0).contains(&settings.default_every) {
+        return Err("Интервал кадров должен быть от 0 до 60 секунд".into());
     }
     Ok(())
 }
@@ -479,6 +507,9 @@ mod tests {
                 beam_size: 4,
                 postprocess_text: true,
                 vad_sensitivity: 0.03,
+                max_frames: 12,
+                frame_size: 640,
+                default_every: 0.0,
             },
         )
         .expect("save");
@@ -513,5 +544,9 @@ mod tests {
         assert_eq!(value["copyToClipboard"], true);
         assert_eq!(value["pasteToActiveInput"], true);
         assert_eq!(value["suppressHotkey"], false);
+        // Video still defaults: model may ask for frames, never above these.
+        assert_eq!(value["maxFrames"], 12);
+        assert_eq!(value["frameSize"], 640);
+        assert_eq!(value["defaultEvery"], 0.0);
     }
 }
