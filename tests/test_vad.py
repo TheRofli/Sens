@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from speech_app.vad import trim_silence
+from speech_app.vad import split_audio, trim_silence
 
 
 def _tone(freq_hz: float, duration_s: float, sample_rate: int = 16000) -> np.ndarray:
@@ -49,6 +49,83 @@ class TrimSilenceTests(unittest.TestCase):
         out = trim_silence(samples, sample_rate=16000, sensitivity=0.02)
         # Total kept should include both tones + the pause (~1.1s).
         self.assertGreater(out.size, int(1.0 * 16000))
+
+
+class SplitAudioTests(unittest.TestCase):
+    def test_short_audio_stays_in_one_chunk(self):
+        samples = _tone(440.0, 3.0)
+        chunks = split_audio(samples, sample_rate=16000, max_duration_s=24.0)
+        self.assertEqual(len(chunks), 1)
+        np.testing.assert_array_equal(chunks[0], samples)
+
+    def test_empty_audio_returns_single_empty_chunk(self):
+        chunks = split_audio(np.array([], dtype=np.float32), sample_rate=16000, max_duration_s=24.0)
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].size, 0)
+
+    def test_continuous_tone_is_hard_cut_at_limit(self):
+        samples = _tone(440.0, 60.0)
+        chunks = split_audio(samples, sample_rate=16000, max_duration_s=24.0)
+        self.assertEqual(len(chunks), 3)
+        for chunk in chunks[:-1]:
+            self.assertEqual(chunk.size, 24 * 16000)
+        self.assertEqual(sum(chunk.size for chunk in chunks), samples.size)
+
+    def test_cut_lands_in_silence_gap_before_the_limit(self):
+        # Tone 20 s, silence 3 s, then more tone: the 24 s limit falls inside
+        # the pause, so the cut must land there and not split a word.
+        samples = np.concatenate(
+            [_tone(440.0, 20.0), _silence(3.0), _tone(440.0, 40.0)]
+        )
+        chunks = split_audio(samples, sample_rate=16000, max_duration_s=24.0)
+        self.assertGreater(len(chunks), 1)
+        first = chunks[0]
+        self.assertLess(first.size, 24 * 16000)
+        self.assertGreater(first.size, 22 * 16000)
+        self.assertEqual(sum(chunk.size for chunk in chunks), samples.size)
+
+    def test_overlap_reuses_tail_of_previous_chunk(self):
+        samples = _tone(440.0, 60.0)
+        chunks = split_audio(
+            samples,
+            sample_rate=16000,
+            max_duration_s=24.0,
+            min_chunk_s=2.0,
+            overlap_s=1.5,
+        )
+        self.assertGreater(len(chunks), 1)
+        overlap = int(1.5 * 16000)
+        for left, right in zip(chunks, chunks[1:]):
+            # The previous chunk's tail is the next chunk's head, so a word
+            # split by the cut is still heard whole by the next chunk.
+            np.testing.assert_array_equal(left[-overlap:], right[:overlap])
+
+    def test_overlap_cut_still_prefers_silence_gap(self):
+        samples = np.concatenate(
+            [_tone(440.0, 20.0), _silence(3.0), _tone(440.0, 40.0)]
+        )
+        chunks = split_audio(
+            samples,
+            sample_rate=16000,
+            max_duration_s=24.0,
+            min_chunk_s=2.0,
+            overlap_s=1.5,
+        )
+        self.assertGreater(len(chunks), 1)
+        first = chunks[0]
+        self.assertLess(first.size, 24 * 16000)
+        self.assertGreater(first.size, 22 * 16000)
+
+    def test_overlap_must_be_smaller_than_min_chunk(self):
+        samples = _tone(440.0, 60.0)
+        with self.assertRaises(ValueError):
+            split_audio(
+                samples,
+                sample_rate=16000,
+                max_duration_s=24.0,
+                min_chunk_s=1.0,
+                overlap_s=1.5,
+            )
 
 
 if __name__ == "__main__":

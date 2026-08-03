@@ -116,6 +116,21 @@ class FakeApp:
     def copy_last_transcript(self):
         self.copied.append("LAST")
 
+    def transcribe_file(
+        self, audio_path, *, model=None, language=None, save_to_history=False
+    ):
+        return {
+            "text": "agent transcript",
+            "model": model or self.settings.model,
+            "engine": "fake",
+            "sample_rate": 16000,
+            "duration_seconds": 1.5,
+            "elapsed_ms": 12,
+            "audio_path": audio_path,
+            "language": language,
+            "saved": save_to_history,
+        }
+
     # UI threading helper: execute synchronously (tests run single-threaded).
     def post_ui_sync(self, callback, timeout=5.0):
         return callback()
@@ -160,6 +175,17 @@ class SpeechAPIServerTests(unittest.TestCase):
         # model mirrors whatever the (shared) app currently holds; the exact
         # value depends on test execution order, so assert consistency.
         self.assertEqual(body["model"], self.app.settings.model)
+        self.assertEqual(body["hotkey"], self.app.settings.hotkey)
+        self.assertFalse(body["managed"])
+
+    def test_health_and_capabilities_are_explicit(self):
+        status, health = self._get("/api/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(health["ok"])
+        status, capabilities = self._get("/api/capabilities")
+        self.assertEqual(status, 200)
+        self.assertTrue(capabilities["audio_file_transcription"])
+        self.assertFalse(capabilities["model_controlled_microphone"])
 
     def test_get_settings_returns_defaults(self):
         status, body = self._get("/api/settings")
@@ -212,10 +238,36 @@ class SpeechAPIServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("id2", self.app.copied)
 
+    def test_transcribe_file_has_explicit_side_effect_flag(self):
+        status, body = self._post(
+            "/api/transcribe/file",
+            {"audio_path": "C:/audio.wav", "save_to_history": False},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["result"]["text"], "agent transcript")
+        self.assertFalse(body["result"]["saved"])
+
     def test_unknown_path_returns_404(self):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(self.base + "/api/nope", timeout=3)
         self.assertEqual(ctx.exception.code, 404)
+
+    def test_optional_bearer_token_protects_managed_api(self):
+        server = SpeechAPIServer(self.app, auth_token="test-secret")
+        server.start()
+        try:
+            url = f"http://127.0.0.1:{server.port}/api/health"
+            with self.assertRaises(urllib.error.HTTPError) as ctx:
+                urllib.request.urlopen(url, timeout=3)
+            self.assertEqual(ctx.exception.code, 401)
+
+            request = urllib.request.Request(
+                url, headers={"Authorization": "Bearer test-secret"}
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                self.assertEqual(response.status, 200)
+        finally:
+            server.stop()
 
 
 if __name__ == "__main__":

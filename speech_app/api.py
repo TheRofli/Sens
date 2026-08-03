@@ -22,7 +22,9 @@ POST /api/action/copy_last copy the latest transcript
 
 from __future__ import annotations
 
+import hmac
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
@@ -37,8 +39,9 @@ if TYPE_CHECKING:
 class SpeechAPIServer:
     """Owns the ThreadingHTTPServer bound to an ephemeral port."""
 
-    def __init__(self, app: "SpeechApp") -> None:
+    def __init__(self, app: "SpeechApp", auth_token: str | None = None) -> None:
         self.app = app
+        self.auth_token = auth_token or os.environ.get("SPEECH_API_TOKEN") or None
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self.port: int = 0
@@ -52,6 +55,7 @@ class SpeechAPIServer:
             pass
 
         _Handler.app = app  # type: ignore[attr-defined]
+        _Handler.auth_token = self.auth_token
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.port = self._httpd.server_address[1]
         self._write_port(self.port)
@@ -90,6 +94,7 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
     """BaseHTTPRequestHandler subclass; ``app`` is set by SpeechAPIServer."""
 
     app: "SpeechApp"  # type: ignore[assignment]
+    auth_token: str | None = None
 
     # Quiet logging: this is a local control channel, not a public server.
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
@@ -116,14 +121,52 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
         except (json.JSONDecodeError, UnicodeDecodeError):
             return None
 
+    def _authorized(self) -> bool:
+        expected = self.auth_token
+        if not expected:
+            return True
+        supplied = self.headers.get("Authorization", "")
+        prefix = "Bearer "
+        if not supplied.startswith(prefix):
+            return False
+        return hmac.compare_digest(supplied[len(prefix) :], expected)
+
+    def _require_authorized(self) -> bool:
+        if self._authorized():
+            return True
+        self._send_json(401, {"error": "unauthorized"})
+        return False
+
     # -- routing ---------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._require_authorized():
+            return
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         query = parse_qs(parsed.query)
         try:
-            if path == "/api/status":
+            if path == "/api/health":
+                self._send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "service": "speech",
+                        "version": "1.0.0",
+                        "managed": bool(os.environ.get("SPEECH_MANAGED")),
+                    },
+                )
+            elif path == "/api/capabilities":
+                self._send_json(
+                    200,
+                    {
+                        "audio_file_transcription": True,
+                        "interactive_dictation": True,
+                        "model_controlled_microphone": False,
+                        "system_output_default": False,
+                    },
+                )
+            elif path == "/api/status":
                 self._send_json(200, self._status())
             elif path == "/api/settings":
                 self._send_json(200, self.app.get_settings_values())
@@ -139,6 +182,8 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(exc)})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        if not self._require_authorized():
+            return
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
         body = self._read_json()
@@ -154,6 +199,7 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
                 "/api/model/install": self._post_model_install,
                 "/api/history/copy": self._post_history_copy,
                 "/api/action/copy_last": self._post_copy_last,
+                "/api/transcribe/file": self._post_transcribe_file,
             }.get(path)
             if handler is None:
                 self._send_json(404, {"error": "not found"})
@@ -169,6 +215,7 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
         preset = app.model_status()
         return {
             "running": True,
+            "managed": bool(os.environ.get("SPEECH_MANAGED")),
             "engine_enabled": app.engine_enabled(),
             "model_state": app._model_state_label(),  # noqa: SLF001
             "model": app.current_model(),
@@ -178,6 +225,7 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
             "model_installed": preset.installed,
             "model_size_label": preset.size_label if preset.installed else "Not installed",
             "transcribing": getattr(app, "transcribing", False),
+            "hotkey": app.settings.hotkey,
             "device": app.current_device(),
             "backend": app.current_backend(),
             "status_text": app.status_text(),
@@ -248,6 +296,22 @@ class SpeechAPIHandler(BaseHTTPRequestHandler):
     def _post_copy_last(self, _body: Any) -> None:
         self.app.post_ui_sync(lambda: self.app.copy_last_transcript())
         self._send_json(200, {"ok": True})
+
+    def _post_transcribe_file(self, body: Any) -> None:
+        if not isinstance(body, dict):
+            self._send_json(400, {"error": "expected a JSON object"})
+            return
+        audio_path = str(body.get("audio_path", "")).strip()
+        if not audio_path:
+            self._send_json(400, {"error": "audio_path is required"})
+            return
+        result = self.app.transcribe_file(
+            audio_path,
+            model=str(body["model"]) if body.get("model") else None,
+            language=str(body["language"]) if body.get("language") else None,
+            save_to_history=bool(body.get("save_to_history", False)),
+        )
+        self._send_json(200, {"ok": True, "result": result})
 
 
 def _first_int(values: list[str] | None, default: int) -> int:

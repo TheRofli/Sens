@@ -27,8 +27,56 @@ from typing import Any
 import numpy as np
 
 from ..settings import AppSettings
+from ..vad import split_audio
 from .base import EngineUnavailable
 from .parakeet import _write_temp_wav
+
+# GigaAM's own transcribe() rejects audio longer than LONGFORM_THRESHOLD
+# (25 s in modeling_gigaam.py). Chunk below that limit and join the parts;
+# the app's RMS VAD places cuts in silence gaps so words stay intact, and a
+# small overlap lets the next chunk hear a cut word whole (the duplicate seam
+# is removed by _merge_transcript_parts).
+_MAX_CHUNK_SECONDS = 24.0
+_MIN_CHUNK_SECONDS = 2.0
+_OVERLAP_SECONDS = 1.5
+
+
+def _normalise_word(word: str) -> str:
+    return word.strip(".,!?;:…\"'()[]«»—-").lower()
+
+
+def _merge_transcript_parts(parts: list[str]) -> str:
+    """Join chunk transcripts, dropping the duplicated overlap region.
+
+    Consecutive chunks share an audio overlap, so the same words appear at
+    the end of one part and the start of the next. The longest matching
+    suffix/prefix (case- and punctuation-insensitive) is removed from the
+    join; at least two words must match so a naturally repeated word is not
+    eaten. A word mangled differently at the seam (rare) is left as-is.
+    """
+    merged = ""
+    for part in parts:
+        if not part:
+            continue
+        if not merged:
+            merged = part
+            continue
+        a_words = merged.split()
+        b_words = part.split()
+        max_match = min(len(a_words), len(b_words))
+        match = 0
+        for size in range(max_match, 0, -1):
+            if all(
+                _normalise_word(left) == _normalise_word(right)
+                for left, right in zip(a_words[-size:], b_words[:size])
+            ):
+                match = size
+                break
+        if match >= 2:
+            merged = " ".join(a_words[:-match]) + " " + part
+        else:
+            merged += " " + part
+    return merged.strip()
 
 
 class GigaAMEngine:
@@ -96,12 +144,23 @@ class GigaAMEngine:
             assert self._model is not None
 
         audio = np.asarray(samples, dtype=np.float32).reshape(-1)
-        wav_path = _write_temp_wav(audio, sample_rate)
-        try:
-            text = self._model.transcribe(str(wav_path))
-        finally:
+        parts = []
+        for chunk in split_audio(
+            audio,
+            sample_rate,
+            max_duration_s=_MAX_CHUNK_SECONDS,
+            sensitivity=settings.vad_sensitivity,
+            min_chunk_s=_MIN_CHUNK_SECONDS,
+            overlap_s=_OVERLAP_SECONDS,
+        ):
+            wav_path = _write_temp_wav(chunk, sample_rate)
             try:
-                wav_path.unlink()
-            except OSError:
-                pass
-        return str(text or "").strip()
+                text = self._model.transcribe(str(wav_path))
+            finally:
+                try:
+                    wav_path.unlink()
+                except OSError:
+                    pass
+            if text:
+                parts.append(str(text).strip())
+        return _merge_transcript_parts(parts)

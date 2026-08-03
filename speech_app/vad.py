@@ -98,3 +98,59 @@ def trim_silence(
     if trimmed.size < min_samples:
         return np.array([], dtype=np.float32)
     return trimmed.astype(np.float32, copy=False)
+
+
+def split_audio(
+    samples: np.ndarray,
+    sample_rate: int,
+    max_duration_s: float,
+    sensitivity: float = 0.02,
+    min_chunk_s: float = 1.0,
+    overlap_s: float = 0.0,
+) -> list[np.ndarray]:
+    """Split audio into chunks no longer than ``max_duration_s``.
+
+    Used for models that reject long inputs (GigaAM refuses audio above its
+    long-form threshold). Cuts are placed inside silence gaps — frames below
+    the RMS threshold — so words are not split; when no gap is available
+    before the limit, the chunk is hard-cut at the limit. The final chunk may
+    be shorter than the rest.
+
+    ``overlap_s`` reuses the tail of each previous chunk at the start of the
+    next one, so a word split by a hard cut is still heard whole; the caller
+    removes the duplicated seam from the transcriptions. ``overlap_s`` must be
+    smaller than ``min_chunk_s`` so every cut still makes progress.
+    """
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    max_samples = int(max_duration_s * sample_rate)
+    min_samples = int(min_chunk_s * sample_rate)
+    overlap_samples = int(overlap_s * sample_rate)
+    if overlap_samples >= min_samples:
+        raise ValueError("overlap_s must be smaller than min_chunk_s")
+    if audio.size <= max_samples or max_samples <= min_samples:
+        return [audio]
+
+    energies, frame_size = _energy_frames(audio, sample_rate)
+    threshold = max(float(sensitivity), 1e-6)
+    silence = energies < threshold
+
+    chunks: list[np.ndarray] = []
+    start = 0
+    while start < audio.size:
+        target = min(start + max_samples, audio.size)
+        if target == audio.size:
+            chunks.append(audio[start:])
+            break
+        cut = target
+        lo_frame = (start + min_samples) // frame_size
+        hi_frame = target // frame_size
+        if lo_frame < hi_frame:
+            # Prefer the latest silence frame before the limit so the cut
+            # lands in a pause rather than mid-word.
+            for frame in range(hi_frame - 1, lo_frame - 1, -1):
+                if silence[frame]:
+                    cut = (frame + 1) * frame_size
+                    break
+        chunks.append(audio[start:cut])
+        start = cut - overlap_samples
+    return chunks

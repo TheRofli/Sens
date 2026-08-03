@@ -9,6 +9,7 @@ import threading
 import traceback
 import tkinter as tk
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from .audio import AudioRecorder
@@ -33,6 +34,7 @@ from .settings import default_data_dir
 from .single_instance import SingleInstanceLock
 from .system import SystemActions
 from .textpost import postprocess
+from .transcription import settings_for_request, transcribe_audio_file
 from .tray import TrayController
 from .vad import trim_silence
 from .visuals import enable_dpi_awareness, set_windows_app_id
@@ -57,6 +59,7 @@ class SpeechApp:
             paste_active_input=self.system.paste_into_active_input,
         )
         self.engine = EngineManager()
+        self.engine_lock = threading.Lock()
         self.resource_monitor = ProcessResourceMonitor()
         self.overlay = VoiceOverlay(self.root)
         self.tray = TrayController(self)
@@ -73,9 +76,14 @@ class SpeechApp:
         self.api_server = None
         self._write_runtime_state("unloaded")
 
-    def run(self, show_window: bool = False) -> None:
+    def run(self, show_window: bool = False, managed: bool = False) -> None:
+        if managed:
+            os.environ["SPEECH_MANAGED"] = "1"
         self.root.after(30, self._pump_ui_queue)
-        tray_started = self.tray.start()
+        # In Sens-managed mode the Sens shell owns the only tray and primary
+        # window. Speech keeps hotkeys, the lightweight recording overlay,
+        # local ASR, and its authenticated control API.
+        tray_started = True if managed else self.tray.start()
         self._start_hotkeys()
         if not tray_started:
             self.last_error = "pystray is not installed; tray mode is unavailable."
@@ -180,12 +188,22 @@ class SpeechApp:
         self.model_loading = True
         self._write_runtime_state("loading")
         self.post_ui(lambda: self._model_state_changed(f"{label} loading"))
-        threading.Thread(target=self._load_model_worker, daemon=True).start()
+        settings_snapshot = replace(self.settings)
+        threading.Thread(
+            target=self._load_model_worker,
+            args=(settings_snapshot,),
+            daemon=True,
+        ).start()
 
     def unload_model(self) -> None:
         label = self.current_model_label()
         self.model_loading = False
-        self.engine.unload()
+        engine_lock = getattr(self, "engine_lock", None)
+        if engine_lock is None:
+            self.engine.unload()
+        else:
+            with engine_lock:
+                self.engine.unload()
         self._write_runtime_state("unloaded")
         self.post_ui(lambda: self._model_state_changed(f"{label} unloaded"))
 
@@ -341,7 +359,12 @@ class SpeechApp:
             except Exception:
                 pass
             self.api_server = None
-        self.engine.unload()
+        engine_lock = getattr(self, "engine_lock", None)
+        if engine_lock is None:
+            self.engine.unload()
+        else:
+            with engine_lock:
+                self.engine.unload()
         self._write_runtime_state("unloaded", running=False)
         self.tray.stop()
         self.root.quit()
@@ -387,18 +410,23 @@ class SpeechApp:
         samples = self.recorder.stop()
         self.overlay.show_transcribing()
         self.transcribing = True
+        settings_snapshot = replace(self.settings)
         threading.Thread(
             target=self._transcribe_worker,
-            args=(samples, self.settings.sample_rate, self.settings),
+            args=(samples, settings_snapshot.sample_rate, settings_snapshot),
             daemon=True,
         ).start()
 
-    def _load_model_worker(self) -> None:
+    def _load_model_worker(
+        self, settings_snapshot: AppSettings | None = None
+    ) -> None:
+        settings_snapshot = settings_snapshot or replace(self.settings)
         try:
-            self.engine.load(self.settings)
+            with self.engine_lock:
+                self.engine.load(settings_snapshot)
         except Exception as exc:
             self.last_error = str(exc)
-            self.post_ui(lambda: self._model_load_failed(exc))
+            self.post_ui(lambda error=exc: self._model_load_failed(error))
             return
         self.post_ui(self._model_load_succeeded)
 
@@ -464,7 +492,10 @@ class SpeechApp:
                     lambda: self._publish_transcript("", settings_snapshot)
                 )
                 return
-            raw_text = self.engine.transcribe(trimmed, sample_rate, settings_snapshot)
+            with self.engine_lock:
+                raw_text = self.engine.transcribe(
+                    trimmed, sample_rate, settings_snapshot
+                )
             text = (
                 postprocess(raw_text)
                 if settings_snapshot.postprocess_text
@@ -488,6 +519,27 @@ class SpeechApp:
             return
 
         self.post_ui(lambda: self._publish_transcript(text, settings_snapshot))
+
+    def transcribe_file(
+        self,
+        audio_path: str,
+        *,
+        model: str | None = None,
+        language: str | None = None,
+        save_to_history: bool = False,
+    ) -> dict[str, object]:
+        """Transcribe one local file without clipboard or paste side effects."""
+        del language  # Reserved for engines that support an explicit language.
+        settings_snapshot = settings_for_request(self.settings, model=model)
+        with self.engine_lock:
+            result = transcribe_audio_file(
+                audio_path,
+                settings=settings_snapshot,
+                engine=self.engine,
+            )
+        if save_to_history and result["text"]:
+            self.history.add(str(result["text"]))
+        return result
 
     def _publish_transcript(
         self, text: str, settings_snapshot: AppSettings
@@ -598,6 +650,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Open the Speech window immediately after starting the tray app.",
     )
+    run_parser.add_argument(
+        "--managed",
+        action="store_true",
+        help="Run under Sens without starting the legacy Speech tray/window.",
+    )
     subparsers.add_parser("diagnose", help="Check Python and dependency state.")
 
     parakeet = subparsers.add_parser(
@@ -665,7 +722,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     try:
         app = SpeechApp()
-        app.run(show_window=bool(getattr(args, "show_window", False)))
+        app.run(
+            show_window=bool(getattr(args, "show_window", False)),
+            managed=bool(getattr(args, "managed", False)),
+        )
         return 0
     finally:
         lock.release()
