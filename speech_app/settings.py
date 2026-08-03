@@ -29,6 +29,10 @@ class AppSettings:
     preload_model: bool = True
     sample_rate: int = 16000
     vad_sensitivity: float = 0.02
+    # Gate whisper segments behind faster-whisper's Silero VAD. Tuned for
+    # clean dictation speech; file transcription turns it off because the
+    # VAD rejects vocoded/sung vocals on top of music.
+    vad_filter: bool = True
     history_limit: int = 100
     # Quality / generation params (applied where supported by each engine).
     beam_size: int = 5

@@ -108,7 +108,9 @@ class WhisperEngine:
             condition_on_previous_text=False,
             compression_ratio_threshold=settings.compression_ratio_threshold,
             log_prob_threshold=settings.log_prob_threshold,
-            vad_filter=True,  # faster-whisper's built-in Silero VAD as a safety net
+            # faster-whisper's built-in Silero VAD as a safety net; file
+            # transcription sets vad_filter=False (see settings_for_request).
+            vad_filter=settings.vad_filter,
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
 
