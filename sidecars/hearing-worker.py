@@ -34,6 +34,7 @@ from speech_app.history import TranscriptHistory  # noqa: E402
 from speech_app.settings import SettingsStore  # noqa: E402
 from speech_app.transcription import (  # noqa: E402
     extract_frames,
+    extract_frames_at,
     settings_for_request,
     transcribe_audio_file,
 )
@@ -82,8 +83,21 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         raise ValueError("Hearing is disabled in Sens settings")
     settings = settings_for_request(base_settings, model=model)
     result = transcribe_audio_file(audio_path, settings=settings, engine=engine)
+    at = payload.get("at")
     frames = int(payload.get("frames", 0) or 0)
-    if frames > 0:
+    if isinstance(at, list) and any(isinstance(v, (int, float)) for v in at):
+        # Exact-second stills requested by the model; takes precedence over
+        # the uniform `frames` count.
+        try:
+            request_id = str(message.get("requestId", "unknown"))
+            result["framePaths"] = extract_frames_at(
+                audio_path,
+                [float(v) for v in at if isinstance(v, (int, float))],
+                out_dir=_frames_output_dir(request_id),
+            )
+        except Exception as error:  # noqa: BLE001 - frames are best-effort
+            result["framesError"] = f"{type(error).__name__}: {error}"
+    elif frames > 0:
         try:
             request_id = str(message.get("requestId", "unknown"))
             result["framePaths"] = extract_frames(
