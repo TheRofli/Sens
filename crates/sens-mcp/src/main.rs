@@ -238,12 +238,20 @@ impl SensMcp {
     }
 
     #[tool(
-        description = "Transcribe a supplied local audio file without clipboard, paste, or history side effects by default."
+        description = "Transcribe a supplied local audio file without clipboard, paste, or history side effects by default. Uses the multilingual Whisper model (auto language detection) unless another model is requested."
     )]
-    async fn sens_hear(&self, Parameters(args): Parameters<HearArgs>) -> Result<String, McpError> {
+    async fn sens_hear(
+        &self,
+        Parameters(mut args): Parameters<HearArgs>,
+    ) -> Result<String, McpError> {
         let save_to_history = args.save_to_history;
         let timeout_ms = args.timeout_ms.or(Some(180_000));
-        info!(timeout_ms = ?timeout_ms, "sens_hear received");
+        // Audio-file transcription must handle any language, so default to the
+        // multilingual Whisper model instead of the dictation engine (GigaAM).
+        if args.model.is_none() {
+            args.model = Some("whisper-ru".to_string());
+        }
+        info!(timeout_ms = ?timeout_ms, model = ?args.model, "sens_hear received");
         let mut request = InvokeRequest::new(
             "hearing",
             "hear",
