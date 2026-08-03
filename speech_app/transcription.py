@@ -69,7 +69,12 @@ def validate_audio_path(value: str | Path) -> Path:
 
 
 def _load_video_audio(path: Path) -> tuple[np.ndarray, int]:
-    """Decode the audio track of a video container to mono float32 via PyAV."""
+    """Decode the audio track of a video container to mono float32 via PyAV.
+
+    A container without an audio track yields empty samples at 16 kHz instead
+    of raising, so silent videos still transcribe to "" and can be analysed
+    through stills.
+    """
     try:
         import av
     except ImportError as exc:
@@ -80,7 +85,7 @@ def _load_video_audio(path: Path) -> tuple[np.ndarray, int]:
     try:
         stream = next((s for s in container.streams if s.type == "audio"), None)
         if stream is None:
-            raise ValueError(f"video has no audio track: {path}")
+            return np.zeros(0, dtype=np.float32), 16000
         sample_rate = int(stream.codec_context.sample_rate or 16000)
         chunks: list[np.ndarray] = []
         for frame in container.decode(stream):
@@ -255,6 +260,78 @@ def extract_frames_at(
     return frame_paths
 
 
+def extract_frames_every(
+    video_path: str | Path,
+    interval_s: float,
+    *,
+    max_count: int = 12,
+    out_dir: str | Path | None = None,
+    max_side: int = 1280,
+) -> list[str]:
+    """Extract one still every ``interval_s`` seconds of video.
+
+    Frames land on 0, interval, 2*interval, ... capped at ``max_count``
+    stills. File names embed the target time so the model can correlate a
+    still with the transcript's timestamped segments.
+    """
+    path = Path(video_path).expanduser().resolve()
+    if interval_s <= 0 or max_count <= 0 or path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return []
+    try:
+        import av
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError(
+            "Frame extraction requires PyAV and Pillow. Run install.ps1."
+        ) from exc
+
+    out_dir = Path(out_dir) if out_dir else path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    container = av.open(str(path))
+    frame_paths: list[str] = []
+    try:
+        stream = next((s for s in container.streams if s.type == "video"), None)
+        if stream is None:
+            return []
+        duration_s = 0.0
+        if container.duration:
+            duration_s = float(container.duration) / av.time_base
+        targets = [
+            index * interval_s
+            for index in range(int(duration_s / interval_s) + 1)
+        ][:max_count]
+        time_base = float(stream.time_base)
+        for target in targets:
+            container.seek(
+                max(0, int(target / time_base) - 1),
+                stream=stream,
+                backward=True,
+            )
+            best: Any = None
+            best_delta = float("inf")
+            for frame in container.decode(stream):
+                pts = frame.pts
+                if pts is None:
+                    continue
+                stamp = float(pts) * time_base
+                delta = abs(stamp - target)
+                if delta < best_delta:
+                    best, best_delta = frame, delta
+                if stamp > target + 0.5:
+                    break
+            if best is None:
+                continue
+            image = Image.fromarray(best.to_ndarray(format="rgb24"))
+            if max_side and max(image.size) > max_side:
+                image.thumbnail((max_side, max_side))
+            target_path = out_dir / f"frame-at-{target:.1f}s.jpg"
+            image.convert("RGB").save(target_path, "JPEG", quality=85)
+            frame_paths.append(str(target_path))
+    finally:
+        container.close()
+    return frame_paths
+
+
 def settings_for_request(
     base: AppSettings,
     *,
@@ -286,6 +363,11 @@ def transcribe_audio_file(
     container_kind = "video" if path.suffix.lower() in VIDEO_EXTENSIONS else "audio"
     samples, sample_rate = load_audio_file(path)
     duration_seconds = float(samples.size / sample_rate) if sample_rate else 0.0
+    audio_track = True
+    if container_kind == "video" and samples.size == 0:
+        # Silent video (no audio track): report it explicitly instead of
+        # pretending there was nothing to transcribe.
+        audio_track = False
     trimmed = trim_silence(
         samples,
         sample_rate=sample_rate,
@@ -314,6 +396,7 @@ def transcribe_audio_file(
         "sample_rate": sample_rate,
         "duration_seconds": duration_seconds,
         "container": container_kind,
+        "audioTrack": audio_track,
         "segments": segments,
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
     }

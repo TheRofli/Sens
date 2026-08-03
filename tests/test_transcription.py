@@ -10,6 +10,7 @@ from speech_app.settings import AppSettings
 from speech_app.transcription import (
     extract_frames,
     extract_frames_at,
+    extract_frames_every,
     load_audio_file,
     settings_for_request,
     transcribe_audio_file,
@@ -76,28 +77,32 @@ class FileTranscriptionTests(unittest.TestCase):
             engine.transcribe.assert_called_once()
 
 
-def write_test_video(path: Path, seconds: float = 1.0) -> None:
-    """Synthesize a tiny MP4 (gradient frames + 440 Hz tone) with PyAV."""
+def write_test_video(path: Path, seconds: float = 1.0, with_audio: bool = True) -> None:
+    """Synthesize a tiny MP4 (gradient frames + optional 440 Hz tone)."""
     import av
 
     container = av.open(str(path), "w", format="mp4")
     video = container.add_stream("mpeg4", rate=10)
     video.width, video.height = 128, 96
-    audio = container.add_stream("aac", rate=16000)
-    sample_rate = 16000
-    timeline = np.arange(int(seconds * sample_rate), dtype=np.float32) / sample_rate
-    tone = (0.2 * np.sin(2 * np.pi * 440 * timeline)).astype(np.float32)
-    frame = av.AudioFrame.from_ndarray(tone.reshape(1, -1), format="fltp", layout="mono")
-    frame.sample_rate = sample_rate
-    for packet in audio.encode(frame):
-        container.mux(packet)
+    if with_audio:
+        audio = container.add_stream("aac", rate=16000)
+        sample_rate = 16000
+        timeline = np.arange(int(seconds * sample_rate), dtype=np.float32) / sample_rate
+        tone = (0.2 * np.sin(2 * np.pi * 440 * timeline)).astype(np.float32)
+        frame = av.AudioFrame.from_ndarray(
+            tone.reshape(1, -1), format="fltp", layout="mono"
+        )
+        frame.sample_rate = sample_rate
+        for packet in audio.encode(frame):
+            container.mux(packet)
     for index in range(int(seconds * 10)):
         image = np.full((96, 128, 3), (index * 20) % 256, dtype=np.uint8)
         vframe = av.VideoFrame.from_ndarray(image, format="rgb24")
         for packet in video.encode(vframe):
             container.mux(packet)
-    for packet in audio.encode(None):
-        container.mux(packet)
+    if with_audio:
+        for packet in audio.encode(None):
+            container.mux(packet)
     for packet in video.encode(None):
         container.mux(packet)
     container.close()
@@ -115,6 +120,25 @@ class VideoTranscriptionTests(unittest.TestCase):
             self.assertEqual(samples.ndim, 1)
             self.assertGreater(samples.size, 0)
             self.assertEqual(sample_rate, 16000)
+
+    def test_silent_video_returns_empty_text_without_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "silent.mp4"
+            write_test_video(path, seconds=1.0, with_audio=False)
+            engine = Mock()
+            engine.kind = "fake"
+            engine.transcribe.return_value = "should not be called"
+
+            result = transcribe_audio_file(
+                path,
+                settings=AppSettings(postprocess_text=False),
+                engine=engine,
+            )
+
+            self.assertEqual(result["text"], "")
+            self.assertEqual(result["container"], "video")
+            self.assertFalse(result["audioTrack"])
+            engine.transcribe.assert_not_called()
 
     def test_extract_frames_returns_jpegs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -151,6 +175,29 @@ class VideoTranscriptionTests(unittest.TestCase):
             for frame_path in frame_paths:
                 self.assertTrue(Path(frame_path).is_file())
                 self.assertIn("-at-", Path(frame_path).name)
+
+    def test_extract_frames_every_interval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            write_test_video(path, seconds=2.0)
+            out_dir = Path(tmp) / "frames"
+
+            frame_paths = extract_frames_every(path, 0.5, out_dir=out_dir)
+
+            self.assertGreaterEqual(len(frame_paths), 3)
+            for frame_path in frame_paths:
+                self.assertTrue(Path(frame_path).is_file())
+                self.assertIn("-at-", Path(frame_path).name)
+
+    def test_extract_frames_every_caps_count(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            write_test_video(path, seconds=2.0)
+            out_dir = Path(tmp) / "frames"
+
+            frame_paths = extract_frames_every(path, 0.2, max_count=3, out_dir=out_dir)
+
+            self.assertEqual(len(frame_paths), 3)
 
     def test_segments_returned_when_engine_supports_them(self):
         with tempfile.TemporaryDirectory() as tmp:
