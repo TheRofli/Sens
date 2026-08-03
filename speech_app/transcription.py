@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 
@@ -191,6 +191,70 @@ def extract_frames(
     return frame_paths
 
 
+def extract_frames_at(
+    video_path: str | Path,
+    times: Sequence[float],
+    *,
+    out_dir: str | Path | None = None,
+    max_side: int = 1280,
+) -> list[str]:
+    """Extract stills at exact video seconds (seek + nearest frame).
+
+    Frame file names embed the target time (``frame-at-16.5s.jpg``) so the
+    model can correlate a still with the transcript's timestamped segments.
+    """
+    path = Path(video_path).expanduser().resolve()
+    targets = sorted({float(t) for t in times if t >= 0})
+    if not targets or path.suffix.lower() not in VIDEO_EXTENSIONS:
+        return []
+    try:
+        import av
+        from PIL import Image
+    except ImportError as exc:
+        raise RuntimeError(
+            "Frame extraction requires PyAV and Pillow. Run install.ps1."
+        ) from exc
+
+    out_dir = Path(out_dir) if out_dir else path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    container = av.open(str(path))
+    frame_paths: list[str] = []
+    try:
+        stream = next((s for s in container.streams if s.type == "video"), None)
+        if stream is None:
+            return []
+        time_base = float(stream.time_base)
+        for target in targets:
+            container.seek(
+                max(0, int(target / time_base) - 1),
+                stream=stream,
+                backward=True,
+            )
+            best: Any = None
+            best_delta = float("inf")
+            for frame in container.decode(stream):
+                pts = frame.pts
+                if pts is None:
+                    continue
+                stamp = float(pts) * time_base
+                delta = abs(stamp - target)
+                if delta < best_delta:
+                    best, best_delta = frame, delta
+                if stamp > target + 0.5:
+                    break
+            if best is None:
+                continue
+            image = Image.fromarray(best.to_ndarray(format="rgb24"))
+            if max_side and max(image.size) > max_side:
+                image.thumbnail((max_side, max_side))
+            target_path = out_dir / f"frame-at-{target:.1f}s.jpg"
+            image.convert("RGB").save(target_path, "JPEG", quality=85)
+            frame_paths.append(str(target_path))
+    finally:
+        container.close()
+    return frame_paths
+
+
 def settings_for_request(
     base: AppSettings,
     *,
@@ -236,6 +300,13 @@ def transcribe_audio_file(
             if settings.postprocess_text
             else (raw_text or "").strip()
         )
+    # Timestamped segments come from the full (untrimmed) audio so the
+    # reported times match the original file; only engines that can produce
+    # them (whisper) fill this in.
+    segments = None
+    segment_getter = getattr(engine, "transcribe_segments", None)
+    if segment_getter is not None and samples.size > 0:
+        segments = segment_getter(samples, sample_rate, settings)
     return {
         "text": text,
         "model": settings.model,
@@ -243,6 +314,7 @@ def transcribe_audio_file(
         "sample_rate": sample_rate,
         "duration_seconds": duration_seconds,
         "container": container_kind,
+        "segments": segments,
         "elapsed_ms": round((time.perf_counter() - started) * 1000),
     }
 

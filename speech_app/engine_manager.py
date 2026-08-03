@@ -7,7 +7,7 @@ explicit ``load`` swaps to the right engine kind, unloading the previous one.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -86,3 +86,22 @@ class EngineManager:
             self.load(settings)
         assert self._current is not None
         return self._current.transcribe(samples, sample_rate, settings)
+
+    def transcribe_segments(
+        self, samples: np.ndarray, sample_rate: int, settings: "AppSettings"
+    ) -> list[dict[str, Any]] | None:
+        """Timestamped segments when the active engine can produce them."""
+        if samples.size == 0:
+            return []
+        kind = resolve_engine(settings)
+        if (
+            self._current is None
+            or self._kind != kind
+            or not self._current.is_loaded
+        ):
+            self.load(settings)
+        assert self._current is not None
+        getter = getattr(self._current, "transcribe_segments", None)
+        if getter is None:
+            return None
+        return getter(samples, sample_rate, settings)

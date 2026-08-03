@@ -87,8 +87,22 @@ class WhisperEngine:
     def transcribe(
         self, samples: np.ndarray, sample_rate: int, settings: AppSettings
     ) -> str:
-        if samples.size == 0:
+        segments = self.transcribe_segments(samples, sample_rate, settings)
+        if segments is None:
             return ""
+        return " ".join(segment["text"].strip() for segment in segments).strip()
+
+    def transcribe_segments(
+        self, samples: np.ndarray, sample_rate: int, settings: AppSettings
+    ) -> list[dict[str, Any]] | None:
+        """Transcript with per-segment timestamps (seconds).
+
+        Only the whisper engine can produce timestamps; other engines return
+        None. Timing is relative to ``samples``, so callers that trimmed the
+        audio must compensate with the trim offset.
+        """
+        if samples.size == 0:
+            return []
         if self._model is None:
             self.load(settings)
             assert self._model is not None
@@ -112,7 +126,15 @@ class WhisperEngine:
             # transcription sets vad_filter=False (see settings_for_request).
             vad_filter=settings.vad_filter,
         )
-        return " ".join(segment.text.strip() for segment in segments).strip()
+        return [
+            {
+                "start": round(float(segment.start), 2),
+                "end": round(float(segment.end), 2),
+                "text": segment.text.strip(),
+            }
+            for segment in segments
+            if segment.text.strip()
+        ]
 
 
 def _cpu_threads() -> int:

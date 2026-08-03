@@ -9,6 +9,7 @@ import numpy as np
 from speech_app.settings import AppSettings
 from speech_app.transcription import (
     extract_frames,
+    extract_frames_at,
     load_audio_file,
     settings_for_request,
     transcribe_audio_file,
@@ -137,6 +138,56 @@ class VideoTranscriptionTests(unittest.TestCase):
             frame_paths = extract_frames(path, count=4)
 
             self.assertEqual(frame_paths, [])
+
+    def test_extract_frames_at_exact_seconds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "clip.mp4"
+            write_test_video(path, seconds=2.0)
+            out_dir = Path(tmp) / "frames"
+
+            frame_paths = extract_frames_at(path, [0.5, 1.5], out_dir=out_dir)
+
+            self.assertEqual(len(frame_paths), 2)
+            for frame_path in frame_paths:
+                self.assertTrue(Path(frame_path).is_file())
+                self.assertIn("-at-", Path(frame_path).name)
+
+    def test_segments_returned_when_engine_supports_them(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "voice.wav"
+            timeline = np.arange(8000, dtype=np.float32) / 16000
+            write_wav(path, 0.2 * np.sin(2 * np.pi * 440 * timeline))
+            engine = Mock()
+            engine.kind = "fake"
+            engine.transcribe.return_value = "hello"
+            engine.transcribe_segments.return_value = [
+                {"start": 0.0, "end": 0.5, "text": "hello"}
+            ]
+
+            result = transcribe_audio_file(
+                path,
+                settings=AppSettings(postprocess_text=False),
+                engine=engine,
+            )
+
+            self.assertEqual(result["segments"], [{"start": 0.0, "end": 0.5, "text": "hello"}])
+
+    def test_segments_none_without_engine_support(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "voice.wav"
+            timeline = np.arange(8000, dtype=np.float32) / 16000
+            write_wav(path, 0.2 * np.sin(2 * np.pi * 440 * timeline))
+            engine = Mock(spec=["transcribe", "kind"])
+            engine.kind = "fake"
+            engine.transcribe.return_value = "hello"
+
+            result = transcribe_audio_file(
+                path,
+                settings=AppSettings(postprocess_text=False),
+                engine=engine,
+            )
+
+            self.assertIsNone(result["segments"])
 
 
 if __name__ == "__main__":
