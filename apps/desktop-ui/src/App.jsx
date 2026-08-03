@@ -63,6 +63,7 @@ const defaultCapabilitySettings = {
     provider: "mimo",
     model: "mimo-v2.5",
     detail: "normal",
+    mode: "balanced",
     cache: true,
     maxCallsPerImage: 8,
     verify: false,
@@ -351,6 +352,12 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
                 <select value={draft.detail} onChange={(event) => update("detail", event.target.value)}>
                   <option value="quick">{t("detail.quick")}</option><option value="normal">{t("detail.normal")}</option><option value="deep">{t("detail.deep")}</option>
                 </select>
+              </label>
+              <label className="setting-field">{t("field.mode")}
+                <select value={draft.mode} onChange={(event) => update("mode", event.target.value)}>
+                  <option value="economy">{t("mode.economy")}</option><option value="balanced">{t("mode.balanced")}</option><option value="maximum">{t("mode.maximum")}</option>
+                </select>
+                <small>{t("mode.hint")}</small>
               </label>
               <label className="setting-field">{t("field.maxCalls")}
                 <input type="number" min="1" max="32" value={draft.maxCallsPerImage} onChange={(event) => update("maxCallsPerImage", Number(event.target.value))} />

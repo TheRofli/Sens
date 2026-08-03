@@ -23,6 +23,7 @@ pub struct SightSettings {
     pub provider: String,
     pub model: String,
     pub detail: String,
+    pub mode: String,
     pub cache: bool,
     pub max_calls_per_image: u64,
     pub verify: bool,
@@ -137,6 +138,11 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
                 .and_then(|item| item.get("cache"))
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
+            mode: vision
+                .and_then(|item| item.get("mode"))
+                .and_then(Value::as_str)
+                .unwrap_or("balanced")
+                .to_owned(),
             max_calls_per_image: vision
                 .and_then(|item| item.get("maxCallsPerImage"))
                 .and_then(Value::as_u64)
@@ -209,6 +215,7 @@ fn save_sight_at(path: &Path, settings: SightSettings) -> Result<(), String> {
     );
     vision.insert("verify".into(), Value::Bool(settings.verify));
     vision.insert("videoEnabled".into(), Value::Bool(settings.video_enabled));
+    vision.insert("mode".into(), Value::String(settings.mode));
     write_json(path, &document)
 }
 
@@ -261,6 +268,9 @@ fn validate_sight(settings: &SightSettings) -> Result<(), String> {
     }
     if !matches!(settings.detail.as_str(), "quick" | "normal" | "deep") {
         return Err("Детализация должна быть quick, normal или deep".into());
+    }
+    if !matches!(settings.mode.as_str(), "economy" | "balanced" | "maximum") {
+        return Err("Режим должен быть economy, balanced или maximum".into());
     }
     if !(1..=32).contains(&settings.max_calls_per_image) {
         return Err("Лимит вызовов должен быть от 1 до 32".into());
@@ -481,6 +491,7 @@ mod tests {
                 provider: "mimo".into(),
                 model: "mimo-v2.5".into(),
                 detail: "normal".into(),
+                mode: "balanced".into(),
                 cache: true,
                 max_calls_per_image: 6,
                 verify: true,
@@ -493,6 +504,7 @@ mod tests {
         assert_eq!(document["vision"]["maxCallsPerImage"], 6);
         assert_eq!(document["vision"]["verify"], true);
         assert_eq!(document["vision"]["videoEnabled"], false);
+        assert_eq!(document["vision"]["mode"], "balanced");
         assert_eq!(document["keep"], 7);
     }
 
