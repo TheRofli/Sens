@@ -14,27 +14,62 @@ use tokio::{
     sync::Mutex,
     time::timeout,
 };
+use tracing::info;
 
 use crate::process_group::{KillOnCloseJob, terminate_tree};
 
+/// Local vision operations served by the Python sight-worker (no network):
+/// see, read, locate, inspect. Everything else is routed to cloud Eye.
+/// Cloud operations served by the Node Eye service (compare/artifact store).
+const CLOUD_OPERATIONS: [&str; 2] = ["compare", "artifact_get"];
+
 #[derive(Debug, Clone)]
 pub struct SightRuntimeConfig {
+    // Local deterministic stack (RapidOCR + OpenCV + YOLO + CLIP).
+    pub python_executable: PathBuf,
+    pub speech_root: PathBuf,
+    pub local_worker: PathBuf,
+    // Optional cloud Eye (VLM via provider API) for compare/artifact_get.
     pub node_executable: PathBuf,
     pub eye_root: PathBuf,
-    pub worker_script: PathBuf,
+    pub cloud_worker: PathBuf,
 }
 
 impl SightRuntimeConfig {
     pub fn discover() -> anyhow::Result<Self> {
+        let speech_root = std::env::var_os("SENS_SPEECH_ROOT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let development = PathBuf::from(r"D:\Speech");
+                if development.join("speech_app").is_dir() {
+                    development
+                } else {
+                    PathBuf::from("sidecars").join("speech")
+                }
+            });
+        let python_executable = std::env::var_os("SENS_PYTHON")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                let bundled = speech_root.join(".venv").join("Scripts").join("python.exe");
+                if bundled.is_file() {
+                    bundled
+                } else {
+                    PathBuf::from("python")
+                }
+            });
         let node_executable = std::env::var_os("SENS_NODE")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("node"));
         let eye_root = discover_eye_root();
-        let worker_script = discover_worker_script("eye-worker.mjs");
+        let local_worker = discover_worker_script("sight-worker.py");
+        let cloud_worker = discover_worker_script("eye-worker.mjs");
         Ok(Self {
+            python_executable,
+            speech_root,
+            local_worker,
             node_executable,
             eye_root,
-            worker_script,
+            cloud_worker,
         })
     }
 }
@@ -75,7 +110,7 @@ fn discover_eye_root() -> PathBuf {
     PathBuf::from("sidecars").join("eye")
 }
 
-struct EyeProcess {
+struct WorkerProcess {
     _child: Child,
     _job: KillOnCloseJob,
     stdin: ChildStdin,
@@ -84,18 +119,86 @@ struct EyeProcess {
 
 pub struct SightExecutor {
     config: SightRuntimeConfig,
-    process: Mutex<Option<EyeProcess>>,
+    local: Mutex<Option<WorkerProcess>>,
+    cloud: Mutex<Option<WorkerProcess>>,
 }
 
 impl SightExecutor {
     pub fn new(config: SightRuntimeConfig) -> Self {
         Self {
             config,
-            process: Mutex::new(None),
+            local: Mutex::new(None),
+            cloud: Mutex::new(None),
         }
     }
 
-    async fn start(&self) -> Result<EyeProcess, SensError> {
+    async fn start_local(&self) -> Result<WorkerProcess, SensError> {
+        if !self.config.speech_root.join("speech_app").is_dir() {
+            return Err(runtime_error(
+                "sight_runtime_missing",
+                format!(
+                    "Speech was not found at {}",
+                    self.config.speech_root.display()
+                ),
+                "Open Sens diagnostics and repair Sight.",
+            ));
+        }
+        if !self.config.local_worker.is_file() {
+            return Err(runtime_error(
+                "sight_adapter_missing",
+                format!(
+                    "Sight adapter was not found at {}",
+                    self.config.local_worker.display()
+                ),
+                "Reinstall or rebuild Sens.",
+            ));
+        }
+        let mut command = Command::new(&self.config.python_executable);
+        command
+            .arg(&self.config.local_worker)
+            .env("SENS_SPEECH_ROOT", &self.config.speech_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        crate::process_group::hide_console(&mut command);
+        let mut child = command.spawn().map_err(|error| {
+            runtime_error(
+                "sight_start_failed",
+                format!("Could not start Sight: {error}"),
+                "Check the bundled Python runtime in Sens diagnostics.",
+            )
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            runtime_error(
+                "sight_start_failed",
+                "Sight has no stdin",
+                "Repair the Sens installation.",
+            )
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            runtime_error(
+                "sight_start_failed",
+                "Sight has no stdout",
+                "Repair the Sens installation.",
+            )
+        })?;
+        let job = KillOnCloseJob::assign(&child).map_err(|error| {
+            runtime_error(
+                "sight_start_failed",
+                format!("Could not supervise the Sight process tree: {error}"),
+                "Restart Sens or repair the installation.",
+            )
+        })?;
+        Ok(WorkerProcess {
+            _child: child,
+            _job: job,
+            stdin,
+            stdout: BufReader::new(stdout).lines(),
+        })
+    }
+
+    async fn start_cloud(&self) -> Result<WorkerProcess, SensError> {
         if !self
             .config
             .eye_root
@@ -104,27 +207,24 @@ impl SightExecutor {
             .is_file()
         {
             return Err(runtime_error(
-                "sight_runtime_missing",
-                format!(
-                    "Eye service was not found at {}",
-                    self.config.eye_root.display()
-                ),
-                "Open Sens diagnostics and repair Sight.",
+                "sight_cloud_unavailable",
+                "Cloud Eye was not found on this machine",
+                "Install Eye or use the local vision tools (see/read/locate/inspect).",
             ));
         }
-        if !self.config.worker_script.is_file() {
+        if !self.config.cloud_worker.is_file() {
             return Err(runtime_error(
                 "sight_adapter_missing",
                 format!(
                     "Eye adapter was not found at {}",
-                    self.config.worker_script.display()
+                    self.config.cloud_worker.display()
                 ),
                 "Reinstall or rebuild Sens.",
             ));
         }
         let mut command = Command::new(&self.config.node_executable);
         command
-            .arg(&self.config.worker_script)
+            .arg(&self.config.cloud_worker)
             .env("SENS_EYE_ROOT", &self.config.eye_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -159,7 +259,7 @@ impl SightExecutor {
                 "Restart Sens or repair the installation.",
             )
         })?;
-        Ok(EyeProcess {
+        Ok(WorkerProcess {
             _child: child,
             _job: job,
             stdin,
@@ -167,11 +267,32 @@ impl SightExecutor {
         })
     }
 
-    async fn invoke_worker(&self, request: &InvokeRequest) -> Result<Value, SensError> {
-        validate_sight_input(request)?;
-        let mut guard = self.process.lock().await;
+    async fn invoke_worker(
+        &self,
+        request: &InvokeRequest,
+        cloud: bool,
+    ) -> Result<Value, SensError> {
+        validate_sight_input(request, cloud)?;
+        let runtime = if cloud { "Eye" } else { "Sight" };
+        info!(
+            request_id = %request.request_id,
+            operation = %request.operation,
+            cloud,
+            timeout_ms = ?request.timeout_ms,
+            "{runtime} request received"
+        );
+        let mut guard = if cloud {
+            self.cloud.lock().await
+        } else {
+            self.local.lock().await
+        };
         if guard.is_none() {
-            *guard = Some(self.start().await?);
+            info!(request_id = %request.request_id, "starting {runtime} worker");
+            *guard = Some(if cloud {
+                self.start_cloud().await?
+            } else {
+                self.start_local().await?
+            });
         }
         let process = guard.as_mut().expect("process initialized");
         let payload = json!({
@@ -193,19 +314,26 @@ impl SightExecutor {
             *guard = None;
             return Err(runtime_error(
                 "sight_disconnected",
-                format!("Sight worker disconnected: {error}"),
+                format!("{runtime} worker disconnected: {error}"),
                 "Retry; Sens will restart Sight.",
             ));
         }
-        process.stdin.flush().await.map_err(|error| {
-            runtime_error(
+        if let Err(error) = process.stdin.flush().await {
+            // The write may have landed in the pipe buffer while the worker
+            // process was already gone; drop the stale process so the next
+            // request respawns a fresh worker instead of writing to a corpse.
+            *guard = None;
+            return Err(runtime_error(
                 "sight_disconnected",
-                format!("Sight worker could not receive the request: {error}"),
+                format!("{runtime} worker could not receive the request: {error}"),
                 "Retry; Sens will restart Sight.",
-            )
-        })?;
+            ));
+        }
 
-        let wait = Duration::from_millis(request.timeout_ms.unwrap_or(120_000));
+        // Local stack warms up models on the first request; cloud Eye is slow
+        // to respond, so both get a generous default timeout.
+        let wait = Duration::from_millis(request.timeout_ms.unwrap_or(600_000));
+        info!(request_id = %request.request_id, wait_ms = wait.as_millis(), "waiting for {runtime} response");
         let response = timeout(wait, process.stdout.next_line()).await;
         let line = match response {
             Ok(Ok(Some(line))) => line,
@@ -214,7 +342,7 @@ impl SightExecutor {
                 *guard = None;
                 return Err(runtime_error(
                     "sight_disconnected",
-                    "Sight worker exited without a response",
+                    format!("{runtime} worker exited without a response"),
                     "Retry; Sens will restart Sight.",
                 ));
             }
@@ -223,7 +351,7 @@ impl SightExecutor {
                 *guard = None;
                 return Err(runtime_error(
                     "sight_protocol_error",
-                    format!("Could not read Sight response: {error}"),
+                    format!("Could not read {runtime} response: {error}"),
                     "Retry the operation.",
                 ));
             }
@@ -232,15 +360,15 @@ impl SightExecutor {
                 *guard = None;
                 return Err(runtime_error(
                     "sight_timeout",
-                    format!("Sight exceeded its {} ms timeout", wait.as_millis()),
-                    "Retry with quick detail or a longer timeout.",
+                    format!("{runtime} exceeded its {} ms timeout", wait.as_millis()),
+                    "Retry; if this continues, export Sens diagnostics.",
                 ));
             }
         };
         let response: Value = serde_json::from_str(&line).map_err(|error| {
             runtime_error(
                 "sight_protocol_error",
-                format!("Sight returned invalid JSON: {error}"),
+                format!("{runtime} returned invalid JSON: {error}"),
                 "Retry; if this continues, export Sens diagnostics.",
             )
         })?;
@@ -262,7 +390,8 @@ impl SightExecutor {
 #[async_trait]
 impl CapabilityExecutor for SightExecutor {
     async fn invoke(&self, request: &InvokeRequest) -> Result<CapabilityOutput, SensError> {
-        let result = self.invoke_worker(request).await?;
+        let cloud = is_cloud_operation(&request.operation);
+        let result = self.invoke_worker(request, cloud).await?;
         let artifacts = result
             .get("artifactId")
             .and_then(Value::as_str)
@@ -287,7 +416,11 @@ impl CapabilityExecutor for SightExecutor {
     }
 }
 
-fn validate_sight_input(request: &InvokeRequest) -> Result<(), SensError> {
+fn is_cloud_operation(operation: &str) -> bool {
+    CLOUD_OPERATIONS.contains(&operation)
+}
+
+fn validate_sight_input(request: &InvokeRequest, cloud: bool) -> Result<(), SensError> {
     let input = request.input.as_object().ok_or_else(|| {
         runtime_error(
             "invalid_input",
@@ -305,15 +438,37 @@ fn validate_sight_input(request: &InvokeRequest) -> Result<(), SensError> {
             require_source(input)?;
             require_string(input, "target")
         }
-        "see" | "read" | "inspect" => require_source(input),
-        _ => Ok(()),
+        "inspect" => {
+            require_source(input)?;
+            let has_region = input.get("region").is_some();
+            let has_target = input
+                .get("target")
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.trim().is_empty());
+            if !has_region && !has_target {
+                return Err(runtime_error(
+                    "invalid_input",
+                    "inspect requires region or target",
+                    "Pass a pixel region or a visible text target.",
+                ));
+            }
+            Ok(())
+        }
+        "see" | "read" => require_source(input),
+        _ if cloud => Err(runtime_error(
+            "operation_not_supported",
+            format!("Eye does not support operation {}", request.operation),
+            "Use see/read/locate/inspect for local vision.",
+        )),
+        _ => Err(runtime_error(
+            "operation_not_supported",
+            format!("Sight does not support operation {}", request.operation),
+            "Use one of the supported Sight operations.",
+        )),
     }
 }
 
 fn require_source(input: &serde_json::Map<String, Value>) -> Result<(), SensError> {
-    if input.get("artifactId").and_then(Value::as_str).is_some() {
-        return Ok(());
-    }
     require_existing_file(input, "imagePath")
 }
 
@@ -371,15 +526,54 @@ fn runtime_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    fn existing_image() -> PathBuf {
+        let path = std::env::temp_dir().join("sens-sight-test.png");
+        fs::write(&path, b"fixture").expect("write fixture");
+        path
+    }
 
     #[test]
     fn locate_requires_target() {
+        let path = existing_image();
         let request = InvokeRequest::new(
             "sight",
             "locate",
-            json!({ "artifactId": "existing-artifact" }),
+            json!({ "imagePath": path.to_string_lossy() }),
         );
-        let error = validate_sight_input(&request).expect_err("missing target");
+        let error = validate_sight_input(&request, false).expect_err("missing target");
         assert_eq!(error.code, "invalid_input");
+    }
+
+    #[test]
+    fn inspect_requires_region_or_target() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "inspect",
+            json!({ "imagePath": path.to_string_lossy() }),
+        );
+        let error = validate_sight_input(&request, false).expect_err("missing focus");
+        assert_eq!(error.code, "invalid_input");
+    }
+
+    #[test]
+    fn inspect_accepts_region() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "inspect",
+            json!({ "imagePath": path.to_string_lossy(), "region": { "x": 0, "y": 0, "width": 10, "height": 10 } }),
+        );
+        assert!(validate_sight_input(&request, false).is_ok());
+    }
+
+    #[test]
+    fn cloud_operations_are_recognized() {
+        assert!(is_cloud_operation("compare"));
+        assert!(is_cloud_operation("artifact_get"));
+        assert!(!is_cloud_operation("see"));
+        assert!(!is_cloud_operation("inspect"));
     }
 }

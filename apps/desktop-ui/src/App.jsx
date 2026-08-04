@@ -42,7 +42,7 @@ const navItems = [
   { id: "about", icon: IconInfoCircle },
 ];
 
-const KNOWN_PROVIDERS = ["mimo", "openai", "custom"];
+const KNOWN_PROVIDERS = ["local", "mimo", "openai", "custom"];
 const KNOWN_MODELS = ["parakeet", "whisper-ru", "gigaam"];
 
 function providerDisplay(t, value, fallback = "") {
@@ -60,8 +60,8 @@ function modelDescription(t, value, fallback = "") {
 const defaultCapabilitySettings = {
   sight: {
     enabled: true,
-    provider: "mimo",
-    model: "mimo-v2.5",
+    provider: "local",
+    model: "",
     detail: "normal",
     mode: "balanced",
     cache: true,
@@ -86,6 +86,7 @@ const defaultCapabilitySettings = {
     defaultEvery: 0,
   },
   sightProviders: [
+    { value: "local", label: "Локально (без API)", model: "" },
     { value: "mimo", label: "MiMo", model: "mimo-v2.5" },
     { value: "openai", label: "OpenAI", model: "gpt-4.1-mini" },
     { value: "custom", label: "Свой провайдер", model: "vision-model-name" },
@@ -255,11 +256,11 @@ function CapabilitiesContent({ settings, speechRuntime, onOpenCapability }) {
   );
 }
 
-function SettingsToggle({ label, description, checked, onChange }) {
+function SettingsToggle({ label, description, checked, onChange, disabled = false }) {
   return (
-    <label className="setting-toggle">
+    <label className={`setting-toggle${disabled ? " setting-toggle--locked" : ""}`}>
       <span><strong>{label}</strong><small>{description}</small></span>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange?.(event.target.checked)} />
     </label>
   );
 }
@@ -321,11 +322,16 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
                 <select value={draft.provider} onChange={(event) => providerChanged(event.target.value)}>
                   {data.sightProviders.map((option) => <option key={option.value} value={option.value}>{providerDisplay(t, option.value, option.label)}</option>)}
                 </select>
+                <small>{t("provider.hint")}</small>
               </label>
-              <label className="setting-field">{t("field.visionModel")}
-                <input value={draft.model} onChange={(event) => update("model", event.target.value)} spellCheck="false" />
-                <small>{t("field.visionModelHint")}</small>
-              </label>
+              {draft.provider === "local" ? (
+                <p className="sight-local-info">{t("sight.localStack")}</p>
+              ) : (
+                <label className="setting-field">{t("field.visionModel")}
+                  <input value={draft.model} onChange={(event) => update("model", event.target.value)} spellCheck="false" />
+                  <small>{t("field.visionModelHint")}</small>
+                </label>
+              )}
             </>
           ) : (
             <>
@@ -347,23 +353,27 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
         <section className="settings-group">
           <div className="settings-group__heading"><span>02</span><div><h2>{t("group.quality")}</h2><p>{t("group.quality.sub")}</p></div></div>
           {capability === "sight" ? (
-            <>
-              <label className="setting-field">{t("field.detail")}
-                <select value={draft.detail} onChange={(event) => update("detail", event.target.value)}>
-                  <option value="quick">{t("detail.quick")}</option><option value="normal">{t("detail.normal")}</option><option value="deep">{t("detail.deep")}</option>
-                </select>
-              </label>
-              <label className="setting-field">{t("field.mode")}
-                <select value={draft.mode} onChange={(event) => update("mode", event.target.value)}>
-                  <option value="economy">{t("mode.economy")}</option><option value="balanced">{t("mode.balanced")}</option><option value="maximum">{t("mode.maximum")}</option>
-                </select>
-                <small>{t("mode.hint")}</small>
-              </label>
-              <label className="setting-field">{t("field.maxCalls")}
-                <input type="number" min="1" max="32" value={draft.maxCallsPerImage} onChange={(event) => update("maxCallsPerImage", Number(event.target.value))} />
-                <small>{t("maxCalls.hint")}</small>
-              </label>
-            </>
+            draft.provider === "local" ? (
+              <p className="sight-local-info">{t("sight.alwaysMax")}</p>
+            ) : (
+              <>
+                <label className="setting-field">{t("field.detail")}
+                  <select value={draft.detail} onChange={(event) => update("detail", event.target.value)}>
+                    <option value="quick">{t("detail.quick")}</option><option value="normal">{t("detail.normal")}</option><option value="deep">{t("detail.deep")}</option>
+                  </select>
+                </label>
+                <label className="setting-field">{t("field.mode")}
+                  <select value={draft.mode} onChange={(event) => update("mode", event.target.value)}>
+                    <option value="economy">{t("mode.economy")}</option><option value="balanced">{t("mode.balanced")}</option><option value="maximum">{t("mode.maximum")}</option>
+                  </select>
+                  <small>{t("mode.hint")}</small>
+                </label>
+                <label className="setting-field">{t("field.maxCalls")}
+                  <input type="number" min="1" max="32" value={draft.maxCallsPerImage} onChange={(event) => update("maxCallsPerImage", Number(event.target.value))} />
+                  <small>{t("maxCalls.hint")}</small>
+                </label>
+              </>
+            )
           ) : (
             <>
               <label className="setting-field">{t("field.beam")}
@@ -407,11 +417,15 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
       <section className="settings-toggles">
         <SettingsToggle label={t(meta.accessKey)} description={t("toggle.accessDesc")} checked={draft.enabled} onChange={(value) => update("enabled", value)} />
         {capability === "sight" ? (
-          <>
-            <SettingsToggle label={t("toggle.cache")} description={t("toggle.cacheDesc")} checked={draft.cache} onChange={(value) => update("cache", value)} />
-            <SettingsToggle label={t("toggle.verify")} description={t("toggle.verifyDesc")} checked={draft.verify} onChange={(value) => update("verify", value)} />
-            <SettingsToggle label={t("toggle.video")} description={t("toggle.videoDesc")} checked={draft.videoEnabled} onChange={(value) => update("videoEnabled", value)} />
-          </>
+          draft.provider === "local" ? (
+            <SettingsToggle label={t("toggle.local")} description={t("toggle.localDesc")} checked disabled />
+          ) : (
+            <>
+              <SettingsToggle label={t("toggle.cache")} description={t("toggle.cacheDesc")} checked={draft.cache} onChange={(value) => update("cache", value)} />
+              <SettingsToggle label={t("toggle.verify")} description={t("toggle.verifyDesc")} checked={draft.verify} onChange={(value) => update("verify", value)} />
+              <SettingsToggle label={t("toggle.video")} description={t("toggle.videoDesc")} checked={draft.videoEnabled} onChange={(value) => update("videoEnabled", value)} />
+            </>
+          )
         ) : (
           <>
             <SettingsToggle label={t("toggle.preload")} description={t("toggle.preloadDesc")} checked={draft.preloadModel} onChange={(value) => update("preloadModel", value)} />

@@ -234,10 +234,10 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
     vec![
         CapabilityManifest {
             id: "sight".into(),
-            version: "1.0.0".into(),
+            version: "1.1.0".into(),
             title: "Sight".into(),
             description:
-                "Visual perception, OCR, grounding, inspection and comparison through Eye.".into(),
+                "Local deterministic vision: OCR, layout, objects, scene and attention maps; no cloud API. compare/artifact_get require the optional cloud Eye.".into(),
             operations: vec![
                 "see",
                 "read",
@@ -250,7 +250,7 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
             .map(str::to_owned)
             .collect(),
             runtime: RuntimeDescriptor {
-                kind: "node_sidecar".into(),
+                kind: "python_sidecar".into(),
                 lazy: true,
             },
             permissions: vec![Permission::LocalFileRead, Permission::ProviderNetwork],
