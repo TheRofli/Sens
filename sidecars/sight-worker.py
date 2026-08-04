@@ -648,9 +648,9 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 _last_cache_cleanup: float = 0.0
-# Bump when the dump schema changes so stale dumps (e.g. without gaps
-# or without design QA) are not served from cache.
-CACHE_SCHEMA_VERSION = "qa2"
+# Bump when the dump schema changes so stale dumps (e.g. without gaps,
+# design QA or section style) are not served from cache.
+CACHE_SCHEMA_VERSION = "qa3"
 
 
 def cache_root() -> Path:
@@ -714,6 +714,62 @@ def cleanup_cache(directory: Path, interval: float = 3600.0) -> None:
                 path.unlink(missing_ok=True)
     except OSError:
         return
+
+
+# --------------------------------------------------------------------------
+# Compare: deterministic pixel diff between reference and candidate
+# --------------------------------------------------------------------------
+
+
+def compare_images(reference_path: str, candidate_path: str) -> dict[str, Any]:
+    """Numerical visual difference: HSV delta, mismatch ratio, hot zones.
+
+    Deterministic and local — no provider needed. Candidate is resized to
+    the reference size first, so different resolutions still compare.
+    """
+    import cv2
+
+    reference = load_cv(reference_path)
+    candidate = load_cv(candidate_path)
+    if candidate.shape[:2] != reference.shape[:2]:
+        candidate = cv2.resize(
+            candidate, (reference.shape[1], reference.shape[0]),
+            interpolation=cv2.INTER_AREA,
+        )
+    ref_hsv = cv2.cvtColor(reference, cv2.COLOR_BGR2HSV).astype(np.float32)
+    cand_hsv = cv2.cvtColor(candidate, cv2.COLOR_BGR2HSV).astype(np.float32)
+    delta = np.abs(ref_hsv - cand_hsv)
+    # hue is circular: wrap 180 -> 0
+    delta[:, :, 0] = np.minimum(delta[:, :, 0], 180.0 - delta[:, :, 0])
+    # weight: hue 0.4, saturation 0.3, value 0.3
+    score = (0.4 * delta[:, :, 0] + 0.3 * delta[:, :, 1] + 0.3 * delta[:, :, 2])
+    # Adaptive threshold: at least 15 (above noise), at most 30 (so large
+    # regions of change are never swallowed by their own percentile).
+    threshold = min(max(15.0, float(np.percentile(score, 90))), 30.0)
+    mask = score > threshold
+    ratio = float(mask.mean())
+    zones = []
+    if ratio > 0.001:
+        mask_u8 = (mask * 255).astype(np.uint8)
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 9))
+        closed = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:6]:
+            x, y, w, h = cv2.boundingRect(contour)
+            if w < 8 or h < 8:
+                continue
+            zones.append({
+                "box": [x, y, x + w, y + h],
+                "area": w * h,
+                "meanDelta": round(float(score[y:y + h, x:x + w].mean()), 2),
+            })
+    return {
+        "width": reference.shape[1],
+        "height": reference.shape[0],
+        "mismatchRatio": round(ratio, 4),
+        "meanDelta": round(float(score.mean()), 2),
+        "zones": zones,
+    }
 
 
 # --------------------------------------------------------------------------
@@ -834,6 +890,105 @@ def design_qa(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict[str
 
 
 # --------------------------------------------------------------------------
+# L5c: section style extraction — colors, radius, padding, font size
+# --------------------------------------------------------------------------
+
+
+def _corner_radius(image: Any, x0: int, y0: int, x1: int, y1: int) -> int:
+    """Estimate a section's border-radius by scanning its corners.
+
+    For each corner, walk along the edge until a pixel differing from the
+    section background appears — that distance approximates the radius.
+    """
+    import cv2
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    inner = gray[y0 + 5:y1 - 5, x0 + 5:x1 - 5]
+    if inner.size == 0:
+        return 0
+    bg = float(np.median(inner))
+    radiuses = []
+    corners = [
+        (x0, y0, 1, 0),   # top-left, scan right
+        (x0, y0, 0, 1),   # top-left, scan down
+        (x1, y0, -1, 0),  # top-right, scan left
+        (x0, y1, 1, 0),   # bottom-left, scan right
+    ]
+    for cx, cy, dx, dy in corners:
+        for step in range(1, 60):
+            px = cx + step * dx
+            py = cy + step * dy
+            if px < 0 or py < 0 or px >= gray.shape[1] or py >= gray.shape[0]:
+                break
+            if abs(float(gray[py, px]) - bg) > 40:
+                radiuses.append(step)
+                break
+    return round(float(np.median(radiuses))) if radiuses else 0
+
+
+def _section_padding(box: list[int], ocr_items: list[dict[str, Any]]) -> dict[str, int] | None:
+    """Distance from each section edge to the nearest text inside it."""
+    x0, y0, x1, y1 = box
+    inside = [
+        item["box"] for item in ocr_items
+        if item["box"][0] > x0 and item["box"][1] > y0
+        and item["box"][2] < x1 and item["box"][3] < y1
+    ]
+    if not inside:
+        return None
+    return {
+        "top": min(b[1] for b in inside) - y0,
+        "bottom": y1 - max(b[3] for b in inside),
+        "left": min(b[0] for b in inside) - x0,
+        "right": x1 - max(b[2] for b in inside),
+    }
+
+
+def section_style(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict[str, Any]], top: int = 6) -> list[dict[str, Any]]:
+    """Per-section design tokens: bg/text color, corner radius, padding, font size."""
+    import cv2
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    sections = [b for b in blocks if b["area"] >= 0.02 * max(1, blocks[0]["area"])][:top] if blocks else []
+    result = []
+    for section in sections:
+        x0, y0, x1, y1 = section["box"]
+        if x1 - x0 < 40 or y1 - y0 < 40:
+            continue
+        inner = image[y0 + 5:y1 - 5, x0 + 5:x1 - 5]
+        if inner.size == 0:
+            continue
+        bg_bgr = np.median(inner.reshape(-1, 3), axis=0)
+        texts = [
+            item for item in ocr_items
+            if item["box"][0] > x0 and item["box"][1] > y0
+            and item["box"][2] < x1 and item["box"][3] < y1
+        ]
+        text_color_bgr = None
+        if texts:
+            # Text color: median of the darkest pixels inside the OCR box.
+            box = texts[0]["box"]
+            patch = gray[max(0, box[1]):box[3], max(0, box[0]):box[2]]
+            dark_mask = patch < np.percentile(patch, 20)
+            pixels = image[max(0, box[1]):box[3], max(0, box[0]):box[2]]
+            if int(dark_mask.sum()) > 10:
+                text_color_bgr = np.median(pixels[dark_mask], axis=0)
+        font_sizes = [item["box"][3] - item["box"][1] for item in texts]
+        result.append({
+            "box": section["box"],
+            "background": "#{:02X}{:02X}{:02X}".format(int(bg_bgr[2]), int(bg_bgr[1]), int(bg_bgr[0])),
+            "textColor": (
+                "#{:02X}{:02X}{:02X}".format(int(text_color_bgr[2]), int(text_color_bgr[1]), int(text_color_bgr[0]))
+                if text_color_bgr is not None else None
+            ),
+            "cornerRadius": _corner_radius(image, x0, y0, x1, y1),
+            "padding": _section_padding(section["box"], ocr_items),
+            "fontSize": round(float(np.median(font_sizes))) if font_sizes else None,
+        })
+    return result
+
+
+# --------------------------------------------------------------------------
 # Dump construction
 # --------------------------------------------------------------------------
 
@@ -903,6 +1058,7 @@ def analyze_full(image_path: str) -> dict[str, Any]:
         "skeleton": layout_skeleton(image),
         "gaps": layout_gaps(blocks),
         "design": design_qa(image, blocks, ocr_items),
+        "sectionStyle": section_style(image, blocks, ocr_items),
         "attention": attention,
         "scene": scene,
         "objects": objects,
@@ -996,6 +1152,10 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         if target:
             return inspect_target(str(payload["imagePath"]), str(target), no_store)
         raise ValueError("region or target is required for inspect")
+    if operation == "compare":
+        return compare_images(
+            str(payload["referencePath"]), str(payload["candidatePath"])
+        )
     raise ValueError(f"Unsupported Sight operation: {operation}")
 
 

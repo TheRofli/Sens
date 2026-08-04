@@ -19,9 +19,9 @@ use tracing::info;
 use crate::process_group::{KillOnCloseJob, terminate_tree};
 
 /// Local vision operations served by the Python sight-worker (no network):
-/// see, read, locate, inspect. Everything else is routed to cloud Eye.
-/// Cloud operations served by the Node Eye service (compare/artifact store).
-const CLOUD_OPERATIONS: [&str; 2] = ["compare", "artifact_get"];
+/// see, read, locate, inspect, compare (deterministic pixel diff).
+/// artifact_get is served by the cloud Eye (artifact store).
+const CLOUD_OPERATIONS: [&str; 1] = ["artifact_get"];
 
 #[derive(Debug, Clone)]
 pub struct SightRuntimeConfig {
@@ -571,8 +571,8 @@ mod tests {
 
     #[test]
     fn cloud_operations_are_recognized() {
-        assert!(is_cloud_operation("compare"));
         assert!(is_cloud_operation("artifact_get"));
+        assert!(!is_cloud_operation("compare"));
         assert!(!is_cloud_operation("see"));
         assert!(!is_cloud_operation("inspect"));
     }

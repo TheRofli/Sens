@@ -265,7 +265,7 @@ impl SensMcp {
     }
 
     #[tool(
-        description = "Compare immutable reference and candidate images using the cloud Eye VLM (requires Eye installed with a provider API key). Not available in the local deterministic stack."
+        description = "Compare immutable reference and candidate images with a deterministic local pixel diff (HSV delta, mismatch ratio, hot zones). No network or API keys. artifact_get still requires the optional cloud Eye."
     )]
     async fn sens_compare(
         &self,
