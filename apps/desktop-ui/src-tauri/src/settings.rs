@@ -95,13 +95,13 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
     let provider = eye
         .get("provider")
         .and_then(Value::as_str)
-        .unwrap_or("mimo")
+        .unwrap_or("local")
         .to_owned();
     let providers = eye
         .get("providers")
         .and_then(Value::as_object)
         .ok_or_else(|| "Eye config is missing providers".to_string())?;
-    let sight_providers = providers
+    let mut sight_providers = providers
         .iter()
         .map(|(value, item)| SightProviderOption {
             value: value.clone(),
@@ -113,12 +113,28 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
                 .to_owned(),
         })
         .collect::<Vec<_>>();
-    let model = providers
-        .get(&provider)
-        .and_then(|item| item.get("model"))
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
+    // The local deterministic stack is not a cloud provider: inject it as
+    // the default option unless the config already names it.
+    if !sight_providers.iter().any(|item| item.value == "local") {
+        sight_providers.insert(
+            0,
+            SightProviderOption {
+                value: "local".into(),
+                label: "Локально (без API)".into(),
+                model: String::new(),
+            },
+        );
+    }
+    let model = if provider == "local" {
+        String::new()
+    } else {
+        providers
+            .get(&provider)
+            .and_then(|item| item.get("model"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
     let vision = eye.get("vision").and_then(Value::as_object);
 
     Ok(CapabilitySettings {
@@ -187,20 +203,22 @@ fn save_sight_at(path: &Path, settings: SightSettings) -> Result<(), String> {
     validate_sight(&settings)?;
     let mut document = read_json(path)?;
     let root = object_mut(&mut document, "Eye config")?;
-    let providers = root
-        .get_mut("providers")
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| "Eye config is missing providers".to_string())?;
-    let provider = providers
-        .get_mut(&settings.provider)
-        .and_then(Value::as_object_mut)
-        .ok_or_else(|| format!("Eye provider {} is unavailable", settings.provider))?;
-    provider.insert(
-        "model".into(),
-        Value::String(settings.model.trim().to_owned()),
-    );
-
-    root.insert("provider".into(), Value::String(settings.provider));
+    root.insert("provider".into(), Value::String(settings.provider.clone()));
+    // The local stack has no cloud provider entry; keep cloud providers intact.
+    if settings.provider != "local" {
+        let providers = root
+            .get_mut("providers")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| "Eye config is missing providers".to_string())?;
+        let provider = providers
+            .get_mut(&settings.provider)
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| format!("Eye provider {} is unavailable", settings.provider))?;
+        provider.insert(
+            "model".into(),
+            Value::String(settings.model.trim().to_owned()),
+        );
+    }
     let vision = root
         .entry("vision")
         .or_insert_with(|| json!({}))
@@ -263,7 +281,7 @@ fn save_hearing_at(path: &Path, settings: HearingSettings) -> Result<(), String>
 }
 
 fn validate_sight(settings: &SightSettings) -> Result<(), String> {
-    if settings.model.trim().is_empty() {
+    if settings.provider != "local" && settings.model.trim().is_empty() {
         return Err("Название vision-модели не может быть пустым".into());
     }
     if !matches!(settings.detail.as_str(), "quick" | "normal" | "deep") {
@@ -568,5 +586,62 @@ mod tests {
         assert_eq!(value["maxFrames"], 12);
         assert_eq!(value["frameSize"], 640);
         assert_eq!(value["defaultEvery"], 0.0);
+    }
+
+    #[test]
+    fn sight_load_injects_local_provider_first() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let eye_path = temp.path().join("eye.json");
+        let speech_path = temp.path().join("speech.json");
+        fs::write(
+            &eye_path,
+            r#"{"providers":{"mimo":{"model":"mimo-v2.5"},"openai":{"model":"gpt-4.1-mini"}}}"#,
+        )
+        .expect("eye fixture");
+        fs::write(&speech_path, "{}").expect("speech fixture");
+
+        let settings = load_from_paths(&eye_path, &speech_path).expect("settings");
+
+        assert_eq!(settings.sight.provider, "local");
+        assert_eq!(settings.sight.model, "");
+        assert_eq!(settings.sight_providers[0].value, "local");
+        assert_eq!(settings.sight_providers[0].label, "Локально (без API)");
+        assert!(
+            settings
+                .sight_providers
+                .iter()
+                .any(|option| option.value == "mimo")
+        );
+    }
+
+    #[test]
+    fn sight_save_local_keeps_cloud_providers_intact() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"provider":"mimo","providers":{"mimo":{"apiKey":"secret","model":"old"}},"vision":{"detail":"quick"}}"#,
+        )
+        .expect("fixture");
+        save_sight_at(
+            &path,
+            SightSettings {
+                enabled: true,
+                provider: "local".into(),
+                model: String::new(),
+                detail: "normal".into(),
+                mode: "balanced".into(),
+                cache: true,
+                max_calls_per_image: 6,
+                verify: false,
+                video_enabled: false,
+            },
+        )
+        .expect("save local");
+        let document = read_json(&path).expect("document");
+        assert_eq!(document["provider"], "local");
+        assert_eq!(document["providers"]["mimo"]["apiKey"], "secret");
+        assert_eq!(document["providers"]["mimo"]["model"], "old");
+        assert_eq!(document["vision"]["detail"], "normal");
     }
 }
