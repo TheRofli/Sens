@@ -558,7 +558,10 @@ def analyze(
         import cv2
 
         image = load_cv(image_path)
-        x, y, w, h = region["x"], region["y"], region["width"], region["height"]
+        # MCP schemas send f64; slices need ints.
+        x, y, w, h = (int(round(v)) for v in (
+            region["x"], region["y"], region["width"], region["height"]
+        ))
         crop = image[y:y + h, x:x + w]
         # Zoom-Refine: upscale small crops so OCR/layout see readable strokes.
         small_side = min(crop.shape[0], crop.shape[1])
