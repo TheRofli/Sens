@@ -140,7 +140,11 @@ def color_zones(image: Any, k: int = 5, sample_side: int = 96) -> list[dict[str,
 
 
 def layout_blocks(image: Any, min_side: int = 24) -> list[dict[str, Any]]:
-    """Group text/UI into rectangular blocks via morphology + contours."""
+    """Group text/UI into rectangular blocks via morphology + contours.
+
+    RETR_TREE + an enclosure filter so standalone sections (cards) are
+    reported separately instead of being merged into one outer shell.
+    """
     import cv2
 
     height, width = image.shape[:2]
@@ -150,22 +154,147 @@ def layout_blocks(image: Any, min_side: int = 24) -> list[dict[str, Any]]:
     _, binary = cv2.threshold(grad, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (17, 7))
     closed = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    blocks = []
-    for contour in contours:
+    contours, hierarchy = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    raw = []
+    for index, contour in enumerate(contours):
         x, y, w, h = cv2.boundingRect(contour)
         if w < min_side or h < min_side:
             continue
         if w * h > width * height * 0.9:
             continue
+        raw.append((index, [x, y, x + w, y + h]))
+    # Enclosure filter via the contour tree: a rect that has a child
+    # covering > 20% of its area is an outer shell, not a section.
+    kept = []
+    for index, rect in raw:
+        x0, y0, x1, y1 = rect
+        own = (x1 - x0) * (y1 - y0)
+        shell = False
+        if hierarchy is not None:
+            child_index = hierarchy[0][index][2]
+            while child_index != -1:
+                child = next((r for i, r in raw if i == child_index), None)
+                if child is not None:
+                    child_area = (child[2] - child[0]) * (child[3] - child[1])
+                    if child_area > 0.2 * own:
+                        shell = True
+                        break
+                child_index = hierarchy[0][child_index][0]
+        if not shell:
+            kept.append(rect)
+    blocks = []
+    for x0, y0, x1, y1 in kept:
         blocks.append({
             "kind": "block",
-            "box": [x, y, x + w, y + h],
-            "area": w * h,
+            "box": [x0, y0, x1, y1],
+            "area": (x1 - x0) * (y1 - y0),
             "source": "measured",
         })
     blocks.sort(key=lambda b: -b["area"])
     return blocks[:40]
+
+
+def layout_skeleton(image: Any, min_len_ratio: float = 0.35) -> dict[str, Any]:
+    """Long horizontal/vertical lines: the frame skeleton of the layout.
+
+    Returns pixel coordinates of lines that span at least `min_len_ratio`
+    of the frame along their axis — these are section borders (cards,
+    panels), as opposed to short field separators.
+    """
+    import cv2
+
+    height, width = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, binary = cv2.threshold(gray, 130, 255, cv2.THRESH_BINARY_INV)
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, int(width * min_len_ratio)), 1))
+    h_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel)
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(15, int(height * min_len_ratio))))
+    v_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, v_kernel)
+    horizontal = []
+    for y in range(height):
+        if int(h_lines[y, :].sum()) > 255 * width * min_len_ratio:
+            horizontal.append(y)
+    vertical = []
+    for x in range(width):
+        if int(v_lines[:, x].sum()) > 255 * height * min_len_ratio:
+            vertical.append(x)
+    return {
+        "horizontal": _line_groups(horizontal),
+        "vertical": _line_groups(vertical),
+    }
+
+
+def _line_groups(coords: list[int], tolerance: int = 3) -> list[int]:
+    """Collapse thick lines (several adjacent rows/cols) to center rows."""
+    groups = []
+    for coord in coords:
+        if groups and coord - groups[-1] <= tolerance:
+            continue
+        groups.append(coord)
+    return groups
+
+
+def layout_gaps(blocks: list[dict[str, Any]], min_area_ratio: float = 0.03) -> list[dict[str, Any]]:
+    """Measure pixel gaps between adjacent sections.
+
+    A pair of blocks is adjacent when they overlap along one axis (>= 30%
+    of the smaller extent) and the gap along the other axis is small.
+    `touching` means the gap is at most 4px — sections are glued (contour
+    erosion eats ~2px per border, so a real 0px gap reads as 0-4px).
+    """
+    sections = [b for b in blocks if b["area"] >= min_area_ratio * max(1, blocks[0]["area"])] if blocks else []
+    gaps = []
+    for i, first in enumerate(sections):
+        for second in sections[i + 1:]:
+            fx0, fy0, fx1, fy1 = first["box"]
+            sx0, sy0, sx1, sy1 = second["box"]
+            overlap_x = min(fx1, sx1) - max(fx0, sx0)
+            overlap_y = min(fy1, sy1) - max(fy0, sy0)
+            # Near-duplicate contour pairs around the same border: skip.
+            if (
+                overlap_x > 0.75 * min(fx1 - fx0, sx1 - sx0)
+                and overlap_y > 0.75 * min(fy1 - fy0, sy1 - sy0)
+            ):
+                continue
+            if overlap_x >= 0.3 * min(fx1 - fx0, sx1 - sx0):
+                # vertical neighbours; order by y
+                if sy0 < fy0:
+                    top, bottom = second["box"], first["box"]
+                else:
+                    top, bottom = first["box"], second["box"]
+                gap = bottom[1] - top[3]
+                axis = "y"
+                span = overlap_x
+            elif overlap_y >= 0.3 * min(fy1 - fy0, sy1 - sy0):
+                # horizontal neighbours; order by x
+                if sx0 < fx0:
+                    left, right = second["box"], first["box"]
+                else:
+                    left, right = first["box"], second["box"]
+                gap = right[0] - left[2]
+                axis = "x"
+                span = overlap_y
+            else:
+                continue
+            # Nested pairs (one block fully inside the other) are not
+            # adjacent sections — skip them.
+            if (
+                fx0 >= sx0 + 4 and fy0 >= sy0 + 4 and fx1 <= sx1 - 4 and fy1 <= sy1 - 4
+            ) or (
+                sx0 >= fx0 + 4 and sy0 >= fy0 + 4 and sx1 <= fx1 - 4 and sy1 <= fy1 - 4
+            ):
+                continue
+            if gap > 64:
+                continue
+            gaps.append({
+                "axis": axis,
+                "px": max(0, gap),
+                "span": span,
+                "touching": gap <= 4,
+                "boxes": [top if axis == "y" else left, bottom if axis == "y" else right],
+            })
+    gaps.sort(key=lambda g: (g["axis"], g["px"]))
+    return gaps[:24]
 
 
 def attention_map(image: Any, ocr_items: list[dict[str, Any]], grid: int = 8) -> list[dict[str, Any]]:
@@ -464,6 +593,28 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
             "source": "inferred",
         })
 
+    # Visual QA: glued sections and broken vertical rhythm (UI review).
+    for gap in dump.get("gaps", []):
+        if gap["touching"]:
+            conflicts.append({
+                "kind": "sections_touch_without_gap",
+                "detail": (
+                    f"two sections touch along {gap['axis']} with a {gap['px']}px gap "
+                    f"(boxes {gap['boxes']})"
+                ),
+                "source": "measured",
+            })
+    y_gaps = [g for g in dump.get("gaps", []) if g["axis"] == "y"]
+    if len(y_gaps) >= 2:
+        values = [g["px"] for g in y_gaps]
+        spread = max(values) - min(values)
+        if spread > 10 and any(v == 0 for v in values) and any(v > 10 for v in values):
+            conflicts.append({
+                "kind": "inconsistent_section_rhythm",
+                "detail": f"vertical gaps between sections vary: {values}px",
+                "source": "measured",
+            })
+
     return {
         "textBlocks": text_blocks[:20],
         "graphicBlocks": graphic_blocks[:20],
@@ -610,6 +761,8 @@ def analyze_full(image_path: str) -> dict[str, Any]:
         "colors": colors["dominant"],
         "ocr": ocr_items,
         "layout": blocks,
+        "skeleton": layout_skeleton(image),
+        "gaps": layout_gaps(blocks),
         "attention": attention,
         "scene": scene,
         "objects": objects,
