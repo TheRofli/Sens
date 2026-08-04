@@ -629,6 +629,9 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 _last_cache_cleanup: float = 0.0
+# Bump when the dump schema changes so stale dumps (e.g. without gaps)
+# are not served from cache.
+CACHE_SCHEMA_VERSION = "qa1"
 
 
 def cache_root() -> Path:
@@ -648,7 +651,7 @@ def cache_key(image_path: str, region: dict[str, int] | None) -> str:
     region_key = "full"
     if region is not None:
         region_key = "{x}x{y}x{w}x{h}".format(**region)
-    return f"{digest.hexdigest()[:32]}-{region_key}.json"
+    return f"{CACHE_SCHEMA_VERSION}-{digest.hexdigest()[:32]}-{region_key}.json"
 
 
 def read_cache(key: str) -> dict[str, Any] | None:
