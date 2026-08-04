@@ -617,7 +617,7 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
                 "detail": issue["detail"],
                 "source": "measured",
             })
-        elif issue["kind"] in ("uneven_card_heights", "misaligned_card_edges"):
+        elif issue["kind"] == "uneven_card_heights":
             conflicts.append({
                 "kind": "card_alignment",
                 "detail": issue["detail"],
@@ -869,19 +869,10 @@ def design_qa(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict[str
         if len(row) < 2:
             continue
         heights = {b["box"][3] - b["box"][1] for b in row}
-        widths = {b["box"][2] - b["box"][0] for b in row}
         if len(heights) > 1 and max(heights) - min(heights) > 8:
             issues.append({
                 "kind": "uneven_card_heights",
                 "detail": f"cards in a row have different heights: {sorted(heights)}px",
-                "boxes": [b["box"] for b in row],
-                "source": "measured",
-            })
-        lefts = {b["box"][0] for b in row}
-        if len(lefts) > 1 and max(lefts) - min(lefts) > 8:
-            issues.append({
-                "kind": "misaligned_card_edges",
-                "detail": f"cards in a row start at different x: {sorted(lefts)}px",
                 "boxes": [b["box"] for b in row],
                 "source": "measured",
             })
