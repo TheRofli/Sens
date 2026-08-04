@@ -741,8 +741,14 @@ def compare_images(reference_path: str, candidate_path: str) -> dict[str, Any]:
     delta = np.abs(ref_hsv - cand_hsv)
     # hue is circular: wrap 180 -> 0
     delta[:, :, 0] = np.minimum(delta[:, :, 0], 180.0 - delta[:, :, 0])
-    # weight: hue 0.4, saturation 0.3, value 0.3
-    score = (0.4 * delta[:, :, 0] + 0.3 * delta[:, :, 1] + 0.3 * delta[:, :, 2])
+    # Hue is meaningless for neutral pixels (JPEG noise on white/gray
+    # backgrounds); weight it by how saturated both pixels are.
+    neutrality = np.minimum(ref_hsv[:, :, 1], cand_hsv[:, :, 1]) / 255.0
+    score = (
+        0.4 * delta[:, :, 0] * neutrality
+        + 0.3 * delta[:, :, 1]
+        + 0.3 * delta[:, :, 2]
+    )
     # Adaptive threshold: at least 15 (above noise), at most 30 (so large
     # regions of change are never swallowed by their own percentile).
     threshold = min(max(15.0, float(np.percentile(score, 90))), 30.0)
