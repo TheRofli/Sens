@@ -604,6 +604,25 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
                 ),
                 "source": "measured",
             })
+    for issue in dump.get("design", {}).get("issues", []):
+        if issue["kind"] in ("text_clipped_at_frame", "text_overflows_section"):
+            conflicts.append({
+                "kind": "text_overflow",
+                "detail": issue["detail"],
+                "source": "measured",
+            })
+        elif issue["kind"] == "low_text_contrast":
+            conflicts.append({
+                "kind": "low_text_contrast",
+                "detail": issue["detail"],
+                "source": "measured",
+            })
+        elif issue["kind"] in ("uneven_card_heights", "misaligned_card_edges"):
+            conflicts.append({
+                "kind": "card_alignment",
+                "detail": issue["detail"],
+                "source": "measured",
+            })
     y_gaps = [g for g in dump.get("gaps", []) if g["axis"] == "y"]
     if len(y_gaps) >= 2:
         values = [g["px"] for g in y_gaps]
@@ -629,9 +648,9 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 _last_cache_cleanup: float = 0.0
-# Bump when the dump schema changes so stale dumps (e.g. without gaps)
-# are not served from cache.
-CACHE_SCHEMA_VERSION = "qa1"
+# Bump when the dump schema changes so stale dumps (e.g. without gaps
+# or without design QA) are not served from cache.
+CACHE_SCHEMA_VERSION = "qa2"
 
 
 def cache_root() -> Path:
@@ -695,6 +714,123 @@ def cleanup_cache(directory: Path, interval: float = 3600.0) -> None:
                 path.unlink(missing_ok=True)
     except OSError:
         return
+
+
+# --------------------------------------------------------------------------
+# L5b: design QA — overflow, contrast, uneven cards, alignment
+# --------------------------------------------------------------------------
+
+
+def _contrast_of(box: list[int], image: Any) -> float:
+    """Text-to-background contrast (0..1) inside an OCR box.
+
+    Uses the 5th/95th luminance percentiles: text pixels vs background.
+    """
+    import cv2
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    x0, y0, x1, y1 = box
+    patch = gray[max(0, y0):y1, max(0, x0):x1]
+    if patch.size < 16:
+        return 1.0
+    lo = float(np.percentile(patch, 5))
+    hi = float(np.percentile(patch, 95))
+    return round((hi - lo) / 255.0, 3)
+
+
+def design_qa(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Deterministic design review: overflow, contrast, uneven/misaligned cards."""
+    import cv2
+
+    issues: list[dict[str, Any]] = []
+    width = image.shape[1]
+    height = image.shape[0]
+    sections = [b for b in blocks if b["area"] >= 0.02 * max(1, blocks[0]["area"])] if blocks else []
+
+    # 1. Text overflowing its containing section or the frame edge.
+    for item in ocr_items:
+        box = item["box"]
+        for edge, limit in (("left", 0), ("top", 0), ("right", width), ("bottom", height)):
+            if (edge in ("left", "top") and box[0 if edge == "left" else 1] < limit - 2) or (
+                edge in ("right", "bottom") and box[2 if edge == "right" else 3] > limit + 2
+            ):
+                issues.append({
+                    "kind": "text_clipped_at_frame",
+                    "detail": f"text {item['text']!r} is cut at the {edge} edge",
+                    "box": box,
+                    "source": "measured",
+                })
+                break
+        else:
+            for section in sections:
+                sx0, sy0, sx1, sy1 = section["box"]
+                inside = (
+                    box[0] >= sx0 - 2 and box[1] >= sy0 - 2
+                    and box[2] <= sx1 + 2 and box[3] <= sy1 + 2
+                )
+                if inside:
+                    break
+                overlap_w = min(box[2], sx1) - max(box[0], sx0)
+                overlap_h = min(box[3], sy1) - max(box[1], sy0)
+                if overlap_w <= 0 or overlap_h <= 0:
+                    continue
+                box_area = (box[2] - box[0]) * (box[3] - box[1])
+                if (overlap_w * overlap_h) > 0.5 * box_area:
+                    if box[2] > sx1 + 4 or box[3] > sy1 + 4 or box[0] < sx0 - 4 or box[1] < sy0 - 4:
+                        issues.append({
+                            "kind": "text_overflows_section",
+                            "detail": f"text {item['text']!r} overflows its section (section {sx0},{sy0},{sx1},{sy1})",
+                            "box": box,
+                            "source": "measured",
+                        })
+                    break
+
+    # 2. Low text contrast.
+    for item in ocr_items:
+        contrast = _contrast_of(item["box"], image)
+        if contrast < 0.18:
+            issues.append({
+                "kind": "low_text_contrast",
+                "detail": f"text {item['text']!r} has {contrast:.2f} contrast against its background",
+                "box": item["box"],
+                "source": "measured",
+            })
+
+    # 3. Uneven card sizes in a row / misaligned edges.
+    rows: list[list[dict[str, Any]]] = []
+    for section in sections:
+        placed = False
+        for row in rows:
+            other = row[0]["box"]
+            overlap_y = min(section["box"][3], other[3]) - max(section["box"][1], other[1])
+            if overlap_y > 0.5 * min(section["box"][3] - section["box"][1], other[3] - other[1]):
+                row.append(section)
+                placed = True
+                break
+        if not placed:
+            rows.append([section])
+    for row in rows:
+        if len(row) < 2:
+            continue
+        heights = {b["box"][3] - b["box"][1] for b in row}
+        widths = {b["box"][2] - b["box"][0] for b in row}
+        if len(heights) > 1 and max(heights) - min(heights) > 8:
+            issues.append({
+                "kind": "uneven_card_heights",
+                "detail": f"cards in a row have different heights: {sorted(heights)}px",
+                "boxes": [b["box"] for b in row],
+                "source": "measured",
+            })
+        lefts = {b["box"][0] for b in row}
+        if len(lefts) > 1 and max(lefts) - min(lefts) > 8:
+            issues.append({
+                "kind": "misaligned_card_edges",
+                "detail": f"cards in a row start at different x: {sorted(lefts)}px",
+                "boxes": [b["box"] for b in row],
+                "source": "measured",
+            })
+
+    return {"issues": issues[:16]}
 
 
 # --------------------------------------------------------------------------
@@ -766,6 +902,7 @@ def analyze_full(image_path: str) -> dict[str, Any]:
         "layout": blocks,
         "skeleton": layout_skeleton(image),
         "gaps": layout_gaps(blocks),
+        "design": design_qa(image, blocks, ocr_items),
         "attention": attention,
         "scene": scene,
         "objects": objects,
