@@ -251,7 +251,10 @@ def layout_gaps(blocks: list[dict[str, Any]], min_area_ratio: float = 0.03) -> l
     `touching` means the gap is at most 4px — sections are glued (contour
     erosion eats ~2px per border, so a real 0px gap reads as 0-4px).
     """
-    sections = [b for b in blocks if b["area"] >= min_area_ratio * max(1, blocks[0]["area"])] if blocks else []
+    sections = [
+        b for b in blocks
+        if b.get("kind") != "texture" and b["area"] >= min_area_ratio * max(1, blocks[0]["area"])
+    ] if blocks else []
     gaps = []
     for i, first in enumerate(sections):
         for second in sections[i + 1:]:
@@ -525,6 +528,218 @@ def _intersection_ratio(left: list[int], right: list[int]) -> float:
     return intersection / smaller if smaller > 0 else 0.0
 
 
+# Known font silhouettes: (family, average glyph width in em, cap height in
+# em). Uppercase-heavy UI text; mixed-case reads slightly narrower.
+_KNOWN_FONTS: list[tuple[str, float, float]] = [
+    ("arial", 0.60, 0.72),
+    ("helvetica", 0.60, 0.72),
+    ("inter", 0.58, 0.73),
+    ("roboto", 0.61, 0.71),
+    ("montserrat", 0.66, 0.70),
+    ("oswald", 0.55, 0.72),
+    ("bebas", 0.44, 0.73),
+    ("anton", 0.72, 0.95),
+    ("space-grotesk", 0.58, 0.72),
+]
+
+
+def _glyph_metrics(image: Any, box: list[int]) -> dict[str, Any] | None:
+    """Cap height / average glyph width of an OCR line, plus a best-effort
+    family guess. The copier sizes fonts from these numbers instead of
+    guessing; `custom` means no known font matches the silhouette (cut the
+    line as a graphic asset)."""
+    import cv2
+
+    x0, y0, x1, y1 = (int(v) for v in box)
+    if x1 - x0 < 8 or y1 - y0 < 4:
+        return None
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    patch = gray[y0:y1, x0:x1].astype(int)
+    bg = float(np.median(patch))
+    amp = float(np.percentile(np.abs(patch - bg), 90))
+    if amp < 18:
+        return None  # low contrast: not reliably readable text
+    mask = np.abs(patch - bg) > 0.35 * amp
+    rows = np.where(mask.any(axis=1))[0]
+    if len(rows) < 3:
+        return None
+    # Cap rows: rows with a substantial share of the busiest row. This
+    # keeps ascender rows of tall caps and drops descender tails (p, y)
+    # that only carry a few glyph pixels.
+    per_row = mask.sum(axis=1)
+    if int(per_row.max()) == 0:
+        return None
+    strong = np.where(per_row > 0.08 * per_row.max())[0]
+    if len(strong) < 2:
+        return None
+    cap = int(strong[-1] - strong[0] + 1)
+    # Split strokes into letters; fuse sloppy anti-alias gaps, split glued
+    # pairs by the median run width.
+    widths: list[int] = []
+    run = 0
+    for col in range(x1 - x0):
+        if mask[:, col].any():
+            run += 1
+        else:
+            if run > 0:
+                widths.append(run)
+            run = 0
+    if run > 0:
+        widths.append(run)
+    if not widths:
+        return None
+    median_w = float(np.median(widths))
+    letters = sum(max(1, round(w / max(1.6, median_w))) for w in widths)
+    avg_glyph = float(np.sum(widths)) / max(1, letters)
+    font_size = cap / 0.73  # cap-based reference em
+    width_em = avg_glyph / font_size if font_size > 0 else 0.0
+    best = min(_KNOWN_FONTS, key=lambda f: abs(f[1] - width_em))
+    custom = abs(best[1] - width_em) > 0.07
+    return {
+        "capHeight": int(cap),
+        "avgGlyphWidth": round(avg_glyph, 1),
+        "fontSize": int(round(font_size)),
+        "widthEm": round(width_em, 2),
+        "family": "custom" if custom else best[0],
+    }
+
+
+def texture_blocks(
+    image: Any, ocr_items: list[dict[str, Any]], min_area: int = 40000
+) -> list[dict[str, Any]]:
+    """Large textured graphics (patterns, illustrations) that the contour
+    layout pass misses: threshold local variance, close, keep big blobs
+    that do not wrap OCR text."""
+    import cv2
+
+    height, width = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    scale = 4  # work at 1/4 resolution
+    small = cv2.resize(
+        gray, (width // scale, height // scale), interpolation=cv2.INTER_AREA
+    )
+    mean = cv2.boxFilter(small, ddepth=-1, ksize=(9, 9)).astype(np.float64)
+    sq = cv2.boxFilter(small.astype(np.float64) ** 2, ddepth=-1, ksize=(9, 9))
+    var = np.clip(sq - mean * mean, 0, None)
+    textured = (var > 220).astype(np.uint8) * 255  # local std > ~15
+    closed = cv2.morphologyEx(
+        textured, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8)
+    )
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(closed, 8)
+    ocr_boxes = [item["box"] for item in ocr_items]
+    result: list[dict[str, Any]] = []
+    for index in range(1, n):
+        x, y, w, h, area = (int(v) for v in stats[index])
+        if area * scale * scale < min_area:
+            continue
+        box = [x * scale, y * scale, (x + w) * scale, (y + h) * scale]
+        area_px = (box[2] - box[0]) * (box[3] - box[1])
+        # Drop blobs that are mostly OCR text; text overlapping a large
+        # graphic (a pattern behind a headline) must not kill the block.
+        text_share = 0.0
+        for ocr_box in ocr_boxes:
+            ox0 = max(box[0], ocr_box[0])
+            oy0 = max(box[1], ocr_box[1])
+            ox1 = min(box[2], ocr_box[2])
+            oy1 = min(box[3], ocr_box[3])
+            if ox1 > ox0 and oy1 > oy0:
+                text_share = max(
+                    text_share, (ox1 - ox0) * (oy1 - oy0) / area_px
+                )
+        if text_share > 0.3:
+            continue
+        result.append({
+            "kind": "texture",
+            "box": box,
+            "area": (box[2] - box[0]) * (box[3] - box[1]),
+            "source": "measured",
+        })
+    result.sort(key=lambda b: -b["area"])
+    return result[:8]
+
+
+def _controls_around_text(
+    image: Any,
+    ocr_items: list[dict[str, Any]],
+    existing: list[dict[str, Any]],
+    top: int = 8,
+) -> list[dict[str, Any]]:
+    """Buttons filled with near-page-background color (dark-on-dark) escape
+    the contour pass; find them by the uniform fill ring around an OCR line."""
+    import cv2
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    height, width = gray.shape
+    page_bg = float(np.median(gray[:40, :40]))
+    out: list[dict[str, Any]] = []
+    for item in ocr_items:
+        x0, y0, x1, y1 = (int(v) for v in item["box"])
+        if x1 - x0 < 12 or y1 - y0 < 4:
+            continue
+        ring = gray[max(0, y0 - 12):y1 + 12, max(0, x0 - 12):x1 + 12]
+        ring_mask = np.ones(ring.shape, dtype=bool)
+        py0 = y0 - max(0, y0 - 12)
+        px0 = x0 - max(0, x0 - 12)
+        ring_mask[py0:py0 + (y1 - y0), px0:px0 + (x1 - x0)] = False
+        vals = ring[ring_mask]
+        if vals.size < 60:
+            continue
+        bg = float(np.median(vals))
+        if abs(bg - page_bg) < 15 or float(vals.std()) > 34:
+            continue
+        # Grow bounds while the neighbouring band stays near the fill color.
+        # The band is 6px; the fill sits on the box side of it, so sample the
+        # half closest to the box to avoid mixing in the page background.
+        bx0, by0, bx1, by1 = x0, y0, x1, y1
+        for _ in range(200):
+            moved = False
+            if by0 > 6:
+                row = gray[by0 - 6:by0, bx0:bx1]
+                if abs(float(np.median(row[-3:])) - bg) < 14:
+                    by0 -= 1
+                    moved = True
+            if by1 < height - 6:
+                row = gray[by1:by1 + 6, bx0:bx1]
+                if abs(float(np.median(row[:3])) - bg) < 14:
+                    by1 += 1
+                    moved = True
+            if bx0 > 6:
+                col = gray[by0:by1, bx0 - 6:bx0]
+                if abs(float(np.median(col[:, -3:])) - bg) < 14:
+                    bx0 -= 1
+                    moved = True
+            if bx1 < width - 6:
+                col = gray[by0:by1, bx1:bx1 + 6]
+                if abs(float(np.median(col[:, :3])) - bg) < 14:
+                    bx1 += 1
+                    moved = True
+            if not moved:
+                break
+        box = [bx0, by0, bx1, by1]
+        if any(_intersection_ratio(box, c["box"]) > 0.5 for c in existing):
+            continue
+        # Fill color: median of the ring around the text (the box center
+        # can land on a glyph).
+        ring_bgr = image[max(0, y0 - 12):y1 + 12, max(0, x0 - 12):x1 + 12]
+        ring_mask = np.ones(ring_bgr.shape[:2], dtype=bool)
+        ring_mask[py0:py0 + (y1 - y0), px0:px0 + (x1 - x0)] = False
+        pixels = ring_bgr[ring_mask]
+        if pixels.size < 30:
+            continue
+        pixel = np.median(pixels.reshape(-1, 3), axis=0)
+        out.append({
+            "background": "#{:02X}{:02X}{:02X}".format(
+                int(pixel[2]), int(pixel[1]), int(pixel[0])
+            ),
+            "borderColor": None,
+            "borderWidth": None,
+            "box": box,
+            "cornerRadius": 0,
+            "source": "measured",
+        })
+    return out[:top]
+
+
 def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
     """Reconcile OCR / layout / objects / attention into confirmed structure.
 
@@ -659,7 +874,7 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
 _last_cache_cleanup: float = 0.0
 # Bump when the dump schema changes so stale dumps (e.g. without gaps,
 # design QA or section style) are not served from cache.
-CACHE_SCHEMA_VERSION = "qa6"
+CACHE_SCHEMA_VERSION = "qa7"
 
 
 def cache_root() -> Path:
@@ -817,7 +1032,10 @@ def design_qa(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict[str
     issues: list[dict[str, Any]] = []
     width = image.shape[1]
     height = image.shape[0]
-    sections = [b for b in blocks if b["area"] >= 0.02 * max(1, blocks[0]["area"])] if blocks else []
+    sections = [
+        b for b in blocks
+        if b.get("kind") != "texture" and b["area"] >= 0.02 * max(1, blocks[0]["area"])
+    ] if blocks else []
 
     # 1. Text overflowing its containing section or the frame edge.
     for item in ocr_items:
@@ -1088,7 +1306,10 @@ def section_style(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict
     import cv2
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    sections = [b for b in blocks if b["area"] >= 0.02 * max(1, blocks[0]["area"])][:top] if blocks else []
+    sections = [
+        b for b in blocks
+        if b.get("kind") != "texture" and b["area"] >= 0.02 * max(1, blocks[0]["area"])
+    ][:top] if blocks else []
     result = []
     for section in sections:
         x0, y0, x1, y1 = section["box"]
@@ -1450,11 +1671,18 @@ def analyze(
 def analyze_full(image_path: str) -> dict[str, Any]:
     image = load_cv(image_path)
     ocr_items = run_ocr(image_path)
+    for item in ocr_items:
+        metrics = _glyph_metrics(image, item["box"])
+        if metrics is not None:
+            item["metrics"] = metrics
     colors = color_zones(image)
     blocks = layout_blocks(image)
+    blocks = blocks + texture_blocks(image, ocr_items)
     attention = attention_map(image, ocr_items)
     objects = objects_yolo(image_path)
     scene = scene_clip(image_path)
+    controls = control_style(image, blocks)
+    controls = controls + _controls_around_text(image, ocr_items, controls)
     dump = {
         "image": {"width": colors["width"], "height": colors["height"]},
         "colors": colors["dominant"],
@@ -1464,7 +1692,7 @@ def analyze_full(image_path: str) -> dict[str, Any]:
         "gaps": layout_gaps(blocks),
         "design": design_qa(image, blocks, ocr_items),
         "sectionStyle": section_style(image, blocks, ocr_items),
-        "controls": control_style(image, blocks),
+        "controls": controls,
         "icons": control_icons(image, blocks, ocr_items),
         "shadows": shadow_bands(image, blocks, objects),
         "attention": attention,
