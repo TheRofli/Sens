@@ -10,6 +10,14 @@
 
 **Спека:** `docs/superpowers/specs/2026-08-06-sens-vision2-design.md` — при конфликте план уступает спеке.
 
+**Поправки от pre-flight ресёрча (2026-08-06, после написания плана, сверка с реальным кодом):**
+- Task 1 — вместе с функциями переносить константы/глобалы (иначе smoke упадёт NameError); `math` в текущем коде не импортируется.
+- Task 6 — риск отсутствия prebuilt-wheel `llama-cpp-python` под win/py3.11; имена GGUF в `PACKS` сверять с фактическим лейаутом HF-репо до скачивания.
+- Task 7 — в коде УЖЕ есть `CACHE_SCHEMA_VERSION="qa8"` и контент-адресованный `cache_key`; правильно поднять qa8→qa9, рецепт ключа НЕ менять.
+- Task 8 — КРИТИЧНО: новые операции должны быть заявлены в манифесте `sens-protocol` (`default_capabilities`), иначе `SensCore::invoke` отклонит их до исполнителя (прецедент: `sens_watch`/`sens_fetch` молча не работают); fire-and-forget API для warm-пинга не существует; `invoke()` в main.rs на строках 178–190 (232–246 — образец `sens_locate`).
+- Task 10 — обновить не только запись `facts`, но и читателя: `cross_verify` читает `design.issues`.
+- Task 11 — `.gitignore` не покрывает `models/` и корневые `*.png` (git add -A затянет до ~2.6 ГБ GGUF); изменения Task 8 живут в `sens-broker.exe`/`sens-mcp.exe` — нужны пересборка и рестарт брокера, не только воркера; `sens_compare` облачно-гейтится (Eye).
+
 ## Global Constraints
 
 - Инференс ТОЛЬКО CPU + системная RAM; CUDA/GPU не использовать нигде в новом коде.
@@ -46,8 +54,10 @@ Create:
 
 Modify:
 - `sidecars/sight-worker.py` — становится тонким entrypoint-шимом.
+- `crates/sens-protocol/src/lib.rs` — манифест sight: заявить операции `zoom`, `ask`, `element`, `motion`, `capture`, `vision_prompt`, `warm` (критично: `SensCore::invoke` отклоняет незаявленные операции до исполнителя).
 - `crates/sens-broker/src/sight.rs` — валидация новых операций, warm-пинг VLM-хоста, тесты.
 - `crates/sens-mcp/src/main.rs` — новые инструменты `sens_zoom`, `sens_ask`, `sens_element`, `sens_motion`, `sens_capture`, `sens_vision_prompt` + Args-структуры + обновление `instructions`.
+- `.gitignore` — `/models/` и корневые `/*.png` (Task 11, до финального коммита).
 
 ---
 
@@ -76,7 +86,14 @@ git commit -m "sight: hierarchical section/element tree, SoM annotation, screen 
 """Sens sight pipeline modules."""
 ```
 
-Перенести функции из `sidecars/sight-worker.py` строго по карте из File Structure (имена не менять, сигнатуры не менять). Внутренние импорты разрешать через пакет: например, `perception.py` использует `from sight.ocr import run_ocr, load_cv`; `ops.py` импортирует `perception`, `qa`, `tree`, `cache`, `ocr`. Общие stdlib-импорты (`sys`, `json`, `math`, `time`, `pathlib.Path`, `typing.Any`) и `import cv2`, `import numpy as np` продублировать в каждом модуле, где используются.
+Перенести функции из `sidecars/sight-worker.py` строго по карте из File Structure (имена не менять, сигнатуры не менять). Внутренние импорты разрешать через пакет: например, `perception.py` использует `from sight.ocr import run_ocr, load_cv`; `ops.py` импортирует `perception`, `qa`, `tree`, `cache`, `ocr`. Общие stdlib-импорты (`sys`, `json`, `time`, `pathlib.Path`, `typing.Any`) и `import cv2`, `import numpy as np` продублировать в каждом модуле, где используются. (`math` в текущем коде НЕ импортируется — его добавят сами новые модули, где понадобится.)
+
+Вместе с функциями перенести модульные константы и глобальное состояние — иначе smoke упадёт NameError. Раскладка по потребителям:
+- `ocr.py`: `_ocr_engine` (ленивый singleton), `CYRILLIC_CONFIG_NAME`;
+- `perception.py`: `_yolo`, `_clip`, `_clip_preprocess`, `_clip_tokenizer`, `_clip_model_name`, `SCENE_CANDIDATES`;
+- `tree.py`: `_SCREEN_ROLES`;
+- `cache.py`: `CACHE_TTL_SECONDS`, `CACHE_SCHEMA_VERSION` (сейчас `"qa8"`), `_last_cache_cleanup`;
+- остальные (`WORKER_DIR`, `_TEXT_SURFACE_HINTS`, `_KNOWN_FONTS` и пр.) — в модуль первого использования. Ленивые singleton'ы сохраняют global-семантику (`global X` внутри функций). Если пара «функция + константа» по карте расходится с реальным потребителем — верить потребителю (ловится smoke'ом).
 
 - [ ] **Step 3: server.py — перенести handle() и stdin-цикл**
 
@@ -802,7 +819,7 @@ git commit -m "sight: visual context document builder + markdown renderer"
 - [ ] **Step 1: Установить llama-cpp-python (CPU)**
 
 Run: `D:/Speech/.venv/Scripts/python.exe -m pip install llama-cpp-python`
-Expected: успешно (prebuilt wheel win/py3.11). Если собирается из исходников и это заняло >5 мин — прервать и поставить wheel вручную с PyPI-страницы проекта.
+Expected: успешно (prebuilt wheel win/py3.11). Риск: prebuilt-wheel под win/py3.11 может отсутствовать — тогда pip начнёт сборку из исходников (нужны CMake + MSVC build tools); если заняло >5 мин — прервать и искать готовый wheel (релизы llama-cpp-python / известные зеркала), либо поставить тулчейн. Если собирается из исходников и это заняло >5 мин — прервать и поставить wheel вручную с PyPI-страницы проекта.
 
 - [ ] **Step 2: Реализация хоста**
 
@@ -1008,6 +1025,8 @@ if __name__ == "__main__":
 
 - [ ] **Step 4: Скачать lite-пак (~0.85 ГБ, явная операция)**
 
+Сначала сверить фактический лейаут HF-репо с `PACKS[lite]` (имена файлов — предположение): открыть `https://huggingface.co/jc-builds/smolvlm2-500m-gguf/tree/main` (или `curl -s https://huggingface.co/api/models/jc-builds/smolvlm2-500m-gguf/tree/main`) и при несовпадении имён поправить `PACKS` ДО скачивания.
+
 Run: `D:/Speech/.venv/Scripts/python.exe D:/Sens/scripts/download-vision-models.py --pack lite`
 Expected: два файла в `D:/Sens/models/`, вывод `done`. Если репо-лейаут отличается (404/bad magic) — поправить `PACKS[lite]` по фактическим именам файлов в карточке репо и повторить.
 
@@ -1040,7 +1059,7 @@ git commit -m "sight: lazy llama-cpp VLM host (lite/quality packs) + explicit mo
 
 - [ ] **Step 1: cache.py — schema bump**
 
-Добавить в `sidecars/sight/cache.py` константу `SCHEMA_VERSION = "2"` и включить её в строку ключа в `cache_key(...)` (например, `f"{SCHEMA_VERSION}:{image_path}:{region or ''}"` до hashlib). Старый кэш инвалидируется.
+В коде УЖЕ есть `CACHE_SCHEMA_VERSION = "qa8"` (переносится в `sight/cache.py` в Task 1), и `cache_key()` уже включает версию в контент-адресованный ключ (sha256 байтов файла). Правка: поднять `CACHE_SCHEMA_VERSION` с `"qa8"` до `"qa9"`. НЕ добавлять отдельную константу `SCHEMA_VERSION` и НЕ менять рецепт ключа на path-based — это потеряет контент-адресацию и задвоит версию. Старый кэш инвалидируется самой сменой версии.
 
 - [ ] **Step 2: ops.py — новые операции**
 
@@ -1205,10 +1224,14 @@ git commit -m "sight: see returns visual context document; zoom/ask/element/warm
 ### Task 8: Rust — MCP-инструменты и валидация брокера
 
 **Files:**
-- Modify: `crates/sens-mcp/src/main.rs` (Args + 6 инструментов + instructions), `crates/sens-broker/src/sight.rs` (валидация + warm-пинг + тесты)
+- Modify: `crates/sens-protocol/src/lib.rs` (манифест sight — заявить новые операции; КРИТИЧНО), `crates/sens-mcp/src/main.rs` (Args + 6 инструментов + instructions), `crates/sens-broker/src/sight.rs` (валидация + warm-пинг + тесты)
 
 **Interfaces:**
-- Consumes: существующие `Region`, `require_source`, `require_string`, `runtime_error`, паттерн `self.invoke("sight", op, ...)` (main.rs:232-244).
+- Consumes: существующие `Region` (main.rs:50), `require_source`, `require_string`, `runtime_error`, паттерн `self.invoke("sight", op, ...)` (хелпер `invoke()`: main.rs:178–190; образец для копирования — `sens_locate`, main.rs:229–246).
+
+- [ ] **Step 0: sens-protocol — заявить операции в манифесте (критично)**
+
+`SensCore::invoke` сверяет операцию с `default_capabilities()` и отклоняет незаявленные с `operation_not_supported` ДО исполнителя. В `crates/sens-protocol/src/lib.rs` (манифест sight, ~строки 241–248) рядом с `see/read/locate/inspect/compare/artifact_get` добавить: `zoom`, `ask`, `element`, `motion`, `capture`, `vision_prompt`, `warm`. Прецедент: инструменты `sens_watch`/`sens_fetch` уже сейчас вызывают незаявленные операции и молча не исполняются. Без этого шага ВСЕ новые инструменты будут возвращать failed-конверт.
 
 - [ ] **Step 1: main.rs — Args-структуры**
 
@@ -1352,7 +1375,7 @@ struct PromptArgs {
 
 - [ ] **Step 4: sight.rs — warm-пинг при старте воркера**
 
-Найти место старта sight-воркера (grep `spawn` в `crates/sens-broker/src/sight.rs` / `process_group.rs`); после успешного спавна отправить fire-and-forget invoke `{"operation":"warm"}` с таймаутом 120 с, ошибку логировать в stderr и игнорировать (воркер обязан работать и без моделей).
+Место ленивого спавна: `invoke_worker` (sight.rs ~270, guard `Mutex<Option<WorkerProcess>>`: если None → `start_local()`, spawn на ~165). Готового fire-and-forget API НЕТ (`BrokerRequest` = Status/Capabilities/Invoke/Ping/Shutdown; единственный `tokio::spawn` — обслуживание pipe-соединения). Механизм: на `SightExecutor` добавить флаг «warm ещё не делали» (`AtomicBool`); в `invoke_worker` после успешного спавна — `tokio::spawn` задачи, которая берёт лок воркера, пишет в stdin `{"requestId":..., "operation":"warm"}` с таймаутом 120 с, ошибку логирует в stderr и игнорирует (воркер обязан работать и без моделей; `warm` без моделей возвращает `{"models": false}`, не падает). Альтернатива — новый вариант `BrokerRequest::Warm` + ветка в `handle_request`; выбрать вариант, который проходит clippy `-D warnings` без подавлений.
 
 - [ ] **Step 5: sight.rs — тесты валидации**
 
@@ -1366,7 +1389,7 @@ Expected: всё зелёное.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add crates/sens-mcp/src/main.rs crates/sens-broker/src/sight.rs
+git add crates/sens-protocol/src/lib.rs crates/sens-mcp/src/main.rs crates/sens-broker/src/sight.rs
 git commit -m "sight: MCP tools zoom/ask/element/capture/motion/vision_prompt + validation"
 ```
 
@@ -1607,6 +1630,8 @@ def test_document_reads_facts_key() -> None:
 
 В `design_qa` (и всех местах, собирающих результат) заменить ключ `"issues"` на `"facts"`; внутренние имена переменных оставить. Проверить grep'ом: `grep -n '"issues"' sidecars/sight/` — останутся только фолбэк в document.py и legacy в server.py.
 
+ОБЯЗАТЕЛЬНО обновить и читателя: `cross_verify` читает `dump["design"]["issues"]` (~строка 831 исходного sight-worker.py, в модуле `qa.py`) — перевести на `facts` с фолбэком на `issues`, иначе конфликты (text_overflow / low_text_contrast / card_alignment) тихо исчезнут из `dump["verification"]`.
+
 - [ ] **Step 4: server.py — legacy сохраняет старую форму**
 
 В `see_document` (ops.py) перед возвратом построить legacy-копию:
@@ -1645,11 +1670,21 @@ git commit -m "sight: QA reframed to measurements-as-facts; legacy keeps issues 
 
 ```powershell
 Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -like '*sight-worker*' } |
+  Where-Object { $_.CommandLine -like '*sight-worker*' -or $_.Name -eq 'sens-broker.exe' } |
   ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 ```
 
+Убивать нужно НЕ только воркер: изменения Task 8 живут в `sens-broker.exe` (демон-владелец манифеста и валидации). Брокер при старте поднимает воркеров заново; `sens-mcp` перезапустит MCP-хост. Если убить только sight-worker, приёмка через MCP будет исполнять СТАРЫЙ брокер, и новые операции отклонятся.
+
 - [ ] **Step 2: Деплой в AppData**
+
+Сначала пересобрать Rust-бинарники (изменения Task 8):
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH" && cd D:/Sens && cargo build --release -p sens-broker -p sens-mcp
+```
+
+Затем деплой:
 
 ```bash
 cp -r D:/Sens/sidecars/sight "$LOCALAPPDATA/Sens/sidecars/"
@@ -1658,7 +1693,7 @@ cp -r D:/Sens/models "$LOCALAPPDATA/Sens/" 2>/dev/null || true
 powershell.exe -File D:/Sens/scripts/restart-sight.ps1
 ```
 
-Первый MCP-вызов после деплоя может упасть `sight_disconnected` — повторить вызов.
+Первый MCP-вызов после деплоя может упасть `sight_disconnected` — повторить вызов. НЕ трогать задеплоенный `eye-worker.mjs` (он уже отличается от репо-версии — сверить отдельно при необходимости).
 
 - [ ] **Step 3: Приёмка 1 — круговой текст Mono X7**
 
@@ -1683,18 +1718,31 @@ powershell.exe -File D:/Sens/scripts/restart-sight.ps1
 3. Сохранить HTML, отрендерить playwright-пайплайном (viewport 2048×1152 по `user-display-resolution`), прогнать `sens_compare` оригинал vs рендер.
 4. Зафиксировать mismatch% в отчёте; цель — тренд снижения по итерациям и качественное «узнаваемо тот же дизайн». Одна итерация правок по измерениям допустима.
 
-- [ ] **Step 8: Финальные гейты**
+Нюанс: `sens_compare` маршрутизуется в облачный Eye; без Eye-ключа метрика недоступна — в этом случае сравнить локально прямым python-вызовом `sight.compare_images` и зафиксировать это в отчёте.
+
+- [ ] **Step 8: gitignore-гигиена перед финальным коммитом**
+
+В корне репо лежат неотслеживаемые PNG (copy-render-v18b.png, copy4-render*.png, fonttest5.png, ~7 МБ), а после Task 6 в `models/` лежат GGUF (до ~2.6 ГБ) — `.gitignore` их НЕ покрывает. Добавить в `.gitignore`:
+
+```
+/models/
+/*.png
+```
+
+Проверить `git status --short`: в untracked не должно остаться моделей и корневых скриншотов.
+
+- [ ] **Step 9: Финальные гейты**
 
 Run: `D:/Speech/.venv/Scripts/python.exe -m pytest tests/sight -q` → pass.
 Run: `export PATH="$HOME/.cargo/bin:$PATH" && cd D:/Sens && cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace` → зелёное.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add -A && git commit -m "sight: vision 2.0 acceptance pass + deploy scripts"
+git add scripts/restart-sight.ps1 .gitignore && git commit -m "sight: vision 2.0 acceptance pass + deploy scripts"
 ```
 
-Пуш в GitHub НЕ делать без явной просьбы.
+НЕ использовать `git add -A` — затянет бинарники моделей и скриншоты, вопреки спеке §8 «модели НЕ в git». Если приёмка добавила другие файлы (отчёт, фикстуры) — добавлять их в коммит явно по одному. Пуш в GitHub НЕ делать без явной просьбы.
 
 ---
 
@@ -1703,4 +1751,5 @@ git add -A && git commit -m "sight: vision 2.0 acceptance pass + deploy scripts"
 1. **Покрытие спеки:** §4.1 рефакторинг+новое ядро → Tasks 1–5; §4.2 VLM-хост → Task 6; §4.3 url-capture → Task 9; §4.4 Rust → Task 8; §5 документ → Tasks 4–5, 10; §6 tool-слой → Tasks 7–9 (vision_prompt — Task 7); §7 вайб/QA → Tasks 5, 10; §8 хостинг/бюджет → Task 6; §9 ошибки/деградация → Tasks 6–7 (semantics_status, RuntimeError с инструкцией), cache-bump Task 7; §10 тесты/приёмка → Tasks 2–5, 9, 11; §11 порядок сборки = порядок тасков 1–11.
 2. **Плейсхолдеры:** нет; все шаги с кодом или точной командой; открытые риски (репо-лейаут GGUF, качество транскрипции) описаны с явным действием при срабатывании.
 3. **Согласованность типов:** `normalize_box`, `build_document`, `render_markdown`, `VlmHost.vibe/describe/transcribe/ask`, `see_document/zoom/ask/element/vision_prompt/warm`, `capture_url/motion_events` — имена и сигнатуры одинаковы во всех тасках; `design.facts` с фолбэком `issues` согласован между Tasks 5 и 10; camelCase-ключи (`somId`, `imagePath`) согласованы между Rust-Args и python-handle.
+4. **Pre-flight сверка с кодом (2026-08-06):** план прочитан против реального кода (sight-worker.py 2411 строк, все 59 имён карты переноса существуют, handle() 2357–2388, stdin-цикл 2391–2411, instructions main.rs:461, тесты sight.rs 526+ — подтверждено). Найденные расхождения закрыты правками: константы/глобалы в Task 1; wheel-риск и сверка GGUF-имён в Task 6; `CACHE_SCHEMA_VERSION` qa8→qa9 вместо нового `SCHEMA_VERSION` в Task 7; манифест `sens-protocol` (Step 0) и механизм warm-пинга в Task 8; читатель `cross_verify` в Task 10; `.gitignore`, пересборка+рестарт брокера и таргетированный `git add` в Task 11.
 
