@@ -239,6 +239,15 @@ const messages = {
     "model.whisperRu.desc": "RU + EN code-switching, высокая точность",
     "model.gigaam": "GigaAM v3 · русский",
     "model.gigaam.desc": "230M, локальная русская модель с пунктуацией",
+    "model.remote": "OpenRouter API · онлайн",
+    "model.remote.desc": "Транскрипция через API-ключ OpenRouter: GPT-4o Transcribe, Voxtral Mini, Chirp и др.",
+
+    "field.apiKey": "API ключ (OpenRouter)",
+    "field.apiKeyHint": "Хранится в settings.json и уходит только в OpenRouter; никуда не логируется",
+    "field.apiModel": "Модель",
+    "field.apiModelHint": "Любой slug транскрипционной модели OpenRouter, например openai/gpt-4o-transcribe",
+    "field.apiBaseUrl": "Base URL",
+    "field.apiBaseUrlHint": "OpenRouter по умолчанию; работает с любым OpenAI-совместимым эндпоинтом",
 
     // Language
     "lang.label": "Язык интерфейса",
@@ -468,6 +477,15 @@ const messages = {
     "model.whisperRu.desc": "RU + EN code-switching, high accuracy",
     "model.gigaam": "GigaAM v3 · Russian",
     "model.gigaam.desc": "230M, local Russian model with punctuation",
+    "model.remote": "OpenRouter API · online",
+    "model.remote.desc": "Transcription via an OpenRouter API key: GPT-4o Transcribe, Voxtral Mini, Chirp and more",
+
+    "field.apiKey": "API key (OpenRouter)",
+    "field.apiKeyHint": "Stored in settings.json and sent only to OpenRouter; never logged",
+    "field.apiModel": "Model",
+    "field.apiModelHint": "Any OpenRouter transcription model slug, e.g. openai/gpt-4o-transcribe",
+    "field.apiBaseUrl": "Base URL",
+    "field.apiBaseUrlHint": "OpenRouter by default; works with any OpenAI-compatible endpoint",
 
     "lang.label": "Interface language",
     "lang.ru": "Русский",

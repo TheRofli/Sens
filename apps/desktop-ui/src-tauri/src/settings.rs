@@ -48,6 +48,11 @@ pub struct HearingSettings {
     pub max_frames: u64,
     pub frame_size: u64,
     pub default_every: f64,
+    // Remote (OpenRouter-compatible) transcription API settings.
+    // The key lives in the Speech settings file only and is never logged.
+    pub api_key: String,
+    pub api_base_url: String,
+    pub api_model_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +198,9 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
                 .get("default_every")
                 .and_then(Value::as_f64)
                 .unwrap_or(0.0),
+            api_key: string_field(&speech, "remote_api_key", ""),
+            api_base_url: string_field(&speech, "remote_base_url", "https://openrouter.ai/api/v1"),
+            api_model_id: string_field(&speech, "remote_model_id", "openai/gpt-4o-transcribe"),
         },
         sight_providers,
         hearing_models: hearing_models(),
@@ -277,6 +285,18 @@ fn save_hearing_at(path: &Path, settings: HearingSettings) -> Result<(), String>
         Value::Number(settings.frame_size.into()),
     );
     root.insert("default_every".into(), json!(settings.default_every));
+    root.insert(
+        "remote_api_key".into(),
+        Value::String(settings.api_key.clone()),
+    );
+    root.insert(
+        "remote_base_url".into(),
+        Value::String(settings.api_base_url.clone()),
+    );
+    root.insert(
+        "remote_model_id".into(),
+        Value::String(settings.api_model_id.clone()),
+    );
     write_json(path, &document)
 }
 
@@ -323,6 +343,15 @@ fn validate_hearing(settings: &HearingSettings) -> Result<(), String> {
     }
     if !(0.0..=60.0).contains(&settings.default_every) {
         return Err("Интервал кадров должен быть от 0 до 60 секунд".into());
+    }
+    if settings.model == "remote" {
+        let base = settings.api_base_url.trim();
+        if base.is_empty() || !(base.starts_with("http://") || base.starts_with("https://")) {
+            return Err("Base URL должен начинаться с http:// или https://".into());
+        }
+        if settings.api_model_id.trim().is_empty() {
+            return Err("Название API-модели не может быть пустым".into());
+        }
     }
     Ok(())
 }
@@ -477,6 +506,11 @@ fn hearing_models() -> Vec<HearingModelOption> {
             label: "GigaAM v3 · русский".into(),
             description: "230M, локальная русская модель с пунктуацией".into(),
         },
+        HearingModelOption {
+            value: "remote".into(),
+            label: "OpenRouter API · онлайн".into(),
+            description: "Транскрипция через API-ключ OpenRouter: GPT-4o Transcribe, Voxtral Mini, Chirp и др.".into(),
+        },
     ]
 }
 
@@ -485,6 +519,7 @@ fn hearing_model_id(value: &str) -> Result<&'static str, String> {
         "parakeet" => Ok("nvidia/parakeet-tdt-0.6b-v3"),
         "whisper-ru" => Ok("coriollon/whisper-large-v3-turbo-russian-codeswitch"),
         "gigaam" => Ok("ai-sage/GigaAM-v3"),
+        "remote" => Ok("openai/gpt-4o-transcribe"),
         _ => Err(format!("Неизвестная модель слуха: {value}")),
     }
 }
@@ -548,6 +583,9 @@ mod tests {
                 max_frames: 12,
                 frame_size: 640,
                 default_every: 0.0,
+                api_key: String::new(),
+                api_base_url: "https://openrouter.ai/api/v1".into(),
+                api_model_id: "openai/gpt-4o-transcribe".into(),
             },
         )
         .expect("save");
@@ -555,6 +593,78 @@ mod tests {
         assert_eq!(document["model"], "gigaam");
         assert_eq!(document["model_id"], "ai-sage/GigaAM-v3");
         assert_eq!(document["keep"], 9);
+    }
+
+    #[test]
+    fn hearing_save_round_trips_remote_api_settings() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("settings.json");
+        fs::write(&path, "{}").expect("fixture");
+        save_hearing_at(
+            &path,
+            HearingSettings {
+                enabled: true,
+                model: "remote".into(),
+                device: "cpu".into(),
+                hotkey: "ctrl+win".into(),
+                copy_to_clipboard: true,
+                paste_to_active_input: true,
+                suppress_hotkey: false,
+                preload_model: false,
+                beam_size: 4,
+                postprocess_text: true,
+                vad_sensitivity: 0.03,
+                max_frames: 12,
+                frame_size: 640,
+                default_every: 0.0,
+                api_key: "sk-or-secret".into(),
+                api_base_url: "https://openrouter.ai/api/v1".into(),
+                api_model_id: "openai/gpt-4o-mini-transcribe".into(),
+            },
+        )
+        .expect("save");
+        let document = read_json(&path).expect("document");
+        assert_eq!(document["model"], "remote");
+        assert_eq!(document["model_id"], "openai/gpt-4o-transcribe");
+        assert_eq!(document["remote_api_key"], "sk-or-secret");
+        assert_eq!(document["remote_base_url"], "https://openrouter.ai/api/v1");
+        assert_eq!(document["remote_model_id"], "openai/gpt-4o-mini-transcribe");
+
+        let eye_path = temp.path().join("eye.json");
+        fs::write(&eye_path, r#"{"provider":"local","providers":{}}"#).expect("eye fixture");
+        let settings = load_from_paths(&eye_path, &path).expect("load").hearing;
+        assert_eq!(settings.model, "remote");
+        assert_eq!(settings.api_key, "sk-or-secret");
+        assert_eq!(settings.api_model_id, "openai/gpt-4o-mini-transcribe");
+    }
+
+    #[test]
+    fn hearing_remote_requires_valid_base_url() {
+        let mut settings = HearingSettings {
+            enabled: true,
+            model: "remote".into(),
+            device: "cpu".into(),
+            hotkey: "ctrl+win".into(),
+            copy_to_clipboard: true,
+            paste_to_active_input: true,
+            suppress_hotkey: false,
+            preload_model: false,
+            beam_size: 4,
+            postprocess_text: true,
+            vad_sensitivity: 0.03,
+            max_frames: 12,
+            frame_size: 640,
+            default_every: 0.0,
+            api_key: String::new(),
+            api_base_url: "ftp://bad".into(),
+            api_model_id: "openai/gpt-4o-transcribe".into(),
+        };
+        assert!(validate_hearing(&settings).is_err());
+        settings.api_base_url = "https://openrouter.ai/api/v1".into();
+        settings.api_model_id = String::new();
+        assert!(validate_hearing(&settings).is_err());
+        settings.api_model_id = "openai/gpt-4o-transcribe".into();
+        assert!(validate_hearing(&settings).is_ok());
     }
 
     #[test]

@@ -43,7 +43,7 @@ const navItems = [
 ];
 
 const KNOWN_PROVIDERS = ["local", "mimo", "openai", "custom"];
-const KNOWN_MODELS = ["parakeet", "whisper-ru", "gigaam"];
+const KNOWN_MODELS = ["parakeet", "whisper-ru", "gigaam", "remote"];
 
 function providerDisplay(t, value, fallback = "") {
   return KNOWN_PROVIDERS.includes(value) ? t(`provider.${value}`) : fallback || value;
@@ -84,6 +84,9 @@ const defaultCapabilitySettings = {
     maxFrames: 12,
     frameSize: 640,
     defaultEvery: 0,
+    apiKey: "",
+    apiBaseUrl: "https://openrouter.ai/api/v1",
+    apiModelId: "openai/gpt-4o-transcribe",
   },
   sightProviders: [
     { value: "local", label: "Локально (без API)", model: "" },
@@ -341,6 +344,22 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
                 </select>
                 <small>{modelDescription(t, draft.model, data.hearingModels.find((item) => item.value === draft.model)?.description)}</small>
               </label>
+              {draft.model === "remote" ? (
+                <div className="remote-api-fields">
+                  <label className="setting-field">{t("field.apiKey")}
+                    <input type="password" value={draft.apiKey} onChange={(event) => update("apiKey", event.target.value)} autoComplete="new-password" spellCheck="false" placeholder="sk-or-…" />
+                    <small>{t("field.apiKeyHint")}</small>
+                  </label>
+                  <label className="setting-field">{t("field.apiModel")}
+                    <input value={draft.apiModelId} onChange={(event) => update("apiModelId", event.target.value)} spellCheck="false" placeholder="openai/gpt-4o-transcribe" />
+                    <small>{t("field.apiModelHint")}</small>
+                  </label>
+                  <label className="setting-field">{t("field.apiBaseUrl")}
+                    <input value={draft.apiBaseUrl} onChange={(event) => update("apiBaseUrl", event.target.value)} spellCheck="false" />
+                    <small>{t("field.apiBaseUrlHint")}</small>
+                  </label>
+                </div>
+              ) : null}
               <label className="setting-field">{t("field.device")}
                 <select value={draft.device} onChange={(event) => update("device", event.target.value)}>
                   <option value="auto">{t("device.auto")}</option><option value="cpu">{t("device.cpu")}</option><option value="cuda">{t("device.cuda")}</option>
