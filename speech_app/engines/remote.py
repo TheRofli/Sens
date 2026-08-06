@@ -95,6 +95,11 @@ class RemoteEngine:
         Returns ``{"text", "segments", "language", "duration"}`` parsed from
         the OpenAI ``verbose_json`` response. Segments are normalized to the
         same ``{"start", "end", "text"}`` shape the whisper engine produces.
+
+        Some endpoint models (e.g. ``openai/gpt-4o-transcribe`` on OpenRouter)
+        only accept the plain ``json`` response format; when the API rejects
+        ``verbose_json`` we retry once with ``json`` and return text without
+        segments or duration.
         """
         base_url = (settings.remote_base_url or DEFAULT_BASE_URL).rstrip("/")
         model = settings.remote_model_id or DEFAULT_MODEL_ID
@@ -106,10 +111,28 @@ class RemoteEngine:
             )
         url = f"{base_url}/audio/transcriptions"
         headers = {"Authorization": f"Bearer {api_key}"}
-        form = {"model": model, "response_format": "verbose_json"}
         try:
             with open(path, "rb") as handle:
-                files = {"file": (Path(path).name, handle, "application/octet-stream")}
+                audio = handle.read()
+        except OSError as exc:
+            raise EngineUnavailable(
+                f"Не удалось прочитать аудиофайл: {exc}"
+            ) from exc
+        files = {"file": (Path(path).name, audio, "application/octet-stream")}
+        form = {"model": model, "response_format": "verbose_json"}
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                files=files,
+                data=form,
+                timeout=_REQUEST_TIMEOUT_S,
+            )
+            if (
+                response.status_code == 400
+                and "does not support response_format" in response.text
+            ):
+                form = {"model": model, "response_format": "json"}
                 response = requests.post(
                     url,
                     headers=headers,
@@ -184,10 +207,18 @@ def _raise_for_status(response: requests.Response, model: str, base_url: str) ->
         raise EngineUnavailable(
             "На балансе OpenRouter недостаточно средств (402). Пополните баланс."
         )
-    if response.status_code == 404:
+    # OpenRouter reports unknown models as 400 "Model X does not exist";
+    # direct OpenAI-style endpoints use 404.
+    model_missing = response.status_code in (400, 404) and (
+        response.status_code == 404
+        or "does not exist" in detail.lower()
+        or "not found" in detail.lower()
+    )
+    if model_missing:
         raise EngineUnavailable(
-            f"Модель {model} не найдена на {base_url} (404). "
-            "Проверьте название модели — например, openai/gpt-4o-transcribe."
+            f"Модель {model} не найдена на {base_url} ({response.status_code}). "
+            "Проверьте название модели — например, openai/gpt-4o-transcribe "
+            "или x-ai/grok-stt-1.0."
         )
     raise EngineUnavailable(
         f"{base_url} вернул {response.status_code} для модели {model}"

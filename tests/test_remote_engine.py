@@ -125,6 +125,51 @@ class RemoteEngineTests(unittest.TestCase):
                     engine.transcribe_file(_sample_file(), settings)
                 self.assertIn(expected, str(raised.exception))
 
+    def test_unknown_model_400_maps_to_not_found(self):
+        engine = RemoteEngine()
+        with mock.patch("speech_app.engines.remote.requests.post") as post:
+            post.return_value = _FakeResponse(
+                400, {"error": {"message": "Model openai/gpt-audio does not exist"}}
+            )
+            with self.assertRaises(EngineUnavailable) as raised:
+                engine.transcribe_file(
+                    _sample_file(), _settings(remote_model_id="openai/gpt-audio")
+                )
+        self.assertIn("не найдена", str(raised.exception))
+        self.assertIn("openai/gpt-audio", str(raised.exception))
+        # One attempt only: no response-format retry for missing models.
+        self.assertEqual(post.call_count, 1)
+
+    def test_verbose_json_rejected_retries_with_plain_json(self):
+        engine = RemoteEngine()
+        settings = _settings(remote_model_id="openai/gpt-4o-transcribe")
+        with mock.patch("speech_app.engines.remote.requests.post") as post:
+            post.side_effect = [
+                _FakeResponse(
+                    400,
+                    {
+                        "error": {
+                            "message": (
+                                'The selected model does not support '
+                                'response_format "verbose_json". Use "json" instead.'
+                            )
+                        }
+                    },
+                ),
+                _FakeResponse(200, {"text": "Привет, мир", "usage": {}}),
+            ]
+            result = engine.transcribe_file(_sample_file(), settings)
+
+        self.assertEqual(result["text"], "Привет, мир")
+        self.assertIsNone(result["segments"])
+        self.assertEqual(result["duration"], 0.0)
+        self.assertEqual(post.call_count, 2)
+        first_form = post.call_args_list[0].kwargs["data"]
+        second_form = post.call_args_list[1].kwargs["data"]
+        self.assertEqual(first_form["response_format"], "verbose_json")
+        self.assertEqual(second_form["response_format"], "json")
+        self.assertEqual(second_form["model"], "openai/gpt-4o-transcribe")
+
     def test_non_json_success_raises(self):
         engine = RemoteEngine()
         with mock.patch("speech_app.engines.remote.requests.post") as post:
