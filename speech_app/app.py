@@ -329,6 +329,14 @@ class SpeechApp:
             self.settings.vad_sensitivity = float(values["vad_sensitivity"])
         if "postprocess_text" in values:
             self.settings.postprocess_text = bool(values["postprocess_text"])
+        # Remote (OpenRouter) transcription settings; absent for callers that
+        # predate the feature, so keep the current value in that case.
+        if "remote_api_key" in values:
+            self.settings.remote_api_key = str(values["remote_api_key"])
+        if "remote_base_url" in values:
+            self.settings.remote_base_url = str(values["remote_base_url"])
+        if "remote_model_id" in values:
+            self.settings.remote_model_id = str(values["remote_model_id"])
         self.settings_store.save(self.settings)
         if self.settings.hotkey != previous_hotkey:
             self._restart_hotkeys()

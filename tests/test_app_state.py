@@ -191,6 +191,59 @@ class AppStateTests(unittest.TestCase):
 
         thread_cls.assert_not_called()
 
+    def test_save_settings_keeps_remote_api_fields(self):
+        """The Sens sync payload must not wipe the OpenRouter key."""
+
+        class FakeStore:
+            def __init__(self) -> None:
+                self.saved: AppSettings | None = None
+
+            def save(self, settings: AppSettings) -> None:
+                self.saved = settings
+
+        app = SpeechApp.__new__(SpeechApp)
+        app.settings = AppSettings(model="remote")
+        app.settings_store = FakeStore()
+        values = {
+            "model": "remote",
+            "remote_api_key": "sk-or-v1-test",
+            "remote_base_url": "https://openrouter.ai/api/v1",
+            "remote_model_id": "openai/gpt-4o-mini-transcribe",
+            "engine_enabled": True,
+            "copy_to_clipboard": False,
+            "paste_to_active_input": False,
+            "preload_model": False,
+            "device": "cpu",
+            "backend": "auto",
+            "hotkey": "ctrl+win",
+        }
+
+        app.save_settings_values(values)
+
+        self.assertEqual(app.settings.remote_api_key, "sk-or-v1-test")
+        self.assertEqual(app.settings.remote_base_url, "https://openrouter.ai/api/v1")
+        self.assertEqual(
+            app.settings.remote_model_id, "openai/gpt-4o-mini-transcribe"
+        )
+        assert app.settings_store.saved is not None
+        self.assertEqual(
+            app.settings_store.saved.remote_api_key, "sk-or-v1-test"
+        )
+        # Absent keys keep their current values (old callers predate the fields).
+        app.settings.remote_api_key = "sk-or-v1-kept"
+        app.save_settings_values(
+            {
+                "engine_enabled": True,
+                "copy_to_clipboard": False,
+                "paste_to_active_input": False,
+                "preload_model": False,
+                "device": "cpu",
+                "backend": "auto",
+                "hotkey": "ctrl+win",
+            }
+        )
+        self.assertEqual(app.settings.remote_api_key, "sk-or-v1-kept")
+
 
 if __name__ == "__main__":
     unittest.main()
