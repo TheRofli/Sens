@@ -14,6 +14,7 @@ import numpy as np
 from .engines.base import EngineUnavailable, SpeechEngine
 from .engines.gigaam import GigaAMEngine
 from .engines.parakeet import ParakeetEngine
+from .engines.remote import RemoteEngine
 from .engines.whisper import WhisperEngine
 from .models import resolve_engine
 
@@ -23,11 +24,13 @@ if TYPE_CHECKING:
 
 def make_engine(kind: str) -> SpeechEngine:
     """Instantiate the concrete engine for ``kind``
-    ("parakeet" | "whisper" | "gigaam")."""
+    ("parakeet" | "whisper" | "gigaam" | "remote")."""
     if kind == "whisper":
         return WhisperEngine()
     if kind == "gigaam":
         return GigaAMEngine()
+    if kind == "remote":
+        return RemoteEngine()
     return ParakeetEngine()
 
 
@@ -105,3 +108,22 @@ class EngineManager:
         if getter is None:
             return None
         return getter(samples, sample_rate, settings)
+
+    def transcribe_file(
+        self, path: Any, settings: "AppSettings"
+    ) -> dict[str, Any] | None:
+        """Remote engines: transcribe the file as-is in one API call.
+
+        Local engines have no ``transcribe_file`` and return None so callers
+        fall back to the sample-based path. The remote branch is selected by
+        ``settings.model`` (the "remote" preset key), not by what is currently
+        loaded, so a fresh worker handles it before any engine is loaded.
+        """
+        if resolve_engine(settings) != "remote":
+            return None
+        self.load(settings)
+        assert self._current is not None
+        getter = getattr(self._current, "transcribe_file", None)
+        if getter is None:
+            return None
+        return getter(path, settings)

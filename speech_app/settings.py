@@ -33,6 +33,13 @@ class AppSettings:
     # clean dictation speech; file transcription turns it off because the
     # VAD rejects vocoded/sung vocals on top of music.
     vad_filter: bool = True
+    # Video still extraction limits (used by agent file transcription).
+    # The model may ask for at / frames / every, but never more than
+    # max_frames stills, never larger than frame_size, and `every` falls
+    # back to default_every when the request does not specify an interval.
+    max_frames: int = 12
+    frame_size: int = 640
+    default_every: float = 0.0
     history_limit: int = 100
     # Quality / generation params (applied where supported by each engine).
     beam_size: int = 5
@@ -42,6 +49,11 @@ class AppSettings:
     compression_ratio_threshold: float = 2.4
     log_prob_threshold: float = -1.0
     postprocess_text: bool = True
+    # Remote (OpenRouter-compatible) transcription. The API key lives in this
+    # settings file only and must never be logged or passed through argv.
+    remote_api_key: str = ""
+    remote_base_url: str = "https://openrouter.ai/api/v1"
+    remote_model_id: str = "openai/gpt-4o-transcribe"
 
 
 def default_data_dir() -> Path:

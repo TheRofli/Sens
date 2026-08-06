@@ -361,6 +361,31 @@ def transcribe_audio_file(
     started = time.perf_counter()
     path = validate_audio_path(audio_path)
     container_kind = "video" if path.suffix.lower() in VIDEO_EXTENSIONS else "audio"
+    # Remote API engines (OpenRouter) receive the original file as-is: no
+    # local decode, VAD trim or resample. One API call returns text, segments
+    # and duration (verbose_json), and the timestamps match the source file.
+    # The branch is keyed on the "remote" preset so a fresh worker handles it
+    # before any engine is loaded.
+    if settings.model == "remote" and getattr(engine, "transcribe_file", None):
+        remote = engine.transcribe_file(path, settings)
+        if remote is not None:
+            text = remote.get("text") or ""
+            text = (
+                postprocess(text) if settings.postprocess_text else text.strip()
+            )
+            segments = remote.get("segments")
+            duration_seconds = float(remote.get("duration") or 0.0)
+            return {
+                "text": text,
+                "model": settings.remote_model_id,
+                "engine": engine.kind,
+                "sample_rate": 0,
+                "duration_seconds": duration_seconds,
+                "container": container_kind,
+                "audioTrack": duration_seconds > 0 or bool(text),
+                "segments": segments,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000),
+            }
     samples, sample_rate = load_audio_file(path)
     duration_seconds = float(samples.size / sample_rate) if sample_rate else 0.0
     audio_track = True

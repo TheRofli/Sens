@@ -668,3 +668,127 @@ class DarkButtonTests(CacheIsolatedTest):
             self.assertGreaterEqual(x1, 320)
             self.assertLessEqual(y0, 90)
             self.assertGreaterEqual(y1, 140)
+
+
+class HierarchyTests(CacheIsolatedTest):
+    """Screen -> sections -> elements hierarchy (XY-cut + roles + SoM)."""
+
+    @staticmethod
+    def _landing(path: Path) -> None:
+        import cv2
+        import numpy as np
+
+        img = np.full((700, 1000, 3), 8, dtype=np.uint8)
+        # nav strip: three menu items + one light pill button
+        for i, label in enumerate(("SERVICES", "WORK", "CONTACT")):
+            cv2.putText(img, label, (40 + i * 160, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (230, 230, 230), 2)
+        cv2.rectangle(img, (700, 12), (900, 48), (204, 204, 204), -1)
+        cv2.putText(img, "LETS CHAT", (720, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (10, 10, 10), 1)
+        # hero: two big headline lines
+        cv2.putText(img, "BIG BRANDING", (120, 280), cv2.FONT_HERSHEY_SIMPLEX, 2.2, (235, 235, 235), 3)
+        cv2.putText(img, "FOR STARTUPS", (140, 360), cv2.FONT_HERSHEY_SIMPLEX, 1.6, (220, 220, 220), 3)
+        # cta: one light + one dark-on-dark button
+        cv2.rectangle(img, (200, 500), (420, 560), (204, 204, 204), -1)
+        cv2.putText(img, "START NOW", (230, 538), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (12, 12, 12), 2)
+        cv2.rectangle(img, (470, 500), (690, 560), (42, 42, 42), -1)
+        cv2.putText(img, "VIEW WORK", (500, 538), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (235, 235, 235), 2)
+        # ghost box: fill equal to the page background, no label -> not a button
+        cv2.rectangle(img, (100, 620), (300, 660), (16, 16, 16), -1)
+        cv2.imwrite(str(path), img)
+
+    def test_roles_nav_hero_cta_and_screen_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "landing.png"
+            self._landing(path)
+
+            dump = analyze(str(path))
+            roles = set()
+
+            def walk(node: dict) -> None:
+                roles.add(node["role"])
+                for child in node.get("children", []):
+                    walk(child)
+
+            walk(dump["tree"])
+            self.assertEqual(dump["tree"]["role"], "screen")
+            self.assertIn("nav", roles)
+            self.assertIn("hero", roles)
+            self.assertIn("cta", roles)
+
+    def test_buttons_attach_to_cta_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "landing.png"
+            self._landing(path)
+
+            dump = analyze(str(path))
+            cta = None
+
+            def find_cta(node: dict) -> None:
+                nonlocal cta
+                if node["role"] == "cta":
+                    cta = node
+                    return
+                for child in node.get("children", []):
+                    find_cta(child)
+
+            find_cta(dump["tree"])
+            self.assertIsNotNone(cta, "cta section must exist")
+            buttons = [e for e in cta["elements"] if e["kind"] == "button"]
+            self.assertGreaterEqual(len(buttons), 2, "both CTA buttons attach to the cta section")
+
+    def test_ghost_box_not_a_button(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "landing.png"
+            self._landing(path)
+
+            dump = analyze(str(path))
+            ghost = [c for c in dump["controls"] if c["box"][0] >= 100 and c["box"][1] >= 600]
+            self.assertFalse(ghost, "fill equal to page background without a label is not a button")
+
+    def test_summary_and_som_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "landing.png"
+            self._landing(path)
+
+            dump = analyze(str(path))
+            self.assertIn("summary", dump)
+            self.assertIn("role=nav", dump["summary"])
+            self.assertIn("role=hero", dump["summary"])
+            self.assertTrue(dump.get("somPath"))
+            self.assertTrue(os.path.exists(dump["somPath"]), "SoM annotation image must be written")
+
+    def test_element_ids_stable_and_unique(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "landing.png"
+            self._landing(path)
+
+            dump = analyze(str(path))
+            ids = [e["id"] for e in dump["elements"]]
+            self.assertEqual(len(ids), len(set(ids)), "element ids must be unique")
+            self.assertEqual(ids, sorted(ids), "element ids must be sequential")
+
+    def test_find_gaps_ignores_leading_trailing_whitespace(self):
+        import numpy as np
+
+        self.assertEqual(sight_worker._find_gaps(np.array([0, 0, 0, 5, 5, 0, 0, 0, 5]), 2), [(5, 8)])
+        self.assertEqual(sight_worker._find_gaps(np.array([0, 0, 0, 5, 5]), 2), [])
+        self.assertEqual(sight_worker._find_gaps(np.array([0, 0, 0, 0]), 2), [])
+        self.assertEqual(sight_worker._find_gaps(np.array([5, 0, 0, 0, 5]), 2), [(1, 4)])
+
+    def test_merge_band_sections_joins_top_bar_chips(self):
+        chips = [
+            {"id": 1, "box": [40, 10, 120, 50], "area": 3200},
+            {"id": 2, "box": [160, 12, 300, 48], "area": 6160},
+            {"id": 3, "box": [700, 6, 900, 56], "area": 12000},
+        ]
+        merged = sight_worker._merge_band_sections(chips, 700)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["box"], [40, 6, 900, 56])
+
+    def test_merge_band_sections_keeps_distinct_bands(self):
+        chips = [
+            {"id": 1, "box": [40, 10, 120, 50], "area": 3200},
+            {"id": 2, "box": [40, 300, 500, 600], "area": 138000},
+        ]
+        merged = sight_worker._merge_band_sections(chips, 700)
+        self.assertEqual(len(merged), 2)

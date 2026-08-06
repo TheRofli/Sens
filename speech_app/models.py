@@ -52,6 +52,15 @@ MODELS: dict[str, ModelPreset] = {
         family="gigaam",
         description="230M, Sber, лучший русский на CPU, e2e с пунктуацией.",
     ),
+    "remote": ModelPreset(
+        key="remote",
+        label="OpenRouter API (онлайн)",
+        engine="remote",
+        model_id="openai/gpt-4o-transcribe",
+        family="remote",
+        description="Транскрипция через OpenRouter по API-ключу: GPT-4o Transcribe, "
+        "Voxtral Mini, Chirp и другие модели.",
+    ),
 }
 
 
@@ -69,11 +78,12 @@ def get_preset(key: str) -> ModelPreset:
 
 def available_presets() -> list[ModelPreset]:
     """Return all presets in a stable display order."""
-    return [MODELS[key] for key in ("parakeet", "whisper-ru", "gigaam")]
+    return [MODELS[key] for key in ("parakeet", "whisper-ru", "gigaam", "remote")]
 
 
 def resolve_engine(settings: "AppSettings") -> str:
-    """Return the engine kind ("parakeet" | "whisper") for the active model.
+    """Return the engine kind ("parakeet" | "whisper" | "gigaam" | "remote")
+    for the active model.
 
     Falls back to "parakeet" for unknown ``settings.model`` values so a stale
     settings file from an older install never hard-blocks startup.
