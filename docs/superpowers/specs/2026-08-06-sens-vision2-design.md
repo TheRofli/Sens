@@ -46,12 +46,15 @@ Entrypoint `sidecars/sight-worker.py` сохраняется (брокер ст�
 - ASCII-карта яркости 96×48 (конфиг, default on);
 - QA-рефрейм: эвристики пишут ФАКТЫ в секцию measurements (provenance=measured), не «issues».
 
-### 4.2 vlm-worker — новый сайдкар
+### 4.2 VLM-хост — in-process модуль sight-worker (`sidecars/sight/vlm.py`)
 
-- **moondream2** GGUF Q4_K (~1.7 ГБ RAM), llama-cpp-python, `n_threads` = CPU, без CUDA. Роли: `vibe(screen)`, `transcribe(region)` (декоративный текст), `describe(region)`, `ask(region, question)`, `ground(query)`-fallback.
-- **Florence-2-base** ONNX int8 (~0.3 ГБ), onnxruntime CPU (зависимость уже есть). Роли: описания регионов, dense captioning — быстрые пакетные вызовы.
-- Тёплый старт при запуске брокера (асинхронно), выгрузка после idle (конфиг, default 10 мин).
-- Протокол с брокером — тот же JSON stdin/stdout, что у остальных воркеров.
+Отдельный сайдкар НЕ заводится: YOLO/CLIP уже живут in-process в sight-worker (lazy-load), VLM-хост повторяет этот паттерн и не нарушает «брокер владеет воркерами».
+
+- **Пак lite (default, ~0.7 ГБ RAM)**: SmolVLM2-500M GGUF Q8 + mmproj-F16 (~0.64 ГБ), llama-cpp-python, CPU-треды.
+- **Пак quality (opt-in, ~2.3–2.6 ГБ)**: moondream2 GGUF Q4_K + mmproj-F16; включается `see(quality=true)` или конфигом `vision.pack=quality`; выгрузка по idle (default 10 мин).
+- Роли: `vibe(screen)`, `transcribe(crop)`, `describe(crop)`, `ask(crop|screen, question)`, `ground(screen, query)`; регион = кроп изображения, передаётся модели как отдельная картинка.
+- Florence-2 рассмотрен и отклонён (YAGNI): регионы закрывает crop-VQA модели пака, одна зависимость llama-cpp вместо двух стеков.
+- Lazy-load при первом вызове, тёплый пинг от брокера при старте воркера (асинхронно), unload после idle.
 
 ### 4.3 url-capture — модуль sight-worker, playwright опционален
 
@@ -59,7 +62,7 @@ Entrypoint `sidecars/sight-worker.py` сохраняется (брокер ст�
 
 ### 4.4 Rust-слой — минимально
 
-- `crates/sens-broker/src/sight.rs`: маршрутизация новых операций, жизненный цикл vlm-worker;
+- `crates/sens-broker/src/sight.rs`: маршрутизация новых операций, тёплый пинг VLM-хоста при старте воркера;
 - `crates/sens-mcp`: новые инструменты `sens_zoom`, `sens_ask`, `sens_element`, `sens_motion`, `sens_capture`; `sens_see` возвращает документ; legacy-поля текущего дампа сохраняются под ключом `legacy` на один релиз для совместимости, затем удаляются.
 
 Никакой логики зрения в Rust не переносится.
@@ -126,11 +129,11 @@ ascii 96×48: ▓▓░░… (карта композиции по яркост
 
 ## 8. Хостинг моделей и бюджет
 
-Пик RAM ≈ 2.0 ГБ (moondream 1.7 + Florence int8 0.3). Только CPU. Латентность: Florence 0.5–2 с/кадр; moondream ~20–40 tok/s на CPU → первый `see` нового экрана 10–20 с; кэш по хэшу — мгновенно; `fast` — 2–4 с. Модели НЕ в git и НЕ в релизном бандле: `scripts/download-vision-models` (явный запуск пользователем); первый use без моделей — видимое уведомление, не тихая сеть. Резервный fast-tier, если moondream медленный на практике: SmolVLM2-500M Q8 (0.64 ГБ).
+Пик RAM: lite ~0.7 ГБ (default); quality ~2.6 ГБ только при явном opt-in, с выгрузкой по idle. Только CPU. Латентность на CPU: lite ~1–3 с/подпись; quality ~4–8 с/подпись; первый `see` нового экрана: lite ~3–6 с, quality ~10–20 с; кэш по хэшу — мгновенно; `fast=true` пропускает VLM (~2 с). Модели НЕ в git и НЕ в бандле: `scripts/download-vision-models` (явный запуск); первый use без моделей — видимое уведомление и `semantics_status=unavailable`, не тихая сеть.
 
 ## 9. Ошибки и деградация
 
-- vlm-worker не стартовал / моделей нет → документ без inferred-секций, `semantics_status=unavailable`, `see` работает на детерминированной части;
+- VLM-хост недоступен / модели не скачаны → документ без inferred-секций, `semantics_status=unavailable`, `see` работает на детерминированной части;
 - таймаут VLM-вызова (конфиг, default 30 с) → секция пропускается с флагом, не ошибка;
 - playwright отсутствует → `sens_capture`/`sens_motion(url)`/`see(url)` возвращают понятную ошибку с инструкцией;
 - кэш: ключ = hash(image) + region + pipeline_schema_version; bump схемы инвалидирует;
@@ -146,7 +149,7 @@ ascii 96×48: ▓▓░░… (карта композиции по яркост
 ## 11. Порядок сборки
 
 1. Коммит незакоммиченной иерархии (+596 строк) + модульный рефакторинг sight-worker (entrypoint сохраняется);
-2. vlm-worker + маршрутизация брокера + `scripts/download-vision-models`;
+2. `sidecars/sight/vlm.py` (llama-cpp хост, паки lite/quality) + маршрутизация/пинг брокера + `scripts/download-vision-models` + `pip install llama-cpp-python pytest`;
 3. документ v1: токены + дерево + SoM + графика + ascii + measurements;
 4. zoom/ask/element + `sens_vision_prompt`; MCP-инструменты;
 5. url-capture + motion;
