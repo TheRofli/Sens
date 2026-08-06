@@ -223,6 +223,12 @@ impl SpeechRuntime {
             "max_frames": settings.max_frames,
             "frame_size": settings.frame_size,
             "default_every": settings.default_every,
+            // Remote (OpenRouter) transcription settings must survive the
+            // sync round-trip: the runtime persists the merged payload, and
+            // omitting these would wipe the API key from settings.json.
+            "remote_api_key": settings.api_key,
+            "remote_base_url": settings.api_base_url,
+            "remote_model_id": settings.api_model_id,
         });
         self.request_json("POST", "/api/settings", Some(&payload))?;
         if settings.enabled && settings.preload_model {
