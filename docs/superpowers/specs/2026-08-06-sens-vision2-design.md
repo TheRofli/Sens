@@ -52,7 +52,7 @@ Entrypoint `sidecars/sight-worker.py` сохраняется (брокер ст�
 
 - **Пак lite (default, ~0.7 ГБ RAM)**: SmolVLM2-500M GGUF Q8 + mmproj-F16 (~0.64 ГБ), llama-cpp-python, CPU-треды.
 - **Пак quality (opt-in, ~2.3–2.6 ГБ)**: moondream2 GGUF Q4_K + mmproj-F16; включается `see(quality=true)` или конфигом `vision.pack=quality`; выгрузка по idle (default 10 мин).
-- Роли: `vibe(screen)`, `transcribe(crop)`, `describe(crop)`, `ask(crop|screen, question)`, `ground(screen, query)`; регион = кроп изображения, передаётся модели как отдельная картинка.
+- Роли: `vibe(screen)`, `transcribe(crop)`, `describe(crop)`, `ask(crop|screen, question)`; регион = кроп изображения, передаётся модели как отдельная картинка. `ground` отложен (YAGNI v1).
 - Florence-2 рассмотрен и отклонён (YAGNI): регионы закрывает crop-VQA модели пака, одна зависимость llama-cpp вместо двух стеков.
 - Lazy-load при первом вызове, тёплый пинг от брокера при старте воркера (асинхронно), unload после idle.
 
