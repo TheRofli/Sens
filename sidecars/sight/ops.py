@@ -261,6 +261,20 @@ def _host(quality: bool, pack: str | None = None) -> VlmHost | None:
     return host if host.available() else None
 
 
+def _pick(quality: bool, pack: str | None = None) -> tuple[str | None, VlmHost | None]:
+    """Resolve the effective pack for a request.
+
+    A pack that is not downloaded degrades to lite (documented behavior);
+    returns (pack name or None, host or None)."""
+    resolved = _resolve_pack(pack, quality)
+    host = _HOSTS[resolved]
+    if not host.available():
+        if resolved != "lite" and _lite_host.available():
+            return "lite", _lite_host
+        return None, None
+    return resolved, host
+
+
 def _image_for(image_path: str, region: dict | None):
     image = load_cv(image_path)
     if region:
@@ -279,7 +293,7 @@ def see_document(
     pack: str | None = None,
 ) -> dict:
     dump = analyze(image_path, region, no_store)
-    vlm = None if fast else _host(quality, pack)
+    pack_name, vlm = (None, None) if fast else _pick(quality, pack)
     doc = docmod.build_document(dump, _image_for(image_path, region), vlm=vlm, image_path=image_path)
     legacy = dict(dump)
     if "facts" in legacy.get("design", {}):
@@ -289,6 +303,7 @@ def see_document(
         "doc": doc,
         "somPath": dump.get("somPath"),
         "legacy": legacy,
+        "pack": pack_name,
     }
 
 
@@ -324,8 +339,8 @@ def ask(
     quality: bool = False,
     pack: str | None = None,
 ) -> dict:
-    host = _host(quality, pack) or _lite_host
-    if not host.available():
+    _, host = _pick(quality, pack)
+    if host is None:
         raise RuntimeError("vision models not downloaded; run scripts/download-vision-models.py")
     box = [region["x"], region["y"], region["x"] + region["width"], region["y"] + region["height"]] if region else None
     return {"answer": host.ask(image_path, question, box)}
