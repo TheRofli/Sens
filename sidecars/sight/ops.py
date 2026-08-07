@@ -318,3 +318,19 @@ def warm() -> dict:
         return {"models": False}
     host._load()  # noqa: SLF001 - intentional warm preload
     return {"models": True}
+
+
+def capture_op(url: str) -> dict:
+    from sight.capture import capture_url
+
+    return capture_url(url, cache_root() / "captures")
+
+
+def motion_op(url: str) -> dict:
+    result = capture_op(url)
+    return {
+        "animations": result["animations"],
+        "motion": result["motion"],
+        "screenshot": result["screenshot"],
+        "styles": result["styles"],
+    }

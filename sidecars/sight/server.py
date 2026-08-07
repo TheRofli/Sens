@@ -9,9 +9,11 @@ from sight.compare import compare_images
 from sight.ops import (
     analyze,
     ask,
+    capture_op,
     element,
     inspect_target,
     locate_text,
+    motion_op,
     see_document,
     vision_prompt,
     warm,
@@ -67,6 +69,10 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         return vision_prompt(str(payload.get("lang", "ru")))
     if operation == "warm":
         return warm()
+    if operation == "capture":
+        return capture_op(str(payload["url"]))
+    if operation == "motion":
+        return motion_op(str(payload["url"]))
     if operation == "inspect":
         region = payload.get("region")
         target = payload.get("target")
