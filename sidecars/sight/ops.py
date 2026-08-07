@@ -12,6 +12,8 @@ from sight.perception import _controls_around_text, _glyph_metrics, _hex_to_bgr,
 from sight.qa import _center_in, control_icons, control_style, cross_verify, design_qa, section_style, shadow_bands
 from sight.tree import _assign_roles, annotate_som, build_element_tree, build_section_tree, expand_button_subparts, summarize_screen
 from sight.cache import cache_key, cache_root, read_cache, write_cache
+from sight import document as docmod
+from sight.vlm import VISION_PROMPT, VlmHost
 
 
 
@@ -223,3 +225,96 @@ def inspect_target(
             no_store,
         ),
     }
+
+
+# --------------------------------------------------------------------------
+# Vision 2.0: visual context document + interactive ops (zoom/ask/element)
+# --------------------------------------------------------------------------
+
+_lite_host = VlmHost("lite")
+_quality_host = VlmHost("quality")
+
+
+def _host(quality: bool) -> VlmHost | None:
+    host = _quality_host if quality else _lite_host
+    return host if host.available() else None
+
+
+def _image_for(image_path: str, region: dict | None):
+    image = load_cv(image_path)
+    if region:
+        x, y = int(region["x"]), int(region["y"])
+        w, h = int(region["width"]), int(region["height"])
+        image = image[y : y + h, x : x + w]
+    return image
+
+
+def see_document(
+    image_path: str,
+    region: dict | None = None,
+    no_store: bool = False,
+    fast: bool = False,
+    quality: bool = False,
+) -> dict:
+    dump = analyze(image_path, region, no_store)
+    vlm = None if fast else _host(quality)
+    doc = docmod.build_document(dump, _image_for(image_path, region), vlm=vlm, image_path=image_path)
+    return {
+        "document": docmod.render_markdown(doc),
+        "doc": doc,
+        "somPath": dump.get("somPath"),
+        "legacy": dump,
+    }
+
+
+def zoom(
+    image_path: str,
+    region: dict | None = None,
+    som_id: int | None = None,
+    no_store: bool = False,
+    quality: bool = False,
+) -> dict:
+    if region is None and som_id is not None:
+        dump = analyze(image_path, None, no_store)
+        el = next((e for e in dump["elements"] if e.get("id") == som_id), None)
+        if el is None:
+            raise ValueError(f"no element with id {som_id}")
+        pad = 24
+        region = {
+            "x": max(0, el["box"][0] - pad),
+            "y": max(0, el["box"][1] - pad),
+            "width": el["box"][2] - el["box"][0] + 2 * pad,
+            "height": el["box"][3] - el["box"][1] + 2 * pad,
+        }
+    if region is None:
+        raise ValueError("region or somId is required for zoom")
+    return see_document(image_path, region, no_store, quality=quality)
+
+
+def ask(image_path: str, question: str, region: dict | None = None, quality: bool = False) -> dict:
+    host = _host(quality) or _lite_host
+    if not host.available():
+        raise RuntimeError("vision models not downloaded; run scripts/download-vision-models.py")
+    box = [region["x"], region["y"], region["x"] + region["width"], region["y"] + region["height"]] if region else None
+    return {"answer": host.ask(image_path, question, box)}
+
+
+def element(image_path: str, som_id: int, no_store: bool = False) -> dict:
+    dump = analyze(image_path, None, no_store)
+    el = next((e for e in dump["elements"] if e.get("id") == som_id), None)
+    if el is None:
+        raise ValueError(f"no element with id {som_id}")
+    w, h = dump["image"]["width"], dump["image"]["height"]
+    return {"element": el, "box_norm": docmod.normalize_box(el["box"], w, h)}
+
+
+def vision_prompt(lang: str = "ru") -> dict:
+    return {"prompt": VISION_PROMPT.get(lang, VISION_PROMPT["ru"])}
+
+
+def warm() -> dict:
+    host = _host(False)
+    if host is None:
+        return {"models": False}
+    host._load()  # noqa: SLF001 - intentional warm preload
+    return {"models": True}

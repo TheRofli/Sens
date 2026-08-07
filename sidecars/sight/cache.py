@@ -25,7 +25,8 @@ _last_cache_cleanup: float = 0.0
 
 # Bump when the dump schema changes so stale dumps (e.g. without gaps,
 # design QA or section style) are not served from cache.
-CACHE_SCHEMA_VERSION = "qa8"
+# qa9: see returns a visual context document (Task 7, Vision 2.0).
+CACHE_SCHEMA_VERSION = "qa9"
 
 
 

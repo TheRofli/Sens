@@ -6,7 +6,17 @@ import json
 import sys
 
 from sight.compare import compare_images
-from sight.ops import analyze, inspect_target, locate_text
+from sight.ops import (
+    analyze,
+    ask,
+    element,
+    inspect_target,
+    locate_text,
+    see_document,
+    vision_prompt,
+    warm,
+    zoom,
+)
 
 
 
@@ -23,7 +33,13 @@ def handle(message: dict[str, object]) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("Sight input must be an object")
     if operation == "see":
-        return analyze(str(payload["imagePath"]), payload.get("region"), no_store)
+        return see_document(
+            str(payload["imagePath"]),
+            payload.get("region"),
+            no_store,
+            bool(payload.get("fast", False)),
+            bool(payload.get("quality", False)),
+        )
     if operation == "read":
         dump = analyze(str(payload["imagePath"]), payload.get("region"), no_store)
         return {"texts": [item["text"] for item in dump["ocr"]], "ocr": dump["ocr"]}
@@ -31,10 +47,26 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         dump = analyze(str(payload["imagePath"]), None, no_store)
         return locate_text(dump, str(payload.get("target", "")))
     if operation == "zoom":
-        region = payload.get("region")
-        if not isinstance(region, dict):
-            raise ValueError("region is required for zoom")
-        return analyze(str(payload["imagePath"]), region, no_store)
+        return zoom(
+            str(payload["imagePath"]),
+            payload.get("region"),
+            payload.get("somId"),
+            no_store,
+            bool(payload.get("quality", False)),
+        )
+    if operation == "ask":
+        return ask(
+            str(payload["imagePath"]),
+            str(payload["question"]),
+            payload.get("region"),
+            bool(payload.get("quality", False)),
+        )
+    if operation == "element":
+        return element(str(payload["imagePath"]), int(payload["id"]), no_store)
+    if operation == "vision_prompt":
+        return vision_prompt(str(payload.get("lang", "ru")))
+    if operation == "warm":
+        return warm()
     if operation == "inspect":
         region = payload.get("region")
         target = payload.get("target")
