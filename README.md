@@ -6,7 +6,7 @@
 
 **A local capability layer for language models.** Vision and hearing for text-only models — on your machine, no cloud, no API keys, no per-image cost.
 
-[![Version](https://img.shields.io/badge/version-1.2.3-8b5cf6)](https://github.com/TheRofli/Sens/releases)
+[![Version](https://img.shields.io/badge/version-1.2.4-8b5cf6)](https://github.com/TheRofli/Sens/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)](#requirements)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
 [![Platform](https://img.shields.io/badge/MCP-stdio-4f46e5)](#connect-a-model)
@@ -165,8 +165,8 @@ The native build emits both installers:
 2. Commit, push, then tag and push:
 
 ```powershell
-git tag v1.2.3
-git push origin v1.2.3
+git tag v1.2.4
+git push origin v1.2.4
 ```
 
 3. The `Release` workflow builds, signs, and publishes installers + `latest.json` to a GitHub release
