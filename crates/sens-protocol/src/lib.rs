@@ -234,10 +234,10 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
     vec![
         CapabilityManifest {
             id: "sight".into(),
-            version: "1.1.0".into(),
+            version: "1.2.0".into(),
             title: "Sight".into(),
             description:
-                "Local deterministic vision: OCR, layout, objects, scene and attention maps; no cloud API. compare/artifact_get require the optional cloud Eye.".into(),
+                "Local deterministic vision: OCR, layout, objects, scene and attention maps; visual context document with local VLM semantics; no cloud API. compare/artifact_get require the optional cloud Eye.".into(),
             operations: vec![
                 "see",
                 "read",
@@ -245,6 +245,13 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
                 "inspect",
                 "compare",
                 "artifact_get",
+                "zoom",
+                "ask",
+                "element",
+                "motion",
+                "capture",
+                "vision_prompt",
+                "warm",
             ]
             .into_iter()
             .map(str::to_owned)

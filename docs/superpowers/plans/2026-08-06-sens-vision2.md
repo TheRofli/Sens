@@ -1373,9 +1373,9 @@ struct PromptArgs {
         "vision_prompt" | "warm" => Ok(()),
 ```
 
-- [ ] **Step 4: sight.rs — warm-пинг при старте воркера**
+- [ ] **Step 4: warm-пинг при старте воркера**
 
-Место ленивого спавна: `invoke_worker` (sight.rs ~270, guard `Mutex<Option<WorkerProcess>>`: если None → `start_local()`, spawn на ~165). Готового fire-and-forget API НЕТ (`BrokerRequest` = Status/Capabilities/Invoke/Ping/Shutdown; единственный `tokio::spawn` — обслуживание pipe-соединения). Механизм: на `SightExecutor` добавить флаг «warm ещё не делали» (`AtomicBool`); в `invoke_worker` после успешного спавна — `tokio::spawn` задачи, которая берёт лок воркера, пишет в stdin `{"requestId":..., "operation":"warm"}` с таймаутом 120 с, ошибку логирует в stderr и игнорирует (воркер обязан работать и без моделей; `warm` без моделей возвращает `{"models": false}`, не падает). Альтернатива — новый вариант `BrokerRequest::Warm` + ветка в `handle_request`; выбрать вариант, который проходит clippy `-D warnings` без подавлений.
+Решение (2026-08-07): fire-and-forget API в брокере нет (BrokerRequest = Status/Capabilities/Invoke/Ping/Shutdown), а spawn задачи из `&self` потребовал бы unsafe или нового варианта протокола. Поэтому прогрев сделан на Python-стороне: `sight/server.main()` при старте воркера запускает daemon-тред `_warm_vlm_async()`, который вызывает `warm()` параллельно с первым запросом. Воркер стартует лениво на первый запрос — семантика та же, что у брокерного пинга, но без правок протокола. Ошибки прогрева логируются в stderr и игнорируются (воркер обязан работать без моделей).
 
 - [ ] **Step 5: sight.rs — тесты валидации**
 

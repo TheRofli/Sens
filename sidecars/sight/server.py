@@ -83,7 +83,27 @@ def handle(message: dict[str, object]) -> dict[str, object]:
 
 
 
+def _warm_vlm_async() -> None:
+    """Preload the VLM pack in the background while the worker boots.
+
+    The broker spawns this worker lazily on the first request; the warm thread
+    loads the GGUF models concurrently so later see/ask calls hit a hot host.
+    Errors are tolerated: the worker must serve deterministic ops without models.
+    """
+    import threading
+
+    def _run() -> None:
+        try:
+            warm()
+        except Exception as error:  # noqa: BLE001 - warm must never kill the worker
+            sys.stderr.write(f"vlm warm skipped: {error}\n")
+            sys.stderr.flush()
+
+    threading.Thread(target=_run, daemon=True, name="vlm-warm").start()
+
+
 def main() -> None:
+    _warm_vlm_async()
     for line in sys.stdin:
         if not line.strip():
             continue

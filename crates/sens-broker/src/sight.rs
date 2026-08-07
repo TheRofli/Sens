@@ -455,6 +455,36 @@ fn validate_sight_input(request: &InvokeRequest, cloud: bool) -> Result<(), Sens
             Ok(())
         }
         "see" | "read" => require_source(input),
+        "zoom" => {
+            require_source(input)?;
+            let has_region = input.get("region").is_some();
+            let has_som = input.get("somId").is_some();
+            if !has_region && !has_som {
+                return Err(runtime_error(
+                    "invalid_input",
+                    "zoom requires region or somId",
+                    "Pass a pixel region or a SoM element id.",
+                ));
+            }
+            Ok(())
+        }
+        "ask" => {
+            require_source(input)?;
+            require_string(input, "question")
+        }
+        "element" => {
+            require_source(input)?;
+            if input.get("id").is_none() {
+                return Err(runtime_error(
+                    "invalid_input",
+                    "element requires id",
+                    "Pass a SoM element id from a prior sens_see document.",
+                ));
+            }
+            Ok(())
+        }
+        "motion" | "capture" => require_string(input, "url"),
+        "vision_prompt" | "warm" => Ok(()),
         _ if cloud => Err(runtime_error(
             "operation_not_supported",
             format!("Eye does not support operation {}", request.operation),
@@ -566,6 +596,54 @@ mod tests {
             "inspect",
             json!({ "imagePath": path.to_string_lossy(), "region": { "x": 0, "y": 0, "width": 10, "height": 10 } }),
         );
+        assert!(validate_sight_input(&request, false).is_ok());
+    }
+
+    #[test]
+    fn zoom_requires_region_or_som_id() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "zoom",
+            json!({ "imagePath": path.to_string_lossy() }),
+        );
+        let error = validate_sight_input(&request, false).expect_err("missing focus");
+        assert_eq!(error.code, "invalid_input");
+    }
+
+    #[test]
+    fn zoom_accepts_som_id() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "zoom",
+            json!({ "imagePath": path.to_string_lossy(), "somId": 3 }),
+        );
+        assert!(validate_sight_input(&request, false).is_ok());
+    }
+
+    #[test]
+    fn ask_requires_question() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "ask",
+            json!({ "imagePath": path.to_string_lossy() }),
+        );
+        let error = validate_sight_input(&request, false).expect_err("missing question");
+        assert_eq!(error.code, "invalid_input");
+    }
+
+    #[test]
+    fn motion_requires_url() {
+        let request = InvokeRequest::new("sight", "motion", json!({}));
+        let error = validate_sight_input(&request, false).expect_err("missing url");
+        assert_eq!(error.code, "invalid_input");
+    }
+
+    #[test]
+    fn vision_prompt_needs_no_input() {
+        let request = InvokeRequest::new("sight", "vision_prompt", json!({}));
         assert!(validate_sight_input(&request, false).is_ok());
     }
 
