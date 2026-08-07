@@ -241,10 +241,19 @@ _HOSTS = {
 }
 
 
+def _default_pack() -> str:
+    env = os.environ.get("SENS_VISION_PACK", "lite")
+    return env if env in _HOSTS else "lite"
+
+
 def _resolve_pack(pack: str | None, quality: bool) -> str:
+    # Per-request MCP arguments win over the desktop-settings default,
+    # which the broker passes as SENS_VISION_PACK at worker spawn.
     if pack in _HOSTS:
         return pack
-    return "quality" if quality else "lite"
+    if quality:
+        return "quality"
+    return _default_pack()
 
 
 def _host(quality: bool, pack: str | None = None) -> VlmHost | None:
@@ -336,8 +345,8 @@ def vision_prompt(lang: str = "ru") -> dict:
 
 
 def warm() -> dict:
-    host = _host(False)
-    if host is None:
+    host = _HOSTS[_default_pack()]
+    if not host.available():
         return {"models": False}
     host._load()  # noqa: SLF001 - intentional warm preload
     return {"models": True}

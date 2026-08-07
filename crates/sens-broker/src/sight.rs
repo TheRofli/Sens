@@ -33,6 +33,9 @@ pub struct SightRuntimeConfig {
     pub node_executable: PathBuf,
     pub eye_root: PathBuf,
     pub cloud_worker: PathBuf,
+    // Global default VLM semantics pack chosen in the desktop settings
+    // (vision.visionPack); per-request MCP arguments still win.
+    pub vision_pack: Option<String>,
 }
 
 impl SightRuntimeConfig {
@@ -63,6 +66,7 @@ impl SightRuntimeConfig {
         let eye_root = discover_eye_root();
         let local_worker = discover_worker_script("sight-worker.py");
         let cloud_worker = discover_worker_script("eye-worker.mjs");
+        let vision_pack = discover_vision_pack(&eye_root);
         Ok(Self {
             python_executable,
             speech_root,
@@ -70,8 +74,22 @@ impl SightRuntimeConfig {
             node_executable,
             eye_root,
             cloud_worker,
+            vision_pack,
         })
     }
+}
+
+/// Best-effort read of the desktop settings' vision pack (vision.visionPack in
+/// the Eye config). Missing file/field or unknown value -> None (worker stays lite).
+fn discover_vision_pack(eye_root: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(eye_root.join("config.json")).ok()?;
+    let document: Value = serde_json::from_str(&contents).ok()?;
+    let pack = document
+        .get("vision")?
+        .get("visionPack")?
+        .as_str()?
+        .to_owned();
+    matches!(pack.as_str(), "lite" | "quality" | "quality_large").then_some(pack)
 }
 
 fn discover_worker_script(name: &str) -> PathBuf {
@@ -161,6 +179,9 @@ impl SightExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+        if let Some(pack) = &self.config.vision_pack {
+            command.env("SENS_VISION_PACK", pack);
+        }
         crate::process_group::hide_console(&mut command);
         let mut child = command.spawn().map_err(|error| {
             runtime_error(

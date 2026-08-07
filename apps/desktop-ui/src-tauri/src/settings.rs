@@ -28,6 +28,7 @@ pub struct SightSettings {
     pub max_calls_per_image: u64,
     pub verify: bool,
     pub video_enabled: bool,
+    pub vision_pack: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -176,6 +177,12 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
                 .and_then(|item| item.get("videoEnabled"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            vision_pack: vision
+                .and_then(|item| item.get("visionPack"))
+                .and_then(Value::as_str)
+                .filter(|pack| matches!(*pack, "lite" | "quality" | "quality_large"))
+                .unwrap_or("lite")
+                .to_owned(),
         },
         hearing: HearingSettings {
             enabled: bool_field(&speech, "engine_enabled", true),
@@ -242,6 +249,10 @@ fn save_sight_at(path: &Path, settings: SightSettings) -> Result<(), String> {
     vision.insert("verify".into(), Value::Bool(settings.verify));
     vision.insert("videoEnabled".into(), Value::Bool(settings.video_enabled));
     vision.insert("mode".into(), Value::String(settings.mode));
+    vision.insert(
+        "visionPack".into(),
+        Value::String(settings.vision_pack.clone()),
+    );
     write_json(path, &document)
 }
 
@@ -309,6 +320,12 @@ fn validate_sight(settings: &SightSettings) -> Result<(), String> {
     }
     if !matches!(settings.mode.as_str(), "economy" | "balanced" | "maximum") {
         return Err("Режим должен быть economy, balanced или maximum".into());
+    }
+    if !matches!(
+        settings.vision_pack.as_str(),
+        "lite" | "quality" | "quality_large"
+    ) {
+        return Err("Пак семантики должен быть lite, quality или quality_large".into());
     }
     if !(1..=32).contains(&settings.max_calls_per_image) {
         return Err("Лимит вызовов должен быть от 1 до 32".into());
@@ -549,6 +566,7 @@ mod tests {
                 max_calls_per_image: 6,
                 verify: true,
                 video_enabled: false,
+                vision_pack: "quality".into(),
             },
         )
         .expect("save");
@@ -558,6 +576,7 @@ mod tests {
         assert_eq!(document["vision"]["verify"], true);
         assert_eq!(document["vision"]["videoEnabled"], false);
         assert_eq!(document["vision"]["mode"], "balanced");
+        assert_eq!(document["vision"]["visionPack"], "quality");
         assert_eq!(document["keep"], 7);
     }
 
@@ -745,6 +764,7 @@ mod tests {
                 max_calls_per_image: 6,
                 verify: false,
                 video_enabled: false,
+                vision_pack: "lite".into(),
             },
         )
         .expect("save local");
@@ -753,5 +773,32 @@ mod tests {
         assert_eq!(document["providers"]["mimo"]["apiKey"], "secret");
         assert_eq!(document["providers"]["mimo"]["model"], "old");
         assert_eq!(document["vision"]["detail"], "normal");
+        assert_eq!(document["vision"]["visionPack"], "lite");
+    }
+
+    #[test]
+    fn sight_vision_pack_round_trip_and_validation() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"provider":"local","providers":{},"vision":{"visionPack":"quality_large"}}"#,
+        )
+        .expect("fixture");
+        let loaded = load_from_paths(&path, &temp.path().join("speech.json")).expect("load");
+        assert_eq!(loaded.sight.vision_pack, "quality_large");
+
+        let mut invalid = loaded.sight.clone();
+        invalid.vision_pack = "turbo".into();
+        assert!(save_sight_at(&path, invalid).is_err());
+
+        // Unknown values in the config degrade to the lite default.
+        fs::write(
+            &path,
+            r#"{"provider":"local","providers":{},"vision":{"visionPack":"turbo"}}"#,
+        )
+        .expect("fixture");
+        let loaded = load_from_paths(&path, &temp.path().join("speech.json")).expect("load");
+        assert_eq!(loaded.sight.vision_pack, "lite");
     }
 }

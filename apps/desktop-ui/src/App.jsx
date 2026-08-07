@@ -373,7 +373,15 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, onStartSpe
           <div className="settings-group__heading"><span>02</span><div><h2>{t("group.quality")}</h2><p>{t("group.quality.sub")}</p></div></div>
           {capability === "sight" ? (
             draft.provider === "local" ? (
-              <p className="sight-local-info">{t("sight.alwaysMax")}</p>
+              <>
+                <p className="sight-local-info">{t("sight.alwaysMax")}</p>
+                <label className="setting-field">{t("field.visionPack")}
+                  <select value={draft.visionPack} onChange={(event) => update("visionPack", event.target.value)}>
+                    <option value="lite">{t("visionPack.lite")}</option><option value="quality">{t("visionPack.quality")}</option><option value="quality_large">{t("visionPack.qualityLarge")}</option>
+                  </select>
+                  <small>{t("visionPack.hint")}</small>
+                </label>
+              </>
             ) : (
               <>
                 <label className="setting-field">{t("field.detail")}
