@@ -41,6 +41,7 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             no_store,
             bool(payload.get("fast", False)),
             bool(payload.get("quality", False)),
+            payload.get("pack"),
         )
     if operation == "read":
         dump = analyze(str(payload["imagePath"]), payload.get("region"), no_store)
@@ -55,6 +56,7 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             payload.get("somId"),
             no_store,
             bool(payload.get("quality", False)),
+            payload.get("pack"),
         )
     if operation == "ask":
         return ask(
@@ -62,6 +64,7 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             str(payload["question"]),
             payload.get("region"),
             bool(payload.get("quality", False)),
+            payload.get("pack"),
         )
     if operation == "element":
         return element(str(payload["imagePath"]), int(payload["id"]), no_store)

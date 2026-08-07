@@ -33,10 +33,14 @@ struct SeeArgs {
     #[serde(default)]
     fast: bool,
     #[schemars(
-        description = "Use the quality VLM pack (~4 GB RAM, opt-in) instead of the default lite pack for semantics."
+        description = "Use the quality VLM pack (SmolVLM2-2.2B, ~2 GB RAM, opt-in) instead of the default lite pack for semantics."
     )]
     #[serde(default)]
     quality: bool,
+    #[schemars(
+        description = "Explicit VLM pack: lite (default), quality (~2 GB RAM) or quality_large (Qwen2.5-VL-3B, ~3.5 GB RAM, best OCR). Overrides quality."
+    )]
+    pack: Option<String>,
     #[serde(default)]
     no_store: bool,
     max_calls: Option<u32>,
@@ -137,9 +141,15 @@ struct ZoomArgs {
         description = "SoM element id from a prior sens_see document. Either region or somId is required."
     )]
     som_id: Option<i64>,
-    #[schemars(description = "Use the quality VLM pack (~4 GB RAM) instead of lite.")]
+    #[schemars(
+        description = "Use the quality VLM pack (SmolVLM2-2.2B, ~2 GB RAM) instead of lite."
+    )]
     #[serde(default)]
     quality: bool,
+    #[schemars(
+        description = "Explicit VLM pack: lite, quality or quality_large. Overrides quality."
+    )]
+    pack: Option<String>,
     #[serde(default)]
     no_store: bool,
     max_calls: Option<u32>,
@@ -155,6 +165,10 @@ struct AskArgs {
     region: Option<Region>,
     #[serde(default)]
     quality: bool,
+    #[schemars(
+        description = "Explicit VLM pack: lite, quality or quality_large. Overrides quality."
+    )]
+    pack: Option<String>,
     #[serde(default)]
     no_store: bool,
     max_calls: Option<u32>,

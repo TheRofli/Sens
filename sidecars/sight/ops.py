@@ -233,10 +233,22 @@ def inspect_target(
 
 _lite_host = VlmHost("lite")
 _quality_host = VlmHost("quality")
+_quality_large_host = VlmHost("quality_large")
+_HOSTS = {
+    "lite": _lite_host,
+    "quality": _quality_host,
+    "quality_large": _quality_large_host,
+}
 
 
-def _host(quality: bool) -> VlmHost | None:
-    host = _quality_host if quality else _lite_host
+def _resolve_pack(pack: str | None, quality: bool) -> str:
+    if pack in _HOSTS:
+        return pack
+    return "quality" if quality else "lite"
+
+
+def _host(quality: bool, pack: str | None = None) -> VlmHost | None:
+    host = _HOSTS[_resolve_pack(pack, quality)]
     return host if host.available() else None
 
 
@@ -255,9 +267,10 @@ def see_document(
     no_store: bool = False,
     fast: bool = False,
     quality: bool = False,
+    pack: str | None = None,
 ) -> dict:
     dump = analyze(image_path, region, no_store)
-    vlm = None if fast else _host(quality)
+    vlm = None if fast else _host(quality, pack)
     doc = docmod.build_document(dump, _image_for(image_path, region), vlm=vlm, image_path=image_path)
     legacy = dict(dump)
     if "facts" in legacy.get("design", {}):
@@ -276,6 +289,7 @@ def zoom(
     som_id: int | None = None,
     no_store: bool = False,
     quality: bool = False,
+    pack: str | None = None,
 ) -> dict:
     if region is None and som_id is not None:
         dump = analyze(image_path, None, no_store)
@@ -291,11 +305,17 @@ def zoom(
         }
     if region is None:
         raise ValueError("region or somId is required for zoom")
-    return see_document(image_path, region, no_store, quality=quality)
+    return see_document(image_path, region, no_store, quality=quality, pack=pack)
 
 
-def ask(image_path: str, question: str, region: dict | None = None, quality: bool = False) -> dict:
-    host = _host(quality) or _lite_host
+def ask(
+    image_path: str,
+    question: str,
+    region: dict | None = None,
+    quality: bool = False,
+    pack: str | None = None,
+) -> dict:
+    host = _host(quality, pack) or _lite_host
     if not host.available():
         raise RuntimeError("vision models not downloaded; run scripts/download-vision-models.py")
     box = [region["x"], region["y"], region["x"] + region["width"], region["y"] + region["height"]] if region else None

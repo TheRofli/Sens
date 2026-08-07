@@ -18,9 +18,11 @@ def _fetch(url: str, dest: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pack", choices=["lite", "quality", "all"], default="lite")
+    parser.add_argument(
+        "--pack", choices=["lite", "quality", "quality_large", "all"], default="lite"
+    )
     args = parser.parse_args()
-    packs = ["lite", "quality"] if args.pack == "all" else [args.pack]
+    packs = list(PACKS) if args.pack == "all" else [args.pack]
     root = models_root()
     root.mkdir(parents=True, exist_ok=True)
     for name in packs:

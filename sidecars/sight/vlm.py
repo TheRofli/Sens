@@ -9,10 +9,14 @@ from pathlib import Path
 
 import cv2
 
-# Repo layouts verified against HF API on 2026-08-06 (plan names were wrong).
-# Note: no public Q4 quant of moondream2 exists — quality pack is official F16
-# (~3.75 GB disk, ~4 GB RAM), above the spec's ~2.6 GB estimate. Opt-in only;
-# the default lite pack keeps the <=2 GB budget.
+# Serializes native model construction across hosts/threads: the boot-time warm
+# thread and a request handler must not build two GGUF models concurrently.
+_LOAD_LOCK = threading.Lock()
+
+# Repo layouts verified against HF API on 2026-08-07.
+# lite    ~0.7 GB RAM — deterministic-plus semantics on a budget;
+# quality ~2.0 GB RAM — SmolVLM2-2.2B Q4_K_M (newer/stronger than moondream2);
+# quality_large ~3.5 GB RAM — Qwen2.5-VL-3B, best quality (esp. OCR), opt-in.
 PACKS = {
     "lite": {
         "repo": "jc-builds/smolvlm2-500m-gguf",
@@ -20,9 +24,14 @@ PACKS = {
         "mmproj": "mmproj-SmolVLM2-500M-Video-Instruct-f16.gguf",
     },
     "quality": {
-        "repo": "moondream/moondream2-gguf",
-        "text": "moondream2-text-model-f16.gguf",
-        "mmproj": "moondream2-mmproj-f16.gguf",
+        "repo": "ggml-org/SmolVLM2-2.2B-Instruct-GGUF",
+        "text": "SmolVLM2-2.2B-Instruct-Q4_K_M.gguf",
+        "mmproj": "mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf",
+    },
+    "quality_large": {
+        "repo": "unsloth/Qwen2.5-VL-3B-Instruct-GGUF",
+        "text": "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        "mmproj": "mmproj-F16.gguf",
     },
 }
 
@@ -101,17 +110,19 @@ class VlmHost:
                 raise RuntimeError(
                     "vision models not downloaded; run scripts/download-vision-models.py"
                 )
-            Llama = _import_llama().Llama
-
-            spec = PACKS[self.pack]
-            root = models_root()
-            self._llm = Llama(
-                model_path=str(root / spec["text"]),
-                mmproj_path=str(root / spec["mmproj"]),
-                n_threads=os.cpu_count() or 4,
-                n_ctx=4096,
-                verbose=False,
-            )
+            with _LOAD_LOCK:
+                if self._llm is not None:
+                    return
+                Llama = _import_llama().Llama
+                spec = PACKS[self.pack]
+                root = models_root()
+                self._llm = Llama(
+                    model_path=str(root / spec["text"]),
+                    mmproj_path=str(root / spec["mmproj"]),
+                    n_threads=os.cpu_count() or 4,
+                    n_ctx=4096,
+                    verbose=False,
+                )
 
     def _touch(self) -> None:
         if self._timer is not None:
