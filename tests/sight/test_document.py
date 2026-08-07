@@ -41,6 +41,13 @@ class _FakeVlm:
     def transcribe(self, path, box): return "circular text"
 
 
+def test_document_reads_facts_key() -> None:
+    dump = {**DUMP, "design": {"facts": [{"kind": "contrast", "detail": "min 4.6:1"}]}}
+    img = np.full((500, 1000, 3), 200, np.uint8)
+    doc = build_document(dump, img)
+    assert doc["measurements"][0]["kind"] == "contrast"
+
+
 def test_document_with_vlm() -> None:
     img = np.full((500, 1000, 3), 200, np.uint8)
     doc = build_document(DUMP, img, vlm=_FakeVlm(), image_path="x.png")

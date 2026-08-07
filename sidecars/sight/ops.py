@@ -259,11 +259,14 @@ def see_document(
     dump = analyze(image_path, region, no_store)
     vlm = None if fast else _host(quality)
     doc = docmod.build_document(dump, _image_for(image_path, region), vlm=vlm, image_path=image_path)
+    legacy = dict(dump)
+    if "facts" in legacy.get("design", {}):
+        legacy["design"] = {"issues": legacy["design"]["facts"]}
     return {
         "document": docmod.render_markdown(doc),
         "doc": doc,
         "somPath": dump.get("somPath"),
-        "legacy": dump,
+        "legacy": legacy,
     }
 
 

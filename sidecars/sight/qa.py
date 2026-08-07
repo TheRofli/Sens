@@ -124,7 +124,8 @@ def cross_verify(dump: dict[str, Any], overlap: float = 0.3) -> dict[str, Any]:
                 ),
                 "source": "measured",
             })
-    for issue in dump.get("design", {}).get("issues", []):
+    design_facts = dump.get("design", {})
+    for issue in design_facts.get("facts", design_facts.get("issues", [])):
         if issue["kind"] in ("text_clipped_at_frame", "text_overflows_section"):
             conflicts.append({
                 "kind": "text_overflow",
@@ -383,7 +384,7 @@ def design_qa(image: Any, blocks: list[dict[str, Any]], ocr_items: list[dict[str
                 "source": "measured",
             })
 
-    return {"issues": issues[:16]}
+    return {"facts": issues[:16]}
 
 
 
