@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import sys
 import urllib.request
 from pathlib import Path
@@ -11,9 +12,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "sidecars"))
 from sight.vlm import PACKS, models_root  # noqa: E402
 
 
-def _fetch(url: str, dest: Path) -> None:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _fetch(url: str, dest: Path, expected_sha256: str) -> None:
+    if dest.is_file() and _sha256(dest) == expected_sha256:
+        print(f"skip {dest} (verified)")
+        return
+    partial = dest.with_suffix(dest.suffix + ".part")
+    partial.unlink(missing_ok=True)
     print(f"downloading {url} -> {dest}")
-    urllib.request.urlretrieve(url, dest)  # noqa: S310 - fixed https hosts
+    try:
+        urllib.request.urlretrieve(url, partial)  # noqa: S310 - fixed https hosts
+        if partial.read_bytes()[:4] != b"GGUF":
+            raise RuntimeError(f"bad GGUF magic for {dest}")
+        actual = _sha256(partial)
+        if actual != expected_sha256:
+            raise RuntimeError(
+                f"SHA-256 mismatch for {dest.name}: expected {expected_sha256}, got {actual}"
+            )
+        partial.replace(dest)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
+        raise
 
 
 def main() -> None:
@@ -29,13 +56,14 @@ def main() -> None:
         spec = PACKS[name]
         for key in ("text", "mmproj"):
             dest = root / spec[key]
-            if dest.exists() and dest.stat().st_size > 10_000_000:
-                print(f"skip {dest} (exists)")
-                continue
-            _fetch(f"https://huggingface.co/{spec['repo']}/resolve/main/{spec[key]}", dest)
-            head = dest.read_bytes()[:4]
-            if head != b"GGUF":
-                raise SystemExit(f"bad file {dest}: magic {head!r} (wrong repo layout? fix PACKS)")
+            expected = spec.get("sha256", {}).get(key)
+            if not expected:
+                raise SystemExit(f"missing verified SHA-256 for {name}.{key}")
+            _fetch(
+                f"https://huggingface.co/{spec['repo']}/resolve/main/{spec[key]}",
+                dest,
+                expected,
+            )
     print("done")
 
 

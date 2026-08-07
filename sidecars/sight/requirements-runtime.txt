@@ -1,0 +1,33 @@
+# Pinned Windows CPU runtime shipped with Sens. Heavy YOLO/CLIP/Torch layers are
+# deliberately optional; the deterministic geometry/OCR pipeline and Qwen GGUF
+# semantics do not require a GPU or a PyTorch installation.
+numpy==2.4.6
+opencv-python==5.0.0.93
+rapidocr==3.9.2
+onnxruntime==1.27.0
+llama-cpp-python==0.3.34
+playwright==1.62.0
+omegaconf==2.3.0
+antlr4-python3-runtime==4.9.3
+certifi==2026.7.22
+charset-normalizer==3.4.9
+colorama==0.4.6
+colorlog==6.12.0
+diskcache==5.6.3
+flatbuffers==25.12.19
+greenlet==3.5.4
+idna==3.18
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+packaging==26.3
+pillow==12.3.0
+protobuf==7.35.1
+pyclipper==1.4.0
+pyee==13.0.1
+PyYAML==6.0.3
+requests==2.34.2
+shapely==2.1.2
+six==1.17.0
+tqdm==4.70.0
+typing_extensions==4.16.0
+urllib3==2.7.0

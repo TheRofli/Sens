@@ -1,0 +1,113 @@
+{
+  "schemaVersion": "1.0.0",
+  "measuredAt": "2026-08-07T23:06:32+0800",
+  "machine": "AMD Ryzen 7 5800XT, Windows, llama-cpp-python 0.3.34",
+  "results": [
+    {
+      "pack": "lite",
+      "model": {
+        "repo": "Qwen/Qwen3-VL-2B-Instruct-GGUF",
+        "text": "Qwen3VL-2B-Instruct-Q4_K_M.gguf",
+        "mmproj": "mmproj-Qwen3VL-2B-Instruct-Q8_0.gguf",
+        "license": "Apache-2.0",
+        "sha256": {
+          "text": "089d75c52f4b7ffc56ba998ffc50aae89fcafc755f9e7208aacca281dca6c2ae",
+          "mmproj": "f9a68fabba69c3b81e153367b2c7521030b0fa8bb0de400c9599c8e6725f9c82"
+        },
+        "bytes": {
+          "text": 1107409952,
+          "mmproj": 445053216
+        }
+      },
+      "cpuOnly": true,
+      "peakRssMiB": 3395.0,
+      "meanScore": 0.9,
+      "totalSeconds": 45.201,
+      "cases": [
+        {
+          "id": "design_exact_ocr",
+          "elapsedSeconds": 8.478,
+          "score": 1.0,
+          "answer": "Settings\nProfile\nActions\nfaint hint\nthis label runs off the edge of the panel"
+        },
+        {
+          "id": "design_overflow_grounding",
+          "elapsedSeconds": 5.998,
+          "score": 1.0,
+          "answer": "YES\nthis label runs off the edge of the panel"
+        },
+        {
+          "id": "negative_hallucination",
+          "elapsedSeconds": 5.669,
+          "score": 1.0,
+          "answer": "NONE"
+        },
+        {
+          "id": "russian_ui_ocr",
+          "elapsedSeconds": 13.398,
+          "score": 1.0,
+          "answer": "Возможности\nЧувства модели\nВыберите чувство, чтобы настроить его точное.\nЗрение\nАнализ изображений, OCR, поиск деталей и визуальная самопроверка.\nСлух\nЛокальное распознавание аудиофайлов без доступа модели к микрофону.\nБудущие чувства\nНовые модули появятся здесь после установки — отдельно от подключения моделей."
+        },
+        {
+          "id": "poster_ui_grounding",
+          "elapsedSeconds": 11.658,
+          "score": 0.5,
+          "answer": "- \"made for art lovers and art creators\"\n- \"Mono X7 is a canvas for the digital age.\"\n\nProduct: Mono X7"
+        }
+      ]
+    },
+    {
+      "pack": "quality",
+      "model": {
+        "repo": "ggml-org/SmolVLM2-2.2B-Instruct-GGUF",
+        "text": "SmolVLM2-2.2B-Instruct-Q4_K_M.gguf",
+        "mmproj": "mmproj-SmolVLM2-2.2B-Instruct-Q8_0.gguf",
+        "license": "Apache-2.0",
+        "sha256": {
+          "text": "0cf76814555b8665149075b74ab6b5c1d428ea1d3d01c1918c12012e8d7c9f58",
+          "mmproj": "ae07ea1facd07dd3230c4483b63e8cda96c6944ad2481f33d531f79e892dd024"
+        },
+        "bytes": {
+          "text": 1112602656,
+          "mmproj": 592523200
+        }
+      },
+      "cpuOnly": true,
+      "peakRssMiB": 3236.6,
+      "meanScore": 0.5846,
+      "totalSeconds": 27.748,
+      "cases": [
+        {
+          "id": "design_exact_ocr",
+          "elapsedSeconds": 5.918,
+          "score": 0.9231,
+          "answer": "Settings\n\nProfile\n\nActions\n\nthis label runs off the edge of the panel"
+        },
+        {
+          "id": "design_overflow_grounding",
+          "elapsedSeconds": 5.761,
+          "score": 1.0,
+          "answer": "Yes, the text extends outside the bordered panel. The text \"this label runs off the edge of the panel\" is visible in the image."
+        },
+        {
+          "id": "negative_hallucination",
+          "elapsedSeconds": 3.509,
+          "score": 1.0,
+          "answer": "None"
+        },
+        {
+          "id": "russian_ui_ocr",
+          "elapsedSeconds": 7.841,
+          "score": 0.0,
+          "answer": "Main headline: \"Уведение модели в устройстве, это всегда высоко!\"\n\nCapability names: \"Eye: MIMO-v2.5\" and \"Spyglass: CnG-M1-v1.0\""
+        },
+        {
+          "id": "poster_ui_grounding",
+          "elapsedSeconds": 4.719,
+          "score": 0.0,
+          "answer": "The product shown in the center is a \"MonoX 2.0\" which is a \"made for art lovers and art creators\" device."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sens capture fixture</title>
+  <style>
+    :root { --paper: #f5f0df; --ink: #171717; --accent: #d56b45; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--paper); color: var(--ink); font: 18px/1.4 Arial, sans-serif; }
+    header { display: flex; justify-content: space-between; padding: 24px 32px; border-bottom: 2px solid var(--ink); }
+    main { display: grid; grid-template-columns: 1fr 1fr; min-height: 640px; }
+    section { padding: 48px; border-right: 2px solid var(--ink); }
+    h1 { margin: 0 0 16px; font-size: 64px; letter-spacing: -3px; }
+    pre { padding: 24px; color: white; background: var(--ink); white-space: pre; }
+    .orb { width: 96px; height: 96px; border-radius: 50%; background: var(--accent); animation: drift 1.2s ease-in-out infinite alternate; }
+    @keyframes drift { from { transform: translateX(0); } to { transform: translateX(80px); } }
+  </style>
+</head>
+<body>
+  <header><strong>SENS FIXTURE</strong><nav aria-label="Primary"><a href="#ascii">ASCII</a></nav></header>
+  <main>
+    <section><h1>Exact sight</h1><p>Measured pixels. Inferred meaning.</p><div class="orb" aria-label="Moving orange orb"></div></section>
+    <section id="ascii"><pre aria-label="ASCII cat"> /\_/\\
+( o.o )
+ &gt; ^ &lt;</pre></section>
+  </main>
+</body>
+</html>

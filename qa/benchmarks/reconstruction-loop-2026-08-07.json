@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0.0",
+  "reference": "qa/incoming/test1b/copy3-1x.png",
+  "before": {
+    "candidate": "qa/incoming/test1b/render-v8.png",
+    "similarityScore": 0.7598,
+    "pixelMismatch": 0.1038,
+    "meanLabDelta": 15.285,
+    "edgeMismatch": 0.0349,
+    "textSimilarity": 0.6822,
+    "layoutSimilarity": 0.3827
+  },
+  "after": {
+    "candidate": "qa/incoming/test1b/render-v16.png",
+    "similarityScore": 0.8749,
+    "pixelMismatch": 0.0751,
+    "meanLabDelta": 5.941,
+    "edgeMismatch": 0.0209,
+    "textSimilarity": 0.831,
+    "layoutSimilarity": 0.6883,
+    "largestHotRegion": [120, 606, 1084, 671]
+  },
+  "assertions": {
+    "overallImproved": true,
+    "allSignalsImproved": true
+  }
+}

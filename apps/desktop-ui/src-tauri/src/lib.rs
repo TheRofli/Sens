@@ -1,4 +1,5 @@
 mod settings;
+mod sight_setup;
 mod speech_runtime;
 
 use std::sync::Mutex;
@@ -130,6 +131,16 @@ fn speech_runtime_status(speech: State<'_, SpeechRuntime>) -> SpeechRuntimeStatu
 #[tauri::command]
 fn start_speech_runtime(speech: State<'_, SpeechRuntime>) -> Result<SpeechRuntimeStatus, String> {
     speech.ensure_started()
+}
+
+#[tauri::command]
+fn sight_setup_status(pack: Option<String>) -> Result<sight_setup::SightSetupStatus, String> {
+    sight_setup::status(pack)
+}
+
+#[tauri::command]
+async fn install_sight_pack(pack: String) -> Result<sight_setup::SightSetupStatus, String> {
+    sight_setup::install(pack).await
 }
 
 #[tauri::command]
@@ -292,6 +303,8 @@ pub fn run() {
             save_capability_settings,
             speech_runtime_status,
             start_speech_runtime,
+            sight_setup_status,
+            install_sight_pack,
             connect_client,
             show_main,
             window_action,

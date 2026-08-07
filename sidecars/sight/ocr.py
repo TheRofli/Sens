@@ -84,6 +84,8 @@ def run_ocr(image_path: str) -> list[dict[str, Any]]:
             "text": str(txt).strip(),
             "box": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))],
             "confidence": round(float(score), 3),
+            "source": "inferred",
+            "method": "rapidocr",
         })
     return [item for item in items if item["text"]]
 

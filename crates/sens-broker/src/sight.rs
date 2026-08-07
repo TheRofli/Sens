@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use sens_core::{CapabilityExecutor, CapabilityOutput};
-use sens_protocol::{ArtifactRef, InvokeRequest, SensError};
+use sens_protocol::{ArtifactRef, InvokeRequest, Provenance, SensError};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
@@ -21,15 +21,16 @@ use crate::process_group::{KillOnCloseJob, terminate_tree};
 /// Local vision operations served by the Python sight-worker (no network):
 /// see, read, locate, inspect, compare (deterministic pixel diff).
 /// artifact_get is served by the cloud Eye (artifact store).
-const CLOUD_OPERATIONS: [&str; 1] = ["artifact_get"];
+const CLOUD_OPERATIONS: [&str; 2] = ["artifact_get", "watch"];
 
 #[derive(Debug, Clone)]
 pub struct SightRuntimeConfig {
-    // Local deterministic stack (RapidOCR + OpenCV + YOLO + CLIP).
+    // Local deterministic stack (RapidOCR + OpenCV) plus an optional CPU VLM.
     pub python_executable: PathBuf,
     pub speech_root: PathBuf,
     pub local_worker: PathBuf,
-    // Optional cloud Eye (VLM via provider API) for compare/artifact_get.
+    pub models_root: PathBuf,
+    // Optional Eye compatibility worker for legacy artifacts and video.
     pub node_executable: PathBuf,
     pub eye_root: PathBuf,
     pub cloud_worker: PathBuf,
@@ -40,6 +41,7 @@ pub struct SightRuntimeConfig {
 
 impl SightRuntimeConfig {
     pub fn discover() -> anyhow::Result<Self> {
+        let sens_root = discover_sens_root();
         let speech_root = std::env::var_os("SENS_SPEECH_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -50,16 +52,10 @@ impl SightRuntimeConfig {
                     PathBuf::from("sidecars").join("speech")
                 }
             });
-        let python_executable = std::env::var_os("SENS_PYTHON")
+        let python_executable = discover_python_executable(&sens_root, &speech_root);
+        let models_root = std::env::var_os("SENS_MODELS_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let bundled = speech_root.join(".venv").join("Scripts").join("python.exe");
-                if bundled.is_file() {
-                    bundled
-                } else {
-                    PathBuf::from("python")
-                }
-            });
+            .unwrap_or_else(|| sens_core::RuntimePaths::discover().data_dir.join("models"));
         let node_executable = std::env::var_os("SENS_NODE")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("node"));
@@ -71,12 +67,52 @@ impl SightRuntimeConfig {
             python_executable,
             speech_root,
             local_worker,
+            models_root,
             node_executable,
             eye_root,
             cloud_worker,
             vision_pack,
         })
     }
+}
+
+fn discover_sens_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("SENS_ROOT") {
+        return PathBuf::from(root);
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(root) = executable
+            .ancestors()
+            .find(|path| path.join("sidecars").is_dir())
+    {
+        return root.to_path_buf();
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+}
+
+fn discover_python_executable(sens_root: &Path, speech_root: &Path) -> PathBuf {
+    choose_python_executable(std::env::var_os("SENS_PYTHON"), sens_root, speech_root)
+}
+
+fn choose_python_executable(
+    configured: Option<std::ffi::OsString>,
+    sens_root: &Path,
+    speech_root: &Path,
+) -> PathBuf {
+    if let Some(path) = configured {
+        return PathBuf::from(path);
+    }
+    let packaged = sens_root.join("runtime").join("python").join("python.exe");
+    if packaged.is_file() {
+        return packaged;
+    }
+    let legacy = speech_root.join(".venv").join("Scripts").join("python.exe");
+    if legacy.is_file() {
+        return legacy;
+    }
+    PathBuf::from("python")
 }
 
 /// Best-effort read of the desktop settings' vision pack (vision.visionPack in
@@ -151,12 +187,14 @@ impl SightExecutor {
     }
 
     async fn start_local(&self) -> Result<WorkerProcess, SensError> {
-        if !self.config.speech_root.join("speech_app").is_dir() {
+        if self.config.python_executable.components().count() > 1
+            && !self.config.python_executable.is_file()
+        {
             return Err(runtime_error(
                 "sight_runtime_missing",
                 format!(
-                    "Speech was not found at {}",
-                    self.config.speech_root.display()
+                    "Sight Python runtime was not found at {}",
+                    self.config.python_executable.display()
                 ),
                 "Open Sens diagnostics and repair Sight.",
             ));
@@ -175,9 +213,11 @@ impl SightExecutor {
         command
             .arg(&self.config.local_worker)
             .env("SENS_SPEECH_ROOT", &self.config.speech_root)
+            .env("SENS_MODELS_ROOT", &self.config.models_root)
+            .env("PYTHONNOUSERSITE", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .kill_on_drop(true);
         if let Some(pack) = &self.config.vision_pack {
             command.env("SENS_VISION_PACK", pack);
@@ -413,27 +453,165 @@ impl CapabilityExecutor for SightExecutor {
     async fn invoke(&self, request: &InvokeRequest) -> Result<CapabilityOutput, SensError> {
         let cloud = is_cloud_operation(&request.operation);
         let result = self.invoke_worker(request, cloud).await?;
-        let artifacts = result
-            .get("artifactId")
-            .and_then(Value::as_str)
-            .map(|id| {
-                vec![ArtifactRef {
-                    id: id.to_owned(),
-                    kind: "eye_result".into(),
-                    uri: None,
-                }]
-            })
-            .unwrap_or_default();
+        let (artifacts, provenance, warnings) = worker_metadata(&result, &request.operation);
         Ok(CapabilityOutput {
             data: result
                 .get("data")
                 .cloned()
                 .unwrap_or_else(|| result.clone()),
             artifacts,
-            provenance: Vec::new(),
+            provenance,
             usage: result.get("usage").cloned().unwrap_or(Value::Null),
-            warnings: Vec::new(),
+            warnings,
         })
+    }
+}
+
+fn worker_metadata(
+    result: &Value,
+    operation: &str,
+) -> (Vec<ArtifactRef>, Vec<Provenance>, Vec<String>) {
+    let data = result.get("data").unwrap_or(result);
+    let doc = data.get("doc");
+    let source_id = doc
+        .and_then(|value| value.pointer("/source/id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    let mut artifacts = Vec::new();
+    if let Some(id) = result.get("artifactId").and_then(Value::as_str) {
+        artifacts.push(ArtifactRef {
+            id: id.to_owned(),
+            kind: "eye_result".into(),
+            uri: None,
+        });
+    }
+    if let Some(items) = doc
+        .and_then(|value| value.get("artifacts"))
+        .and_then(Value::as_array)
+    {
+        for item in items {
+            let Some(id) = item.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            artifacts.push(ArtifactRef {
+                id: id.to_owned(),
+                kind: item
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("sight_artifact")
+                    .to_owned(),
+                uri: item.get("uri").and_then(Value::as_str).map(str::to_owned),
+            });
+        }
+    }
+
+    let mut provenance = Vec::new();
+    if let Some(claims) = doc
+        .and_then(|value| value.get("claims"))
+        .and_then(Value::as_array)
+    {
+        for claim in claims {
+            let (Some(kind), Some(method)) = (
+                claim.get("epistemic").and_then(Value::as_str),
+                claim.get("method").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if provenance
+                .iter()
+                .any(|item: &Provenance| item.kind == kind && item.method == method)
+            {
+                continue;
+            }
+            provenance.push(Provenance {
+                kind: kind.to_owned(),
+                method: method.to_owned(),
+                confidence: claim.get("confidence").and_then(Value::as_f64),
+                source_artifact_id: source_id.clone(),
+                region: claim.get("regionNorm").cloned(),
+            });
+        }
+    }
+    collect_embedded_provenance(data, &source_id, &mut provenance);
+    if provenance.is_empty() {
+        let (kind, method) = default_operation_provenance(operation);
+        provenance.push(Provenance {
+            kind: kind.into(),
+            method: method.into(),
+            confidence: None,
+            source_artifact_id: source_id,
+            region: None,
+        });
+    }
+
+    let mut warnings = Vec::new();
+    if let Some(items) = doc
+        .and_then(|value| value.get("warnings"))
+        .and_then(Value::as_array)
+    {
+        for item in items {
+            let message = item.get("message").and_then(Value::as_str);
+            let code = item.get("code").and_then(Value::as_str);
+            match (code, message) {
+                (Some(code), Some(message)) => warnings.push(format!("{code}: {message}")),
+                (None, Some(message)) => warnings.push(message.to_owned()),
+                _ => {}
+            }
+        }
+    }
+    if let Some(items) = result.get("warnings").and_then(Value::as_array) {
+        warnings.extend(items.iter().filter_map(Value::as_str).map(str::to_owned));
+    }
+
+    (artifacts, provenance, warnings)
+}
+
+fn collect_embedded_provenance(
+    value: &Value,
+    source_id: &Option<String>,
+    output: &mut Vec<Provenance>,
+) {
+    match value {
+        Value::Object(object) => {
+            if let (Some(kind), Some(method)) = (
+                object.get("source").and_then(Value::as_str),
+                object.get("method").and_then(Value::as_str),
+            ) && matches!(kind, "observed" | "measured" | "inferred")
+                && !output
+                    .iter()
+                    .any(|item| item.kind == kind && item.method == method)
+            {
+                output.push(Provenance {
+                    kind: kind.to_owned(),
+                    method: method.to_owned(),
+                    confidence: object.get("confidence").and_then(Value::as_f64),
+                    source_artifact_id: source_id.clone(),
+                    region: object.get("box").cloned(),
+                });
+            }
+            for child in object.values() {
+                collect_embedded_provenance(child, source_id, output);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                collect_embedded_provenance(child, source_id, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn default_operation_provenance(operation: &str) -> (&'static str, &'static str) {
+    match operation {
+        "read" | "locate" => ("inferred", "rapidocr"),
+        "ask" => ("inferred", "local-vlm"),
+        "compare" => ("measured", "opencv-hsv-pixel-diff"),
+        "capture" => ("observed", "playwright-dom-capture"),
+        "motion" => ("measured", "playwright-css-frame-diff"),
+        "see" | "zoom" | "inspect" | "element" => ("measured", "sight-deterministic-pipeline"),
+        _ => ("observed", "sens-worker"),
     }
 }
 
@@ -451,6 +629,7 @@ fn validate_sight_input(request: &InvokeRequest, cloud: bool) -> Result<(), Sens
     })?;
     match request.operation.as_str() {
         "artifact_get" => require_string(input, "artifactId"),
+        "watch" => require_existing_file(input, "videoPath"),
         "compare" => {
             require_existing_file(input, "referencePath")?;
             require_existing_file(input, "candidatePath")
@@ -586,6 +765,31 @@ mod tests {
     }
 
     #[test]
+    fn packaged_sight_python_wins_without_a_speech_checkout() {
+        let root = std::env::temp_dir().join(format!("sens-runtime-test-{}", std::process::id()));
+        let packaged = root.join("runtime").join("python").join("python.exe");
+        fs::create_dir_all(packaged.parent().expect("parent")).expect("create runtime");
+        fs::write(&packaged, b"fixture").expect("write python fixture");
+        let absent_speech = root.join("no-speech-checkout");
+
+        let selected = choose_python_executable(None, &root, &absent_speech);
+
+        assert_eq!(selected, packaged);
+        fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[test]
+    fn configured_python_has_highest_priority() {
+        let selected = choose_python_executable(
+            Some(std::ffi::OsString::from(r"C:\SensPython\python.exe")),
+            Path::new(r"C:\Sens"),
+            Path::new(r"D:\Speech"),
+        );
+
+        assert_eq!(selected, PathBuf::from(r"C:\SensPython\python.exe"));
+    }
+
+    #[test]
     fn locate_requires_target() {
         let path = existing_image();
         let request = InvokeRequest::new(
@@ -671,8 +875,47 @@ mod tests {
     #[test]
     fn cloud_operations_are_recognized() {
         assert!(is_cloud_operation("artifact_get"));
+        assert!(is_cloud_operation("watch"));
         assert!(!is_cloud_operation("compare"));
         assert!(!is_cloud_operation("see"));
         assert!(!is_cloud_operation("inspect"));
+    }
+
+    #[test]
+    fn scene_metadata_reaches_the_shared_result_envelope() {
+        let result = json!({
+            "doc": {
+                "source": {"id": "sha256-128:abc"},
+                "claims": [{
+                    "epistemic": "inferred",
+                    "method": "rapidocr",
+                    "confidence": 0.91,
+                    "regionNorm": [1, 2, 3, 4]
+                }],
+                "artifacts": [{
+                    "id": "som:abc",
+                    "kind": "set-of-marks",
+                    "uri": "C:/cache/som.png"
+                }],
+                "warnings": [{
+                    "code": "semantics_unavailable",
+                    "message": "No local VLM is loaded."
+                }]
+            }
+        });
+
+        let (artifacts, provenance, warnings) = worker_metadata(&result, "see");
+
+        assert_eq!(artifacts[0].id, "som:abc");
+        assert_eq!(provenance[0].kind, "inferred");
+        assert_eq!(provenance[0].method, "rapidocr");
+        assert_eq!(
+            provenance[0].source_artifact_id.as_deref(),
+            Some("sha256-128:abc")
+        );
+        assert_eq!(
+            warnings,
+            vec!["semantics_unavailable: No local VLM is loaded."]
+        );
     }
 }

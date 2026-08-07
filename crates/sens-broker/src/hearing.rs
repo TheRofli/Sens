@@ -290,6 +290,23 @@ fn validate_hearing_input(request: &InvokeRequest) -> Result<(), SensError> {
             "Pass the tool arguments defined by Sens.",
         )
     })?;
+    if request.operation == "fetch" {
+        return input
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|value| {
+                let value = value.trim();
+                value.starts_with("https://") || value.starts_with("http://")
+            })
+            .map(|_| ())
+            .ok_or_else(|| {
+                runtime_error(
+                    "invalid_input",
+                    "fetch requires an http(s) URL",
+                    "Pass a supported public media URL.",
+                )
+            });
+    }
     let value = input
         .get("audioPath")
         .and_then(Value::as_str)
@@ -337,5 +354,16 @@ mod tests {
         );
         let error = validate_hearing_input(&request).expect_err("missing file");
         assert_eq!(error.code, "file_not_found");
+    }
+
+    #[test]
+    fn fetch_accepts_an_http_media_url_without_an_audio_path() {
+        let request = InvokeRequest::new(
+            "hearing",
+            "fetch",
+            json!({"url": "https://www.youtube.com/watch?v=fixture"}),
+        );
+
+        assert!(validate_hearing_input(&request).is_ok());
     }
 }

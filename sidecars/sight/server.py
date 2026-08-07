@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from sight.compare import compare_images
@@ -35,6 +36,7 @@ def handle(message: dict[str, object]) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("Sight input must be an object")
     if operation == "see":
+        max_semantic_calls = max(0, min(4, int(message.get("maxCalls") or 2)))
         return see_document(
             str(payload["imagePath"]),
             payload.get("region"),
@@ -42,6 +44,8 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             bool(payload.get("fast", False)),
             bool(payload.get("quality", False)),
             payload.get("pack"),
+            payload.get("prompt"),
+            max_semantic_calls,
         )
     if operation == "read":
         dump = analyze(str(payload["imagePath"]), payload.get("region"), no_store)
@@ -73,9 +77,9 @@ def handle(message: dict[str, object]) -> dict[str, object]:
     if operation == "warm":
         return warm()
     if operation == "capture":
-        return capture_op(str(payload["url"]))
+        return capture_op(str(payload["url"]), payload, no_store)
     if operation == "motion":
-        return motion_op(str(payload["url"]))
+        return motion_op(str(payload["url"]), payload, no_store)
     if operation == "inspect":
         region = payload.get("region")
         target = payload.get("target")
@@ -92,13 +96,16 @@ def handle(message: dict[str, object]) -> dict[str, object]:
 
 
 
-def _warm_vlm_async() -> None:
+def _warm_vlm_async() -> bool:
     """Preload the VLM pack in the background while the worker boots.
 
     The broker spawns this worker lazily on the first request; the warm thread
     loads the GGUF models concurrently so later see/ask calls hit a hot host.
     Errors are tolerated: the worker must serve deterministic ops without models.
     """
+    if os.environ.get("SENS_VLM_PRELOAD", "").lower() not in {"1", "true", "yes"}:
+        return False
+
     import threading
 
     def _run() -> None:
@@ -109,9 +116,18 @@ def _warm_vlm_async() -> None:
             sys.stderr.flush()
 
     threading.Thread(target=_run, daemon=True, name="vlm-warm").start()
+    return True
+
+
+def _configure_protocol_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
 
 
 def main() -> None:
+    _configure_protocol_streams()
     _warm_vlm_async()
     for line in sys.stdin:
         if not line.strip():

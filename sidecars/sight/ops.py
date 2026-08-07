@@ -12,10 +12,17 @@ from sight.perception import _controls_around_text, _glyph_metrics, _hex_to_bgr,
 from sight.qa import _center_in, control_icons, control_style, cross_verify, design_qa, section_style, shadow_bands
 from sight.tree import _assign_roles, annotate_som, build_element_tree, build_section_tree, expand_button_subparts, summarize_screen
 from sight.cache import cache_key, cache_root, read_cache, write_cache
+from sight.coordinates import crop_coordinates, identity_coordinates
 from sight import document as docmod
 from sight.vlm import VISION_PROMPT, VlmHost
 
 
+
+
+def _source_from_cache_key(key: str) -> dict[str, str]:
+    parts = key.split("-", 2)
+    digest = parts[1] if len(parts) > 2 else key.removesuffix(".json")
+    return {"id": f"sha256-128:{digest}", "mediaType": "image"}
 
 
 # --------------------------------------------------------------------------
@@ -32,12 +39,22 @@ def analyze(
     if region is not None:
         import cv2
 
+        source_key = cache_key(image_path, None)
         image = load_cv(image_path)
+        source_height, source_width = image.shape[:2]
         # MCP schemas send f64; slices need ints.
         x, y, w, h = (int(round(v)) for v in (
             region["x"], region["y"], region["width"], region["height"]
         ))
-        crop = image[y:y + h, x:x + w]
+        if w <= 0 or h <= 0:
+            raise ValueError("region width and height must be positive")
+        x0 = max(0, min(source_width, x))
+        y0 = max(0, min(source_height, y))
+        x1 = max(0, min(source_width, x + w))
+        y1 = max(0, min(source_height, y + h))
+        if x1 <= x0 or y1 <= y0:
+            raise ValueError("region does not intersect the source image")
+        crop = image[y0:y1, x0:x1]
         # Zoom-Refine: upscale small crops so OCR/layout see readable strokes.
         small_side = min(crop.shape[0], crop.shape[1])
         if 0 < small_side < 512:
@@ -49,7 +66,17 @@ def analyze(
         os.close(fd)
         cv2.imwrite(crop_path, crop)
         try:
-            return analyze(crop_path, region=None, no_store=no_store)
+            dump = analyze(crop_path, region=None, no_store=no_store)
+            analysis_height, analysis_width = crop.shape[:2]
+            dump["coordinates"] = crop_coordinates(
+                source_width,
+                source_height,
+                [x0, y0, x1, y1],
+                analysis_width,
+                analysis_height,
+            )
+            dump["source"] = _source_from_cache_key(source_key)
+            return dump
         finally:
             try:
                 os.unlink(crop_path)
@@ -60,11 +87,18 @@ def analyze(
     if not no_store:
         cached = read_cache(key)
         if cached is not None:
+            cached.setdefault("source", _source_from_cache_key(key))
             cached["elapsedMs"] = round((time.perf_counter() - started) * 1000)
             cached["cached"] = True
             return cached
 
-    dump = analyze_full(image_path)
+    artifact_key = key.removesuffix(".json")
+    dump = analyze_full(
+        image_path,
+        store_artifacts=not no_store,
+        artifact_key=artifact_key,
+    )
+    dump["source"] = _source_from_cache_key(key)
     dump["cached"] = False
     dump["elapsedMs"] = round((time.perf_counter() - started) * 1000)
     if not no_store:
@@ -110,9 +144,27 @@ def _plausible_controls(
     return kept
 
 
+def _run_optional_layer(
+    name: str, operation: Any, image_path: str
+) -> tuple[list[dict[str, Any]], dict[str, str] | None]:
+    try:
+        return operation(image_path), None
+    except (ImportError, ModuleNotFoundError, FileNotFoundError, RuntimeError) as error:
+        return [], {
+            "code": f"optional_{name}_unavailable",
+            "message": f"Optional {name} layer is unavailable: {error}",
+            "recovery": "Continue with measured layout/OCR and the local VLM, or install the optional detector pack.",
+        }
 
 
-def analyze_full(image_path: str) -> dict[str, Any]:
+
+
+def analyze_full(
+    image_path: str,
+    *,
+    store_artifacts: bool = True,
+    artifact_key: str | None = None,
+) -> dict[str, Any]:
     image = load_cv(image_path)
     ocr_items = run_ocr(image_path)
     for item in ocr_items:
@@ -124,8 +176,11 @@ def analyze_full(image_path: str) -> dict[str, Any]:
     textures = texture_blocks(image, ocr_items)
     blocks = blocks + textures
     attention = attention_map(image, ocr_items)
-    objects = objects_yolo(image_path)
-    scene = scene_clip(image_path)
+    objects, objects_warning = _run_optional_layer("objects", objects_yolo, image_path)
+    scene, scene_warning = _run_optional_layer("scene", scene_clip, image_path)
+    optional_warnings = [
+        warning for warning in (objects_warning, scene_warning) if warning is not None
+    ]
     height, width = image.shape[:2]
     background_hex = colors["dominant"][0]["hex"] if colors.get("dominant") else "#000000"
     background_bgr = _hex_to_bgr(background_hex)
@@ -139,15 +194,17 @@ def analyze_full(image_path: str) -> dict[str, Any]:
     elements = build_element_tree(tree, ocr_items, controls, icons, textures)
     expand_button_subparts(elements)
     summary = summarize_screen(tree, width, height, background_hex)
-    som_path = annotate_som(
-        image, elements,
-        os.path.join(
-            cache_root(),
-            f"som-{os.path.splitext(os.path.basename(image_path))[0]}.png",
-        ),
-    )
+    som_path = None
+    if store_artifacts:
+        name = artifact_key or cache_key(image_path, None).removesuffix(".json")
+        som_path = annotate_som(
+            image,
+            elements,
+            os.path.join(cache_root(), f"som-{name}.png"),
+        )
     dump = {
         "image": {"width": colors["width"], "height": colors["height"]},
+        "coordinates": identity_coordinates(width, height),
         "colors": colors["dominant"],
         "ocr": ocr_items,
         "layout": blocks,
@@ -165,6 +222,7 @@ def analyze_full(image_path: str) -> dict[str, Any]:
         "elements": elements,
         "somPath": som_path,
         "summary": summary,
+        "warnings": optional_warnings,
     }
     dump["verification"] = cross_verify(dump)
     return dump
@@ -291,10 +349,19 @@ def see_document(
     fast: bool = False,
     quality: bool = False,
     pack: str | None = None,
+    intent: str | None = None,
+    max_semantic_calls: int = 2,
 ) -> dict:
     dump = analyze(image_path, region, no_store)
     pack_name, vlm = (None, None) if fast else _pick(quality, pack)
-    doc = docmod.build_document(dump, _image_for(image_path, region), vlm=vlm, image_path=image_path)
+    doc = docmod.build_document(
+        dump,
+        _image_for(image_path, region),
+        vlm=vlm,
+        image_path=image_path,
+        intent=intent,
+        max_semantic_calls=max_semantic_calls,
+    )
     legacy = dict(dump)
     if "facts" in legacy.get("design", {}):
         legacy["design"] = {"issues": legacy["design"]["facts"]}
@@ -367,14 +434,24 @@ def warm() -> dict:
     return {"models": True}
 
 
-def capture_op(url: str) -> dict:
+def capture_op(
+    url: str,
+    options: dict[str, Any] | None = None,
+    no_store: bool = False,
+) -> dict:
     from sight.capture import capture_url
 
-    return capture_url(url, cache_root() / "captures")
+    return capture_url(url, cache_root() / "captures", options, no_store=no_store)
 
 
-def motion_op(url: str) -> dict:
-    result = capture_op(url)
+def motion_op(
+    url: str,
+    options: dict[str, Any] | None = None,
+    no_store: bool = False,
+) -> dict:
+    capture_options = dict(options or {})
+    capture_options.setdefault("scrollSteps", 4)
+    result = capture_op(url, capture_options, no_store)
     return {
         "animations": result["animations"],
         "motion": result["motion"],

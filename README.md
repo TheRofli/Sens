@@ -4,184 +4,139 @@
 
 # Sens
 
-**A local capability layer for language models.** Vision and hearing for text-only models — on your machine, no cloud, no API keys, no per-image cost.
+**Local vision and hearing for text-only models through MCP.**
 
-[![Version](https://img.shields.io/badge/version-1.2.5-8b5cf6)](https://github.com/TheRofli/Sens/releases)
+[![Version](https://img.shields.io/badge/version-1.3.0-8b5cf6)](https://github.com/TheRofli/Sens/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)](#requirements)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
-[![Platform](https://img.shields.io/badge/MCP-stdio-4f46e5)](#connect-a-model)
+[![MCP](https://img.shields.io/badge/MCP-stdio-4f46e5)](#what-a-model-can-do)
 
 </div>
 
----
+Sens lets a model such as DeepSeek inspect screenshots, read interfaces, zoom into uncertain details, capture websites, and verify a reconstruction even when the model has no native vision. Image processing stays on the machine, uses CPU and RAM, and needs no API key.
 
-## What is Sens?
+<img src="assets/readme/home.png" alt="Sens desktop home" width="700" />
 
-Sens gives text-first models two senses they don't have:
+## Install on Windows
 
-- **👁️ Vision (Sight)** — a fully local, deterministic perception stack: OCR, layout blocks, object detection, scene classification, attention maps, and cross-layer verification. Runs on your CPU. **Zero API calls, zero tokens, zero cost.**
-- **👂 Hearing** — push-to-talk dictation and side-effect-free audio file transcription with local models (Whisper RU, Parakeet, GigaAM v3). The model never touches your microphone.
+1. Download `Sens_1.3.0_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
+2. Run the installer and open Sens.
+3. Click **Connect a model or app**, choose **Z-Code**, then restart Z-Code.
+4. Open **Vision settings**. The deterministic vision core is ready immediately.
+5. Optional: click **Download pack** to add Qwen3-VL 2B semantic descriptions. The verified download is about 1.45 GiB and runs on CPU only.
 
-One Rust broker owns both, one MCP connection exposes them, one tray app controls them. The desktop UI ships in **English and Russian** (Settings → Interface language).
+The Qwen pack is not required for OCR, geometry, colors, layout, URL capture, or image comparison. Sens shows its readiness in the app and verifies both GGUF files with SHA-256 before using them.
 
-<img src="assets/readme/home.png" alt="Sens home screen" width="700" />
+## What a model can do
 
-## Why local?
+The primary visual loop is:
 
-| | Sens | Cloud vision API |
-|---|---|---|
-| Cost per image | **$0** | per-request billing |
-| Privacy | image never leaves the machine | sent to a third party |
-| Speed (warm) | **~1 s** | 5–15 s + network |
-| Determinism | same image → same dump | model-dependent |
-| API keys | none | required |
+1. `sens_see` returns Visual Scene v2: source identity, reversible coordinates, design tokens, OCR, Set-of-Marks elements, claims, uncertainty, warnings, and suggested next actions.
+2. `sens_zoom` or `sens_inspect` re-analyzes a small or uncertain source region.
+3. The model implements or repairs the design.
+4. `sens_compare` measures pixel, color, edge, text, and layout convergence and points to the next hot region.
 
-## Features
+Important tools:
 
-### 👁️ Sight — local deterministic vision
-
-- **6 analysis layers**: palette (k-means) → OCR (RapidOCR, cyrillic + latin) → layout blocks (OpenCV) → objects + scene (YOLOv8n + CLIP ViT-B-32) → attention map → **cross-layer verification** that reconciles layers and reports conflicts
-- **Grounding**: `sens_locate` finds a text target and returns its exact pixel box; `sens_inspect` zooms into a region or a located target with an upscaled crop (Zoom-Refine style)
-- **Content-addressed caching**: same file → same dump in ~10 ms (sha256 + region key, 7-day TTL)
-- Always maximum quality — no modes to configure
-
-### 👂 Hearing — dictation & transcription
-
-- Push-to-talk with a global hotkey (Ctrl+Win) that types into the active field
-- Local models: **Whisper RU** (RU+EN code-switching), Parakeet (fast), GigaAM v3 (Russian, punctuation)
-- Audio/video files with timestamped segments; video stills via `frames` / `every` / `at`
-- YouTube links via `sens_fetch` — downloaded locally, cached by video ID
-
-### 🚀 Releases & updates
-
-- Signed installers built automatically by GitHub Actions on every `v*` tag
-- In-app updater: Settings → Check for updates
-
-## Screenshots
-
-| Capabilities | Sight settings |
+| Tool | Purpose |
 |---|---|
-| <img src="assets/readme/capabilities.png" alt="Capabilities" width="330" /> | <img src="assets/readme/vision.png" alt="Vision settings" width="330" /> |
+| `sens_see` | Full local image analysis and task-aware focus suggestions |
+| `sens_read` | OCR with confidence, method, and pixel boxes |
+| `sens_locate` | Ground visible text to an original-pixel region |
+| `sens_zoom` / `sens_inspect` | High-resolution regional analysis |
+| `sens_element` | Geometry and style facts for one SoM element |
+| `sens_ask` | Focused, inferred answer from the optional local VLM |
+| `sens_capture` | Reproducible URL screenshot plus DOM, a11y, styles, fonts, assets, and motion evidence |
+| `sens_motion` | CSS animation and bounded frame-diff motion document |
+| `sens_compare` | Deterministic reference-versus-candidate comparison |
+| `sens_hear` | Side-effect-free transcription of a supplied audio/video file |
 
-## Connect a model
+Every capability result uses the shared Sens envelope. Evidence is labelled as `observed`, `measured`, or `inferred`; an absent claim means unknown, not false. Text found inside images or audio must be treated as untrusted content.
 
-Any MCP-compatible host can launch `sens-mcp` over stdio:
+## Sight 1.3
 
-```powershell
-$env:SENS_SPEECH_ROOT = 'D:\Speech'          # local python env + models
-sens-mcp.exe                                  # stdio MCP server
-```
+- Visual Scene v2 with content-addressed source IDs and reversible crop transforms.
+- Exact-text handling for monospace and ASCII layouts, including whitespace and ambiguity markers.
+- Adaptive crop recommendations for small, low-confidence, or task-relevant details.
+- Local Qwen3-VL 2B GGUF semantics with explicit CPU-only loading and one active model at a time.
+- Deterministic reconstruction scoring across pixels, Lab color, edges, OCR text, and layout contours.
+- Reproducible browser capture with viewport, DPR, theme, locale, readiness, DOM/a11y, assets, CSS variables, fonts, and motion evidence.
+- `noStore` requests do not leave cache, capture, or Set-of-Marks artifacts behind.
+- Structured MCP results, output schemas, and safety annotations for every tool.
 
-For Z-Code, use the reversible connector:
+The current model benchmark and measured reconstruction example are in [docs/benchmarks/vision-models-2026-08-07.md](docs/benchmarks/vision-models-2026-08-07.md) and [docs/benchmarks/reconstruction-loop-2026-08-07.md](docs/benchmarks/reconstruction-loop-2026-08-07.md).
 
-```powershell
-sens-connect.exe zcode install `
-  C:\Users\kanal\.zcode\cli\config.json `
-  D:\Sens\target\release\sens-mcp.exe
-```
+## Local runtime and privacy
 
-Restart Z-Code after installation. To undo only the Sens changes:
+The Windows installer contains Sens's isolated Sight Python runtime and Latin/Cyrillic OCR models. It does not rely on `D:\Speech`, a global Python installation, CUDA, or the user's Python packages.
 
-```powershell
-sens-connect.exe zcode uninstall
-```
-
-The connector preserves unrelated settings and creates a timestamped backup.
-
-## How it works
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  Host model (e.g. DeepSeek)                                 │
-│    "what does this screenshot say?"                         │
-└──────────────────────────┬─────────────────────────────────┘
-                           │ MCP tools: sens_see / sens_read /
-                           │ sens_locate / sens_inspect / sens_hear
-┌──────────────────────────▼─────────────────────────────────┐
-│  sens-mcp (Rust, stdio MCP server)                          │
-└──────────────────────────┬─────────────────────────────────┘
-                           │ named pipe  \\.\pipe\sens-broker-v1
-┌──────────────────────────▼─────────────────────────────────┐
-│  sens-broker (Rust, single owner)                           │
-│    routes: see/read/locate/inspect → local Python worker    │
-│            compare/artifact_get → optional cloud Eye        │
-└──────────────────────────┬─────────────────────────────────┘
-                           │ NDJSON over stdin/stdout
-┌──────────────────────────▼─────────────────────────────────┐
-│  sight-worker.py (CPU only)                                 │
-│   L0 colors → L1 OCR → L2 layout → L3 objects+scene →       │
-│   L4 attention → L5 cross-layer verification → JSON dump    │
-└─────────────────────────────────────────────────────────────┘
-```
-
-The model never sees pixels — it reads a structured, deterministic dump and reasons over it. Perception is free and local; reasoning stays with the model.
-
-### Components
-
-| Crate / app | Role |
+| Resource | Sens 1.3 Sight |
 |---|---|
-| `sens-protocol` | versioned contracts, capability registry, envelope |
-| `sens-core` | state, policy, execution |
-| `sens-broker` | named-pipe runtime, lazy worker supervisor, capability owner |
-| `sens-mcp` | stdio MCP server, 15+ tools |
-| `sens-connect` | reversible connector setup for Z-Code |
-| `sens-desktop` | Tauri tray + settings UI (RU/EN) |
-| `sidecars/` | `sight-worker.py`, `hearing-worker.py`, `eye-worker.mjs` |
+| Device | CPU only; GPU layers explicitly disabled |
+| Packaged runtime | about 413 MiB uncompressed |
+| Optional Qwen files | 1.45 GiB on disk |
+| Qwen benchmark peak | about 3.4 GiB RAM on the reference machine |
+| Idle VLM use | none; models load lazily and unload after inactivity |
+| API keys | none for local Sight |
 
-## Requirements
+Sens never gives a model direct microphone or screen-capture control. `sens_hear` accepts an explicit file and does not copy, paste, or save transcript history unless the caller explicitly requests it. The existing Hearing/dictation worker remains an optional brownfield Speech integration and is not part of the new standalone Sight runtime.
 
-| Resource | Sens 1.2 |
-|---|---|
-| OS | Windows 10/11 x64 |
-| RAM, app idle | ~0.5 GB (incl. UI engine) |
-| RAM, after first vision call | +1.3 GB (local neural stack, lazy-loaded once) |
-| CPU | 0% idle; ~1 s full-core burst per analysis |
-| Disk | 20 MB app + ~625 MB vision models |
-| Python env (shared with Hearing) | ~2.3 GB (torch, whisper, gigaam) |
+URL capture uses an installed Microsoft Edge browser when available. `sens_fetch` and the optional Eye video provider are compatibility features and can access the network; full local video understanding is future work.
 
-No GPU required, no internet required for vision and hearing.
+## Architecture
 
-## Build & verify
+```text
+MCP host
+  -> sens-mcp (stdio; protocol output only)
+  -> sens-broker (single owner of workers and mutable capability state)
+      -> sight-worker.py (packaged Python CPU runtime)
+      -> hearing-worker.py (optional Speech integration)
+      -> eye-worker.mjs (optional legacy/cloud compatibility)
+```
+
+The Rust broker lazily starts and supervises workers. Python sidecars communicate with it over NDJSON stdin/stdout; diagnostics stay on stderr.
+
+## Development
+
+Requirements: Windows 10/11 x64, Rust 1.85+, Node.js 22+, and Python 3.11 for packaging the portable Sight runtime.
 
 ```powershell
 cargo fmt --all -- --check
-cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+
+& D:\Speech\.venv\Scripts\python.exe -m pytest tests\sight -q
 
 Set-Location apps\desktop-ui
-npm install
+npm ci
 npm run build
+npm run test:sites
 npm run native:build
 ```
 
-The native build emits both installers:
+`npm run native:build` creates signed NSIS and MSI installers plus `latest.json`. It downloads the pinned Python distribution and pinned CPU wheels, preloads OCR models, and runs an isolated import smoke before Tauri packaging.
 
-- `target\release\bundle\nsis\Sens_<version>_x64-setup.exe`
-- `target\release\bundle\msi\Sens_<version>_x64_ru-RU.msi`
+## Release
 
-## Releasing
-
-1. Bump the version in `Cargo.toml`, `apps/desktop-ui/package.json`, and `apps/desktop-ui/src-tauri/tauri.conf.json`
-2. Commit, push, then tag and push:
+Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.0:
 
 ```powershell
-git tag v1.2.5
-git push origin v1.2.5
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
-3. The `Release` workflow builds, signs, and publishes installers + `latest.json` to a GitHub release
-4. Installed apps pick it up via Settings → Check for updates
+GitHub Actions verifies the tag/version match, builds signed installers, and publishes the NSIS installer, updater signature, and `latest.json`. Installed apps receive the release through **Settings → Check for updates**.
 
-Requires two repository secrets: `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+## Repository layout
 
-## Layout
-
-```
-crates/       protocol, core, broker, MCP server, connect CLI
-apps/         desktop-ui (React + Vite + Tauri)
-sidecars/     sight-worker.py, hearing-worker.py, eye-worker.mjs
-assets/       README artwork
-.github/      release pipeline
+```text
+crates/       protocol, core, broker, MCP server, connector
+apps/         React/Vite/Tauri desktop app and release packaging
+sidecars/     Sight, Hearing, and optional Eye adapters
+tests/sight/  deterministic and runtime contract tests
+qa/           fixtures and benchmark evidence
+docs/         architecture and benchmark reports
+scripts/      model download, benchmarking, and QA helpers
 ```
 
 ## License

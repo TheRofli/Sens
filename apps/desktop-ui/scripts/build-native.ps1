@@ -38,6 +38,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "Sidecar preparation failed with exit code $LASTEXITCODE"
 }
 
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'prepare-sight-runtime.ps1')
+if ($LASTEXITCODE -ne 0) {
+    throw "Sight runtime preparation failed with exit code $LASTEXITCODE"
+}
+
 Push-Location $desktopRoot
 try {
     & npx tauri build --config src-tauri/tauri.bundle.conf.json
@@ -83,7 +88,7 @@ $signature = (Get-Content -Raw -LiteralPath (Join-Path $canonicalBundle "nsis\$n
 $releaseBase = "https://github.com/TheRofli/Sens/releases/download/v$appVersion"
 $manifest = [ordered]@{
     version = $appVersion
-    notes = "Sens ${appVersion}: managed dictation, custom tray menu, movable window, hidden background processes, and in-app updates."
+    notes = "Sens ${appVersion}: Visual Scene v2, packaged local CPU Sight runtime, Qwen semantics, reproducible URL capture, and deterministic reconstruction comparison."
     pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     platforms = [ordered]@{
         'windows-x86_64' = [ordered]@{

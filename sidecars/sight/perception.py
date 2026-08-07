@@ -28,7 +28,7 @@ def color_zones(image: Any, k: int = 5, sample_side: int = 96) -> list[dict[str,
     for index in np.argsort(counts)[::-1]:
         if counts[index] == 0:
             continue
-        r, g, b = (int(round(c)) for c in centers[index])
+        b, g, r = (int(round(c)) for c in centers[index])
         zones.append({
             "hex": f"#{r:02X}{g:02X}{b:02X}",
             "ratio": round(float(counts[index]) / total, 4),
@@ -367,7 +367,8 @@ def objects_yolo(image_path: str) -> list[dict[str, Any]]:
                 "class": result.names[int(cls)],
                 "box": [round(x0), round(y0), round(x1), round(y1)],
                 "confidence": round(float(conf), 3),
-                "source": "measured",
+                "source": "inferred",
+                "method": "yolov8n",
             })
     return items
 
@@ -415,7 +416,12 @@ def scene_clip(image_path: str) -> list[dict[str, Any]]:
         reverse=True,
     )[:3]
     return [
-        {"label": label, "confidence": round(float(score), 3), "source": "measured"}
+        {
+            "label": label,
+            "confidence": round(float(score), 3),
+            "source": "inferred",
+            "method": "clip-vit-b-32",
+        }
         for label, score in ranked
         if score > 0.01
     ]
