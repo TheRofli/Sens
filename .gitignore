@@ -1,5 +1,7 @@
 /target/
 /qa/incoming/
+/models/
+/*.png
 apps/desktop-ui/src-tauri/binaries/
 node_modules/
 dist/

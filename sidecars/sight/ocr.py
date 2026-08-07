@@ -8,7 +8,9 @@ from typing import Any
 
 
 
-WORKER_DIR = Path(__file__).resolve().parent
+# sidecars/ root (parent of the sight/ package) — keeps the RapidOCR config
+# location identical to the pre-refactor single-file worker.
+WORKER_DIR = Path(__file__).resolve().parent.parent
 
 
 CYRILLIC_CONFIG_NAME = "rapidocr-cyrillic.yaml"
