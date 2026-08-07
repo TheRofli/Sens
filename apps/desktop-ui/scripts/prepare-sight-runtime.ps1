@@ -4,6 +4,23 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-Sha256Hex {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LiteralPath
+    )
+
+    $stream = [System.IO.File]::OpenRead($LiteralPath)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '')
+    }
+    finally {
+        $sha256.Dispose()
+        $stream.Dispose()
+    }
+}
+
 $desktopRoot = Split-Path -Parent $PSScriptRoot
 $sensRoot = (Resolve-Path (Join-Path $desktopRoot '..\..')).Path
 $runtimeRoot = [System.IO.Path]::GetFullPath((Join-Path $desktopRoot 'src-tauri\runtime\python'))
@@ -23,11 +40,11 @@ $stagingRoot = Join-Path $allowedRoot 'python.staging'
 
 New-Item -ItemType Directory -Force -Path $downloadRoot | Out-Null
 if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf) -or
-    (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash -ne $archiveSha256) {
+    (Get-Sha256Hex -LiteralPath $archivePath) -ne $archiveSha256) {
     Remove-Item -LiteralPath $archivePath -Force -ErrorAction SilentlyContinue
     Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile $archivePath
 }
-if ((Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash -ne $archiveSha256) {
+if ((Get-Sha256Hex -LiteralPath $archivePath) -ne $archiveSha256) {
     throw "Python runtime archive failed SHA-256 verification"
 }
 
@@ -68,7 +85,7 @@ $manifest = [ordered]@{
     python = $pythonVersion
     architecture = 'windows-x86_64'
     device = 'cpu'
-    requirementsSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $requirements).Hash.ToLowerInvariant()
+    requirementsSha256 = (Get-Sha256Hex -LiteralPath $requirements).ToLowerInvariant()
 }
 $manifestJson = $manifest | ConvertTo-Json -Depth 3
 [System.IO.File]::WriteAllText(
