@@ -73,7 +73,9 @@ pub struct HearingModelOption {
 }
 
 pub fn load() -> Result<CapabilitySettings, String> {
-    load_from_paths(&eye_config_path()?, &speech_settings_path())
+    let eye_path = eye_config_path()?;
+    migrate_legacy_vision_pack_at(&eye_path)?;
+    load_from_paths(&eye_path, &speech_settings_path())
 }
 
 pub fn save(capability: &str, settings: Value) -> Result<CapabilitySettings, String> {
@@ -408,6 +410,26 @@ fn read_json_or_default(path: &Path) -> Result<Value, String> {
     } else {
         Ok(json!({}))
     }
+}
+
+fn migrate_legacy_vision_pack_at(path: &Path) -> Result<(), String> {
+    let mut document = read_json(path)?;
+    let legacy_pack = document
+        .get("vision")
+        .and_then(Value::as_object)
+        .and_then(|vision| vision.get("visionPack"))
+        .and_then(Value::as_str)
+        .is_some_and(|pack| matches!(pack, "quality" | "quality_large"));
+    if !legacy_pack {
+        return Ok(());
+    }
+
+    let vision = document
+        .get_mut("vision")
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| "Eye vision settings must be an object".to_string())?;
+    vision.insert("visionPack".into(), Value::String("lite".into()));
+    write_json(path, &document)
 }
 
 fn write_json(path: &Path, document: &Value) -> Result<(), String> {
@@ -800,5 +822,26 @@ mod tests {
         .expect("fixture");
         let loaded = load_from_paths(&path, &temp.path().join("speech.json")).expect("load");
         assert_eq!(loaded.sight.vision_pack, "lite");
+    }
+
+    #[test]
+    fn legacy_vision_pack_is_migrated_to_recommended_qwen() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        for legacy_pack in ["quality", "quality_large"] {
+            let path = temp.path().join(format!("{legacy_pack}.json"));
+            fs::write(
+                &path,
+                format!(
+                    r#"{{"provider":"local","providers":{{}},"vision":{{"visionPack":"{legacy_pack}"}},"keep":7}}"#
+                ),
+            )
+            .expect("fixture");
+
+            migrate_legacy_vision_pack_at(&path).expect("migration");
+
+            let document = read_json(&path).expect("document");
+            assert_eq!(document["vision"]["visionPack"], "lite");
+            assert_eq!(document["keep"], 7);
+        }
     }
 }

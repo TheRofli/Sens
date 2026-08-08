@@ -269,7 +269,7 @@ function SettingsToggle({ label, description, checked, onChange, disabled = fals
   );
 }
 
-function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup, sightInstalling, onCheckSightPack, onInstallSightPack, onStartSpeech, onBack, onSave, saving }) {
+function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup, sightInstalling, onInstallSightPack, onStartSpeech, onBack, onSave, saving }) {
   const t = useT();
   const meta = capabilityMeta[capability];
   const Icon = meta.icon;
@@ -376,23 +376,18 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
             draft.provider === "local" ? (
               <>
                 <p className="sight-local-info">{t("sight.alwaysMax")}</p>
-                <label className="setting-field">{t("field.visionPack")}
-                  <select value={draft.visionPack} onChange={(event) => { update("visionPack", event.target.value); onCheckSightPack?.(event.target.value); }}>
-                    <option value="lite">{t("visionPack.lite")}</option><option value="quality">{t("visionPack.quality")}</option><option value="quality_large">{t("visionPack.qualityLarge")}</option>
-                  </select>
-                  <small>{t("visionPack.hint")}</small>
-                </label>
-                <div className={`sight-pack-status${sightSetup?.ready && sightSetup?.pack === draft.visionPack ? " sight-pack-status--ready" : ""}`}>
+                <div className={`sight-pack-status${sightSetup?.ready && sightSetup?.pack === "lite" ? " sight-pack-status--ready" : ""}`}>
                   <div>
-                    <strong>{sightSetup?.pack === draft.visionPack && sightSetup?.ready ? t("visionPack.ready") : t("visionPack.downloadTitle")}</strong>
-                    <span>{sightSetup?.pack === draft.visionPack && sightSetup?.ready ? t("visionPack.readyHint", { title: sightSetup.title }) : t("visionPack.downloadHint")}</span>
+                    <strong>{t("visionPack.recommended")}</strong>
+                    <span>{sightSetup?.pack === "lite" && sightSetup?.ready ? t("visionPack.readyHint") : t("visionPack.downloadHint")}</span>
                   </div>
-                  {sightSetup?.pack === draft.visionPack && sightSetup?.ready ? null : (
-                    <button className="secondary-button" type="button" disabled={sightInstalling || sightSetup?.runtimeReady === false} onClick={() => onInstallSightPack?.(draft.visionPack)}>
+                  {sightSetup?.pack === "lite" && sightSetup?.ready ? null : (
+                    <button className="secondary-button" type="button" disabled={sightInstalling || sightSetup?.runtimeReady === false} onClick={() => onInstallSightPack?.()}>
                       <IconDownload size={18} />{sightInstalling ? t("visionPack.downloading") : t("visionPack.download")}
                     </button>
                   )}
                 </div>
+                <p className="sight-pack-hint">{t("visionPack.hint")}</p>
               </>
             ) : (
               <>
@@ -655,7 +650,7 @@ export function App() {
     invoke("capability_settings")
       .then((settings) => {
         setCapabilitySettings(settings);
-        return invoke("sight_setup_status", { pack: settings.sight.visionPack });
+        return invoke("sight_setup_status", { pack: "lite" });
       })
       .then((status) => setSightSetup(status))
       .catch((error) => setRuntimeError(String(error)));
@@ -732,20 +727,11 @@ export function App() {
     }
   }
 
-  async function checkSightPack(pack) {
-    if (!nativeRuntime) return;
-    try {
-      setSightSetup(await invoke("sight_setup_status", { pack }));
-    } catch (error) {
-      showToast(t("toast.sightPackFailed", { error: String(error) }));
-    }
-  }
-
-  async function installSightPack(pack) {
+  async function installSightPack() {
     if (!nativeRuntime || sightInstalling) return;
     setSightInstalling(true);
     try {
-      const status = await invoke("install_sight_pack", { pack });
+      const status = await invoke("install_sight_pack", { pack: "lite" });
       setSightSetup(status);
       showToast(t("toast.sightPackReady", { title: status.title }));
     } catch (error) {
@@ -846,7 +832,7 @@ export function App() {
             {view === "home" ? (
               <HomeContent settings={capabilitySettings} speechRuntime={speechRuntime} openCapability={openCapability} openCapabilities={() => navigate("capabilities")} openConnect={() => setConnectOpen(true)} />
             ) : selectedCapability ? (
-              <CapabilitySettingsContent capability={selectedCapability} data={capabilitySettings} speechRuntime={speechRuntime} sightSetup={sightSetup} sightInstalling={sightInstalling} onCheckSightPack={checkSightPack} onInstallSightPack={installSightPack} onStartSpeech={startSpeech} onBack={() => setSelectedCapability(null)} onSave={saveSettings} saving={savingSettings} />
+              <CapabilitySettingsContent capability={selectedCapability} data={capabilitySettings} speechRuntime={speechRuntime} sightSetup={sightSetup} sightInstalling={sightInstalling} onInstallSightPack={installSightPack} onStartSpeech={startSpeech} onBack={() => setSelectedCapability(null)} onSave={saveSettings} saving={savingSettings} />
             ) : (
               <DetailContent view={view} settings={capabilitySettings} speechRuntime={speechRuntime} runtimeStatus={runtimeStatus} updateState={updateState} onCheckUpdate={checkForUpdates} onInstallUpdate={installUpdate} onOpenCapability={openCapability} openConnect={() => setConnectOpen(true)} />
             )}
