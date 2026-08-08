@@ -10,7 +10,7 @@ use sens_connect::{InstallResult, default_zcode_config_path, install};
 use sens_protocol::{BrokerRequest, BrokerResponse, CapabilityManifest, StatusSnapshot};
 use serde_json::Value;
 use settings::CapabilitySettings;
-use speech_runtime::{SpeechRuntime, SpeechRuntimeStatus};
+use speech_runtime::SpeechRuntimeStatus;
 use tauri::{
     AppHandle, Emitter, Manager, State,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -111,26 +111,26 @@ fn capability_settings() -> Result<CapabilitySettings, String> {
 }
 
 #[tauri::command]
-fn save_capability_settings(
+async fn save_capability_settings(
     capability: String,
     settings: Value,
-    speech: State<'_, SpeechRuntime>,
 ) -> Result<CapabilitySettings, String> {
     let saved = settings::save(&capability, settings)?;
     if capability == "hearing" {
-        speech.sync_hearing_settings(&saved.hearing)?;
+        speech_runtime::sync_settings(&saved.hearing).await?;
     }
     Ok(saved)
 }
 
 #[tauri::command]
-fn speech_runtime_status(speech: State<'_, SpeechRuntime>) -> SpeechRuntimeStatus {
-    speech.status()
+async fn speech_runtime_status() -> SpeechRuntimeStatus {
+    speech_runtime::status().await
 }
 
 #[tauri::command]
-fn start_speech_runtime(speech: State<'_, SpeechRuntime>) -> Result<SpeechRuntimeStatus, String> {
-    speech.ensure_started()
+async fn start_speech_runtime() -> Result<SpeechRuntimeStatus, String> {
+    let settings = settings::load()?.hearing;
+    speech_runtime::start(&settings).await
 }
 
 #[tauri::command]
@@ -165,15 +165,10 @@ fn resume_broker(state: State<'_, BrokerGuard>) {
 }
 
 #[tauri::command]
-async fn quit_app(
-    app: AppHandle,
-    speech: State<'_, SpeechRuntime>,
-    broker: State<'_, BrokerGuard>,
-) -> Result<(), String> {
+async fn quit_app(app: AppHandle, broker: State<'_, BrokerGuard>) -> Result<(), String> {
     // Stop the broker too: it outlives the app by design, and a running
     // sens-broker.exe blocks installers from replacing the binaries.
     let _ = stop_broker(broker).await;
-    speech.stop();
     app.exit(0);
     Ok(())
 }
@@ -212,7 +207,7 @@ fn connect_client(client: String) -> Result<InstallResult, String> {
         .ok_or_else(|| "Could not discover Eye; set SENS_EYE_ROOT".to_string())?;
     let speech_root = std::env::var_os("SENS_SPEECH_ROOT")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(r"D:\Speech"));
+        .unwrap_or_else(|| sens_root.join("sidecars").join("speech"));
     install(&config, &mcp, &sens_root, &eye_root, &speech_root)
 }
 
@@ -314,14 +309,10 @@ pub fn run() {
             quit_app
         ])
         .setup(|app| {
-            let speech = SpeechRuntime::discover();
-            app.manage(speech.clone());
             app.manage(BrokerGuard::default());
-            std::thread::spawn(move || {
-                if speech.ensure_started().is_ok()
-                    && let Ok(saved) = settings::load()
-                {
-                    let _ = speech.sync_hearing_settings(&saved.hearing);
+            tauri::async_runtime::spawn(async move {
+                if let Ok(saved) = settings::load() {
+                    let _ = speech_runtime::start(&saved.hearing).await;
                 }
             });
 

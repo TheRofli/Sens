@@ -275,7 +275,14 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
             description:
                 "Local dictation and side-effect-free audio file transcription through Speech."
                     .into(),
-            operations: vec!["hear", "dictation_status", "fetch"]
+            operations: vec![
+                "hear",
+                "dictation_status",
+                "dictation_start",
+                "dictation_settings",
+                "dictation_stop",
+                "fetch",
+            ]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
@@ -283,7 +290,11 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
                 kind: "python_sidecar".into(),
                 lazy: true,
             },
-            permissions: vec![Permission::LocalFileRead],
+            permissions: vec![
+                Permission::LocalFileRead,
+                Permission::LiveMicrophone,
+                Permission::SystemOutput,
+            ],
             state: CapabilityState::Asleep,
             artifact_types: vec!["audio", "transcript"]
                 .into_iter()

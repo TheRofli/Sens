@@ -51,7 +51,7 @@ fn run() -> Result<(), String> {
                 .ok_or_else(|| "Could not discover Eye; set SENS_EYE_ROOT".to_string())?;
             let speech_root = std::env::var_os("SENS_SPEECH_ROOT")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(r"D:\Speech"));
+                .unwrap_or_else(|| sens_root.join("sidecars").join("speech"));
             serde_json::to_value(install(
                 &config,
                 &executable,

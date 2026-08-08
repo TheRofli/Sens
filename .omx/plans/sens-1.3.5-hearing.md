@@ -79,3 +79,13 @@ Verify:
 | Safe model install | checksum/partial/atomic installer tests |
 | No external Speech dependency | repository/package search and clean-machine install |
 | Release 1.3.5 usable | signed installer, GitHub assets, updater fetch |
+
+## Progress
+
+- 2026-08-08: Slice 1 source/lifecycle foundation implemented. The tested
+  Speech package now lives in `sidecars/speech`; code/data/model roots are
+  separated; compatible settings/history migrate by allowlist; desktop
+  dictation control routes through the broker-owned worker; Sight and Z-Code
+  no longer choose the external Speech virtualenv. Verified with 151 Python
+  tests (plus 3 subtests), `cargo fmt --check`, strict workspace Clippy, and
+  all Rust workspace tests. Installed-build Ctrl+Win remains a later gate.

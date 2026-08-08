@@ -31,7 +31,7 @@ pub struct SightSettings {
     pub vision_pack: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct HearingSettings {
     pub enabled: bool,
@@ -56,6 +56,31 @@ pub struct HearingSettings {
     pub api_model_id: String,
 }
 
+impl std::fmt::Debug for HearingSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HearingSettings")
+            .field("enabled", &self.enabled)
+            .field("model", &self.model)
+            .field("device", &self.device)
+            .field("hotkey", &self.hotkey)
+            .field("copy_to_clipboard", &self.copy_to_clipboard)
+            .field("paste_to_active_input", &self.paste_to_active_input)
+            .field("suppress_hotkey", &self.suppress_hotkey)
+            .field("preload_model", &self.preload_model)
+            .field("beam_size", &self.beam_size)
+            .field("postprocess_text", &self.postprocess_text)
+            .field("vad_sensitivity", &self.vad_sensitivity)
+            .field("max_frames", &self.max_frames)
+            .field("frame_size", &self.frame_size)
+            .field("default_every", &self.default_every)
+            .field("api_key", &"[redacted]")
+            .field("api_base_url", &self.api_base_url)
+            .field("api_model_id", &self.api_model_id)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SightProviderOption {
@@ -75,12 +100,15 @@ pub struct HearingModelOption {
 pub fn load() -> Result<CapabilitySettings, String> {
     let eye_path = eye_config_path()?;
     migrate_legacy_vision_pack_at(&eye_path)?;
-    load_from_paths(&eye_path, &speech_settings_path())
+    let speech_path = speech_settings_path();
+    migrate_legacy_hearing_settings_at(&speech_path)?;
+    load_from_paths(&eye_path, &speech_path)
 }
 
 pub fn save(capability: &str, settings: Value) -> Result<CapabilitySettings, String> {
     let eye_path = eye_config_path()?;
     let speech_path = speech_settings_path();
+    migrate_legacy_hearing_settings_at(&speech_path)?;
     match capability {
         "sight" => save_sight_at(
             &eye_path,
@@ -390,11 +418,55 @@ fn eye_config_path() -> Result<PathBuf, String> {
 }
 
 fn speech_settings_path() -> PathBuf {
-    std::env::var_os("SENS_SPEECH_ROOT")
+    if let Some(path) = std::env::var_os("SENS_SPEECH_DATA_DIR") {
+        return PathBuf::from(path).join("settings.json");
+    }
+    directories::ProjectDirs::from("dev", "Sens", "Sens")
+        .map(|project| {
+            project
+                .data_local_dir()
+                .join("speech")
+                .join("settings.json")
+        })
+        .or_else(|| {
+            std::env::var_os("LOCALAPPDATA").map(|root| {
+                PathBuf::from(root)
+                    .join("Sens")
+                    .join("Sens")
+                    .join("data")
+                    .join("speech")
+                    .join("settings.json")
+            })
+        })
+        .unwrap_or_else(|| PathBuf::from("data").join("speech").join("settings.json"))
+}
+
+fn migrate_legacy_hearing_settings_at(path: &Path) -> Result<(), String> {
+    if path.is_file() {
+        return Ok(());
+    }
+    let legacy = std::env::var_os("SENS_LEGACY_SPEECH_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(r"D:\Speech"))
         .join("data")
-        .join("settings.json")
+        .join("settings.json");
+    migrate_hearing_settings_from(&legacy, path)
+}
+
+fn migrate_hearing_settings_from(legacy: &Path, path: &Path) -> Result<(), String> {
+    if path.is_file() || !legacy.is_file() || legacy == path {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| "Sens Hearing settings path has no parent".to_string())?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+    let temporary = path.with_extension("json.migrating");
+    fs::copy(legacy, &temporary)
+        .map_err(|error| format!("Could not migrate Hearing settings: {error}"))?;
+    replace_file(&temporary, path)
+        .map_err(|error| format!("Could not activate migrated Hearing settings: {error}"))
 }
 
 fn read_json(path: &Path) -> Result<Value, String> {
@@ -737,6 +809,24 @@ mod tests {
         assert_eq!(value["maxFrames"], 12);
         assert_eq!(value["frameSize"], 640);
         assert_eq!(value["defaultEvery"], 0.0);
+    }
+
+    #[test]
+    fn hearing_settings_migrate_once_without_runtime_secrets() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let legacy = temp.path().join("legacy-settings.json");
+        let target = temp.path().join("sens").join("settings.json");
+        fs::write(&legacy, r#"{"model":"gigaam","remote_api_key":"secret"}"#)
+            .expect("legacy fixture");
+
+        migrate_hearing_settings_from(&legacy, &target).expect("first migration");
+        fs::write(&legacy, r#"{"model":"parakeet"}"#).expect("changed legacy");
+        migrate_hearing_settings_from(&legacy, &target).expect("second migration");
+
+        let document = read_json(&target).expect("migrated settings");
+        assert_eq!(document["model"], "gigaam");
+        assert_eq!(document["remote_api_key"], "secret");
+        assert!(!target.with_file_name("sens-managed.token").exists());
     }
 
     #[test]

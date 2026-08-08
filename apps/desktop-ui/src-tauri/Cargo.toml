@@ -23,6 +23,7 @@ sens-protocol = { path = "../../../crates/sens-protocol" }
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+directories.workspace = true
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-positioner = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"

@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use sens_core::{CapabilityExecutor, CapabilityOutput};
+use sens_core::{CapabilityExecutor, CapabilityOutput, RuntimePaths};
 use sens_protocol::{InvokeRequest, SensError};
 use serde_json::{Value, json};
 use tokio::{
@@ -23,37 +23,63 @@ pub struct HearingRuntimeConfig {
     pub python_executable: PathBuf,
     pub speech_root: PathBuf,
     pub worker_script: PathBuf,
+    pub data_root: PathBuf,
+    pub models_root: PathBuf,
 }
 
 impl HearingRuntimeConfig {
     pub fn discover() -> anyhow::Result<Self> {
+        let sens_root = discover_sens_root();
         let speech_root = std::env::var_os("SENS_SPEECH_ROOT")
             .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let development = PathBuf::from(r"D:\Speech");
-                if development.join("speech_app").is_dir() {
-                    development
-                } else {
-                    PathBuf::from("sidecars").join("speech")
-                }
-            });
+            .unwrap_or_else(|| sens_root.join("sidecars").join("speech"));
         let python_executable = std::env::var_os("SENS_PYTHON")
             .map(PathBuf::from)
             .unwrap_or_else(|| {
-                let bundled = speech_root.join(".venv").join("Scripts").join("python.exe");
+                let bundled = sens_root.join("runtime").join("python").join("python.exe");
                 if bundled.is_file() {
                     bundled
                 } else {
                     PathBuf::from("python")
                 }
             });
+        let runtime = RuntimePaths::discover();
+        let data_root = std::env::var_os("SENS_SPEECH_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| runtime.data_dir.join("speech"));
+        let models_root = std::env::var_os("SENS_SPEECH_MODELS_ROOT")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("SENS_MODELS_ROOT")
+                    .map(PathBuf::from)
+                    .map(|root| root.join("speech"))
+            })
+            .unwrap_or_else(|| runtime.data_dir.join("models").join("speech"));
         let worker_script = discover_worker_script("hearing-worker.py");
         Ok(Self {
             python_executable,
             speech_root,
             worker_script,
+            data_root,
+            models_root,
         })
     }
+}
+
+fn discover_sens_root() -> PathBuf {
+    if let Some(root) = std::env::var_os("SENS_ROOT") {
+        return PathBuf::from(root);
+    }
+    if let Ok(executable) = std::env::current_exe()
+        && let Some(root) = executable
+            .ancestors()
+            .find(|path| path.join("sidecars").is_dir())
+    {
+        return root.to_path_buf();
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
 }
 
 fn discover_worker_script(name: &str) -> PathBuf {
@@ -119,10 +145,13 @@ impl HearingExecutor {
         let mut command = Command::new(&self.config.python_executable);
         command
             .arg(&self.config.worker_script)
+            .current_dir(&self.config.speech_root)
             .env("SENS_SPEECH_ROOT", &self.config.speech_root)
+            .env("SPEECH_DATA_DIR", &self.config.data_root)
+            .env("SPEECH_MODELS_DIR", &self.config.models_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::inherit())
             .kill_on_drop(true);
         crate::process_group::hide_console(&mut command);
         let mut child = command.spawn().map_err(|error| {
@@ -280,7 +309,10 @@ impl CapabilityExecutor for HearingExecutor {
 }
 
 fn validate_hearing_input(request: &InvokeRequest) -> Result<(), SensError> {
-    if request.operation == "dictation_status" {
+    if matches!(
+        request.operation.as_str(),
+        "dictation_status" | "dictation_start" | "dictation_settings" | "dictation_stop"
+    ) {
         return Ok(());
     }
     let input = request.input.as_object().ok_or_else(|| {

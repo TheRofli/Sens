@@ -27,7 +27,6 @@ const CLOUD_OPERATIONS: [&str; 2] = ["artifact_get", "watch"];
 pub struct SightRuntimeConfig {
     // Local deterministic stack (RapidOCR + OpenCV) plus an optional CPU VLM.
     pub python_executable: PathBuf,
-    pub speech_root: PathBuf,
     pub local_worker: PathBuf,
     pub models_root: PathBuf,
     // Optional Eye compatibility worker for legacy artifacts and video.
@@ -42,17 +41,7 @@ pub struct SightRuntimeConfig {
 impl SightRuntimeConfig {
     pub fn discover() -> anyhow::Result<Self> {
         let sens_root = discover_sens_root();
-        let speech_root = std::env::var_os("SENS_SPEECH_ROOT")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                let development = PathBuf::from(r"D:\Speech");
-                if development.join("speech_app").is_dir() {
-                    development
-                } else {
-                    PathBuf::from("sidecars").join("speech")
-                }
-            });
-        let python_executable = discover_python_executable(&sens_root, &speech_root);
+        let python_executable = discover_python_executable(&sens_root);
         let models_root = std::env::var_os("SENS_MODELS_ROOT")
             .map(PathBuf::from)
             .unwrap_or_else(|| sens_core::RuntimePaths::discover().data_dir.join("models"));
@@ -65,7 +54,6 @@ impl SightRuntimeConfig {
         let vision_pack = discover_vision_pack(&eye_root);
         Ok(Self {
             python_executable,
-            speech_root,
             local_worker,
             models_root,
             node_executable,
@@ -92,25 +80,17 @@ fn discover_sens_root() -> PathBuf {
         .join("..")
 }
 
-fn discover_python_executable(sens_root: &Path, speech_root: &Path) -> PathBuf {
-    choose_python_executable(std::env::var_os("SENS_PYTHON"), sens_root, speech_root)
+fn discover_python_executable(sens_root: &Path) -> PathBuf {
+    choose_python_executable(std::env::var_os("SENS_PYTHON"), sens_root)
 }
 
-fn choose_python_executable(
-    configured: Option<std::ffi::OsString>,
-    sens_root: &Path,
-    speech_root: &Path,
-) -> PathBuf {
+fn choose_python_executable(configured: Option<std::ffi::OsString>, sens_root: &Path) -> PathBuf {
     if let Some(path) = configured {
         return PathBuf::from(path);
     }
     let packaged = sens_root.join("runtime").join("python").join("python.exe");
     if packaged.is_file() {
         return packaged;
-    }
-    let legacy = speech_root.join(".venv").join("Scripts").join("python.exe");
-    if legacy.is_file() {
-        return legacy;
     }
     PathBuf::from("python")
 }
@@ -212,7 +192,6 @@ impl SightExecutor {
         let mut command = Command::new(&self.config.python_executable);
         command
             .arg(&self.config.local_worker)
-            .env("SENS_SPEECH_ROOT", &self.config.speech_root)
             .env("SENS_MODELS_ROOT", &self.config.models_root)
             .env("PYTHONNOUSERSITE", "1")
             .stdin(Stdio::piped())
@@ -770,9 +749,7 @@ mod tests {
         let packaged = root.join("runtime").join("python").join("python.exe");
         fs::create_dir_all(packaged.parent().expect("parent")).expect("create runtime");
         fs::write(&packaged, b"fixture").expect("write python fixture");
-        let absent_speech = root.join("no-speech-checkout");
-
-        let selected = choose_python_executable(None, &root, &absent_speech);
+        let selected = choose_python_executable(None, &root);
 
         assert_eq!(selected, packaged);
         fs::remove_dir_all(root).expect("remove runtime fixture");
@@ -783,7 +760,6 @@ mod tests {
         let selected = choose_python_executable(
             Some(std::ffi::OsString::from(r"C:\SensPython\python.exe")),
             Path::new(r"C:\Sens"),
-            Path::new(r"D:\Speech"),
         );
 
         assert_eq!(selected, PathBuf::from(r"C:\SensPython\python.exe"));
