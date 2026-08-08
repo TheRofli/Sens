@@ -36,6 +36,19 @@ class _FakeEngine:
         return f"{self.kind}:{samples.size}"
 
 
+class _SegmentEngine(_FakeEngine):
+    def __init__(self, kind: str):
+        super().__init__(kind)
+        self.segment_calls = 0
+
+    def transcribe_segments(self, samples, sample_rate, settings):
+        self.segment_calls += 1
+        return [
+            {"start": 0.0, "end": 0.5, "text": " hello "},
+            {"start": 0.5, "end": 1.0, "text": "world"},
+        ]
+
+
 class EngineManagerTests(unittest.TestCase):
     def _patch_make(self, mapping):
         def factory(kind):
@@ -93,6 +106,19 @@ class EngineManagerTests(unittest.TestCase):
         manager = EngineManager()
         text = manager.transcribe(np.array([], dtype=np.float32), 16000, AppSettings())
         self.assertEqual(text, "")
+
+    def test_transcribe_with_segments_runs_timestamp_engine_once(self):
+        whisper = _SegmentEngine("whisper")
+        manager = EngineManager()
+        samples = np.ones(16000, dtype=np.float32)
+        with mock.patch.object(engine_manager, "make_engine", return_value=whisper):
+            text, segments = manager.transcribe_with_segments(
+                samples, 16000, AppSettings(model="whisper")
+            )
+
+        self.assertEqual(text, "hello world")
+        self.assertEqual(len(segments or []), 2)
+        self.assertEqual(whisper.segment_calls, 1)
 
     def test_unload_clears_state(self):
         engines: dict[str, _FakeEngine] = {}

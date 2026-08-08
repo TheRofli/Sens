@@ -34,7 +34,7 @@ from .system import SystemActions
 from .textpost import postprocess
 from .transcription import settings_for_request, transcribe_audio_file
 from .tray import TrayController
-from .vad import trim_silence
+from .vad import trim_for_recognition
 from .visuals import enable_dpi_awareness, set_windows_app_id
 
 
@@ -494,10 +494,11 @@ class SpeechApp:
             # Voice-activity trim: drop leading/trailing silence so keyboard
             # clicks and breath do not feed the model (major Whisper
             # hallucination cause on near-empty audio).
-            trimmed = trim_silence(
+            trimmed = trim_for_recognition(
                 samples,
                 sample_rate=sample_rate,
                 sensitivity=settings_snapshot.vad_sensitivity,
+                use_neural=settings_snapshot.vad_filter,
             )
             if trimmed.size == 0:
                 # No speech detected; publish empty so the overlay clears and

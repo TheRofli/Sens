@@ -2,6 +2,7 @@
 # Sens local data root; no Torch, NeMo, CUDA, or development Transformers build.
 numpy==2.4.6
 sounddevice==0.5.3
+soundfile==0.14.0
 pillow==12.3.0
 pynput==1.8.1
 pyperclip==1.11.0
@@ -9,3 +10,7 @@ requests==2.34.2
 psutil==7.2.2
 sherpa-onnx==1.13.4
 faster-whisper==1.2.1
+# Shared with Sight. Pin explicitly so the combined runtime has one verified
+# wheel and one dist-info record instead of depending on pip install order.
+onnxruntime==1.27.0
+yt-dlp==2026.7.4

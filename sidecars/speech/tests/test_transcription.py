@@ -74,7 +74,35 @@ class FileTranscriptionTests(unittest.TestCase):
             self.assertEqual(result["engine"], "fake")
             self.assertEqual(result["container"], "audio")
             self.assertAlmostEqual(result["duration_seconds"], 0.5, places=2)
+            self.assertEqual(result["observed"]["source"], "observed")
+            self.assertEqual(result["measured"]["inputSamples"], 8000)
+            self.assertEqual(result["inferred"]["method"], "fake_asr")
             engine.transcribe.assert_called_once()
+
+    def test_whisper_file_transcription_uses_one_combined_asr_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "voice.wav"
+            timeline = np.arange(8000, dtype=np.float32) / 16000
+            write_wav(path, 0.2 * np.sin(2 * np.pi * 440 * timeline))
+            engine = Mock()
+            engine.kind = "whisper"
+            engine.model_id = "Systran/faster-whisper-small"
+            engine.transcribe_with_segments.return_value = (
+                " hello world ",
+                [{"start": 0.0, "end": 0.5, "text": "hello world"}],
+            )
+
+            result = transcribe_audio_file(
+                path,
+                settings=AppSettings(model="whisper", postprocess_text=False),
+                engine=engine,
+            )
+
+            self.assertEqual(result["text"], "hello world")
+            self.assertEqual(len(result["segments"]), 1)
+            engine.transcribe_with_segments.assert_called_once()
+            engine.transcribe.assert_not_called()
+            engine.transcribe_segments.assert_not_called()
 
 
 def write_test_video(path: Path, seconds: float = 1.0, with_audio: bool = True) -> None:

@@ -48,7 +48,7 @@ class SettingsStoreTests(unittest.TestCase):
             store.save(settings)
             reloaded = json.loads(path.read_text(encoding="utf-8"))
 
-            self.assertEqual(settings.device, "cuda")
+            self.assertEqual(settings.device, "cpu")
             self.assertEqual(settings.backend, "nemo")
             self.assertFalse(settings.engine_enabled)
             self.assertNotIn("unknown_future_field", reloaded)

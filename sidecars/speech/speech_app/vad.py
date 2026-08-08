@@ -9,11 +9,124 @@ audio. Internal pauses are intentionally left intact.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+
 import numpy as np
 
 # ~30 ms frame at 16 kHz is a good balance between responsiveness and a stable
 # energy estimate for speech.
 _FRAME_MS = 30.0
+
+SILERO_VAD_URL = (
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
+    "asr-models/silero_vad.onnx"
+)
+SILERO_VAD_SHA256 = (
+    "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6"
+)
+SILERO_VAD_BYTES = 643_854
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechSpan:
+    start: int
+    end: int
+
+
+def silero_vad_path() -> Path:
+    from .engines.paths import models_root
+
+    return models_root() / "vad" / "silero_vad.onnx"
+
+
+def _silero_threshold(sensitivity: float) -> float:
+    # Preserve the old UI scale: 0.01 is permissive, 0.02 balanced, and
+    # 0.04 confident. Silero itself expects a probability threshold.
+    return max(0.2, min(0.8, 0.35 + float(sensitivity) * 7.5))
+
+
+def detect_speech_spans(
+    samples: np.ndarray,
+    sample_rate: int,
+    sensitivity: float = 0.02,
+) -> list[SpeechSpan] | None:
+    """Return Silero speech spans, or ``None`` when neural VAD is unavailable."""
+    model = silero_vad_path()
+    if not model.is_file():
+        return None
+    try:
+        import sherpa_onnx
+    except ImportError:
+        return None
+
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return []
+    vad_rate = 16_000
+    if sample_rate != vad_rate:
+        from .engines.whisper import _resample_linear
+
+        vad_audio = _resample_linear(audio, sample_rate, vad_rate)
+    else:
+        vad_audio = audio
+    try:
+        config = sherpa_onnx.VadModelConfig()
+        config.silero_vad.model = str(model)
+        config.silero_vad.threshold = _silero_threshold(sensitivity)
+        config.silero_vad.min_silence_duration = 0.25
+        config.silero_vad.min_speech_duration = 0.20
+        config.silero_vad.max_speech_duration = 30.0
+        config.sample_rate = vad_rate
+        config.num_threads = 1
+        config.provider = "cpu"
+        window = int(config.silero_vad.window_size)
+        detector = sherpa_onnx.VoiceActivityDetector(
+            config,
+            buffer_size_in_seconds=max(30.0, vad_audio.size / vad_rate + 5.0),
+        )
+        for offset in range(0, vad_audio.size, window):
+            frame = vad_audio[offset : offset + window]
+            if frame.size < window:
+                frame = np.pad(frame, (0, window - frame.size))
+            detector.accept_waveform(frame)
+        detector.flush()
+        scale = float(sample_rate) / vad_rate
+        padding = int(sample_rate * 0.12)
+        spans: list[SpeechSpan] = []
+        while not detector.empty():
+            segment = detector.front
+            start = max(0, int(segment.start * scale) - padding)
+            end = min(
+                audio.size,
+                int((segment.start + len(segment.samples)) * scale) + padding,
+            )
+            if end > start:
+                spans.append(SpeechSpan(start, end))
+            detector.pop()
+        return spans
+    except Exception:
+        # A damaged optional VAD must not break dictation; RMS remains the
+        # deterministic degraded path and model status will expose repair.
+        return None
+
+
+def trim_for_recognition(
+    samples: np.ndarray,
+    sample_rate: int,
+    sensitivity: float = 0.02,
+    *,
+    use_neural: bool = True,
+) -> np.ndarray:
+    """Trim dictation with Silero when available, otherwise use RMS fallback."""
+    audio = np.asarray(samples, dtype=np.float32).reshape(-1)
+    if use_neural:
+        spans = detect_speech_spans(audio, sample_rate, sensitivity)
+        if spans is not None:
+            if not spans:
+                return np.array([], dtype=np.float32)
+            return audio[spans[0].start : spans[-1].end]
+    return trim_silence(audio, sample_rate, sensitivity)
 
 
 def _rms(frame: np.ndarray) -> float:

@@ -40,7 +40,7 @@ if ($LASTEXITCODE -ne 0) {
 
 & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'prepare-sight-runtime.ps1')
 if ($LASTEXITCODE -ne 0) {
-    throw "Sight runtime preparation failed with exit code $LASTEXITCODE"
+    throw "Sens Python runtime preparation failed with exit code $LASTEXITCODE"
 }
 
 Push-Location $desktopRoot
@@ -88,7 +88,7 @@ $signature = (Get-Content -Raw -LiteralPath (Join-Path $canonicalBundle "nsis\$n
 $releaseBase = "https://github.com/TheRofli/Sens/releases/download/v$appVersion"
 $manifest = [ordered]@{
     version = $appVersion
-    notes = "Sens ${appVersion}: first-run Qwen setup with explicit consent, real download progress, and enhanced local CPU vision that stays installed across normal updates."
+    notes = "Sens ${appVersion}: unified local CPU Sight and Hearing, verified ASR model downloads, faster Russian dictation, and multilingual Qwen/Whisper options."
     pub_date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
     platforms = [ordered]@{
         'windows-x86_64' = [ordered]@{

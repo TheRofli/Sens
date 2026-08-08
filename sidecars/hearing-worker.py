@@ -47,6 +47,8 @@ from speech_app.transcription import (  # noqa: E402
     transcribe_audio_file,
 )
 from speech_app.fetch_media import fetch_video  # noqa: E402
+from speech_app.model_status import find_model_status_for_preset  # noqa: E402
+from speech_app.models import get_preset  # noqa: E402
 
 
 migrate_legacy_user_data()
@@ -59,6 +61,105 @@ dictation_ready = threading.Event()
 dictation_app = None
 dictation_thread: threading.Thread | None = None
 dictation_error = ""
+install_lock = threading.Lock()
+install_thread: threading.Thread | None = None
+install_state: dict[str, object] = {
+    "model": "",
+    "phase": "idle",
+    "bytes_present": 0,
+    "bytes_required": 0,
+    "error": None,
+}
+
+
+def _model_setup_status(model_key: str) -> dict[str, object]:
+    preset = get_preset(model_key)
+    status = find_model_status_for_preset(preset)
+    with install_lock:
+        state = dict(install_state)
+        thread = install_thread
+    installing = bool(
+        thread is not None
+        and thread.is_alive()
+        and state.get("model") == preset.key
+    )
+    state_matches = state.get("model") == preset.key
+    state_phase = str(state.get("phase") or "idle")
+    phase = (
+        state_phase
+        if installing or (state_matches and state_phase == "failed")
+        else ("ready" if status.installed else "missing")
+    )
+    return {
+        "model": preset.key,
+        "model_installed": status.installed,
+        "model_size_mb": status.size_mb,
+        "installing": installing,
+        "install_phase": phase,
+        "install_bytes_present": int(state.get("bytes_present") or 0)
+        if installing
+        else 0,
+        "install_bytes_required": int(state.get("bytes_required") or 0)
+        if installing
+        else preset.download_bytes,
+        "install_error": state.get("error")
+        if state.get("model") == preset.key
+        else None,
+    }
+
+
+def _run_model_install(model_key: str) -> None:
+    from speech_app.engines.install import install_model
+
+    def progress(update: dict[str, object]) -> None:
+        with install_lock:
+            install_state.update(update)
+            install_state["error"] = None
+
+    try:
+        exit_code = install_model(model_key, progress)
+        with install_lock:
+            install_state["phase"] = "ready" if exit_code == 0 else "failed"
+            install_state["error"] = (
+                None
+                if exit_code == 0
+                else "Model installation failed; open Sens diagnostics and retry."
+            )
+    except Exception as error:  # noqa: BLE001 - surfaced through status
+        with install_lock:
+            install_state["phase"] = "failed"
+            install_state["error"] = f"{type(error).__name__}: {error}"
+
+
+def _start_model_install(model_key: str) -> dict[str, object]:
+    global install_thread
+    preset = get_preset(model_key)
+    if preset.engine == "remote":
+        raise ValueError("Remote Hearing does not install a local model")
+    with install_lock:
+        current = install_thread
+        if current is not None and current.is_alive():
+            if install_state.get("model") != preset.key:
+                raise RuntimeError("Another Hearing model is already installing")
+        else:
+            install_state.update(
+                {
+                    "model": preset.key,
+                    "phase": "preparing",
+                    "bytes_present": 0,
+                    "bytes_required": preset.download_bytes,
+                    "error": None,
+                }
+            )
+            current = threading.Thread(
+                target=_run_model_install,
+                args=(preset.key,),
+                name=f"sens-hearing-install-{preset.key}",
+                daemon=True,
+            )
+            install_thread = current
+            current.start()
+    return _model_setup_status(preset.key)
 
 
 def _dictation_status() -> dict[str, object]:
@@ -82,6 +183,7 @@ def _dictation_status() -> dict[str, object]:
         "transcribing": bool(app is not None and app.transcribing),
         "error": error or None,
         "modelControlledMicrophone": False,
+        **_model_setup_status(settings.model),
     }
 
 
@@ -189,6 +291,12 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         return _dictation_status()
     if operation == "dictation_stop":
         return _stop_dictation()
+    if operation == "model_status":
+        model = str(payload.get("model") or settings_store.load().model)
+        return _model_setup_status(model)
+    if operation == "model_install":
+        model = str(payload.get("model") or settings_store.load().model)
+        return _start_model_install(model)
     if operation == "fetch":
         url = str(payload.get("url", "")).strip()
         if not url:

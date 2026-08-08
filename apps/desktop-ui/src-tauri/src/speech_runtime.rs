@@ -21,7 +21,39 @@ pub struct SpeechRuntimeStatus {
     #[serde(alias = "model_loading")]
     pub model_loading: bool,
     pub transcribing: bool,
+    #[serde(alias = "model_installed")]
+    pub model_installed: bool,
+    #[serde(alias = "model_size_mb")]
+    pub model_size_mb: f64,
+    pub installing: bool,
+    #[serde(alias = "install_phase")]
+    pub install_phase: String,
+    #[serde(alias = "install_bytes_present")]
+    pub install_bytes_present: u64,
+    #[serde(alias = "install_bytes_required")]
+    pub install_bytes_required: u64,
+    #[serde(alias = "install_error")]
+    pub install_error: Option<String>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct HearingModelStatus {
+    pub model: String,
+    #[serde(alias = "model_installed")]
+    pub model_installed: bool,
+    #[serde(alias = "model_size_mb")]
+    pub model_size_mb: f64,
+    pub installing: bool,
+    #[serde(alias = "install_phase")]
+    pub install_phase: String,
+    #[serde(alias = "install_bytes_present")]
+    pub install_bytes_present: u64,
+    #[serde(alias = "install_bytes_required")]
+    pub install_bytes_required: u64,
+    #[serde(alias = "install_error")]
+    pub install_error: Option<String>,
 }
 
 pub async fn status() -> SpeechRuntimeStatus {
@@ -41,6 +73,20 @@ pub async fn start(settings: &HearingSettings) -> Result<SpeechRuntimeStatus, St
 
 pub async fn sync_settings(settings: &HearingSettings) -> Result<SpeechRuntimeStatus, String> {
     invoke("dictation_settings", settings_payload(settings), 10_000).await
+}
+
+pub async fn model_status(model: &str) -> Result<HearingModelStatus, String> {
+    invoke_model_status("model_status", model).await
+}
+
+pub async fn install_model(model: &str) -> Result<HearingModelStatus, String> {
+    invoke_model_status("model_install", model).await
+}
+
+async fn invoke_model_status(operation: &str, model: &str) -> Result<HearingModelStatus, String> {
+    let value = invoke_value(operation, json!({"model": model}), 10_000).await?;
+    serde_json::from_value(value)
+        .map_err(|error| format!("Hearing returned an invalid model status: {error}"))
 }
 
 fn settings_payload(settings: &HearingSettings) -> Value {
@@ -72,6 +118,12 @@ async fn invoke(
     input: Value,
     timeout_ms: u64,
 ) -> Result<SpeechRuntimeStatus, String> {
+    let value = invoke_value(operation, input, timeout_ms).await?;
+    serde_json::from_value(value)
+        .map_err(|error| format!("Hearing returned an invalid runtime status: {error}"))
+}
+
+async fn invoke_value(operation: &str, input: Value, timeout_ms: u64) -> Result<Value, String> {
     let client = BrokerClient::new();
     client.ensure_running().await.map_err(display_error)?;
     let mut request = InvokeRequest::new("hearing", operation, input);
@@ -83,8 +135,7 @@ async fn invoke(
         .map_err(display_error)?
     {
         BrokerResponse::Invoke { result } if result.status == JobState::Succeeded => {
-            serde_json::from_value(result.data)
-                .map_err(|error| format!("Hearing returned an invalid runtime status: {error}"))
+            Ok(result.data)
         }
         BrokerResponse::Invoke { result } => Err(result
             .error
@@ -114,7 +165,13 @@ mod tests {
             "model_state": "loaded",
             "model_loaded": true,
             "model_loading": false,
-            "transcribing": false
+            "transcribing": false,
+            "model_installed": true,
+            "model_size_mb": 162.3,
+            "install_phase": "ready",
+            "install_bytes_present": 170197019,
+            "install_bytes_required": 170197019,
+            "install_error": null
         }))
         .expect("status");
 
@@ -124,6 +181,31 @@ mod tests {
         assert_eq!(status.hotkey, "ctrl+win");
         assert_eq!(status.model, "gigaam");
         assert_eq!(status.model_state, "loaded");
+        assert!(status.model_installed);
+        assert_eq!(status.install_phase, "ready");
+        assert_eq!(status.install_bytes_required, 170_197_019);
+    }
+
+    #[test]
+    fn model_status_converts_worker_fields_for_the_ui() {
+        let status: HearingModelStatus = serde_json::from_value(json!({
+            "model": "qwen",
+            "model_installed": false,
+            "model_size_mb": 838.0,
+            "installing": true,
+            "install_phase": "downloading",
+            "install_bytes_present": 123,
+            "install_bytes_required": 878702423,
+            "install_error": null
+        }))
+        .expect("status");
+
+        let ui = serde_json::to_value(status).expect("ui json");
+        assert_eq!(ui["modelInstalled"], false);
+        assert_eq!(ui["installPhase"], "downloading");
+        assert_eq!(ui["installBytesPresent"], 123);
+        assert_eq!(ui["installBytesRequired"], 878_702_423_u64);
+        assert!(ui.get("model_installed").is_none());
     }
 
     #[test]

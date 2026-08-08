@@ -1,8 +1,14 @@
 import unittest
+from unittest import mock
 
 import numpy as np
 
-from speech_app.vad import split_audio, trim_silence
+from speech_app.vad import (
+    SpeechSpan,
+    split_audio,
+    trim_for_recognition,
+    trim_silence,
+)
 
 
 def _tone(freq_hz: float, duration_s: float, sample_rate: int = 16000) -> np.ndarray:
@@ -126,6 +132,33 @@ class SplitAudioTests(unittest.TestCase):
                 min_chunk_s=1.0,
                 overlap_s=1.5,
             )
+
+
+class NeuralVadTests(unittest.TestCase):
+    def test_neural_spans_trim_outer_noise_but_preserve_internal_audio(self):
+        audio = np.arange(1000, dtype=np.float32)
+        with mock.patch(
+            "speech_app.vad.detect_speech_spans",
+            return_value=[SpeechSpan(100, 300), SpeechSpan(600, 900)],
+        ):
+            trimmed = trim_for_recognition(audio, 16000, use_neural=True)
+        np.testing.assert_array_equal(trimmed, audio[100:900])
+
+    def test_neural_no_speech_returns_empty(self):
+        with mock.patch("speech_app.vad.detect_speech_spans", return_value=[]):
+            trimmed = trim_for_recognition(
+                np.ones(1600, dtype=np.float32), 16000, use_neural=True
+            )
+        self.assertEqual(trimmed.size, 0)
+
+    def test_missing_neural_runtime_falls_back_to_rms(self):
+        audio = np.concatenate(
+            [np.zeros(480), np.ones(1600, dtype=np.float32), np.zeros(480)]
+        )
+        with mock.patch("speech_app.vad.detect_speech_spans", return_value=None):
+            neural = trim_for_recognition(audio, 16000, use_neural=True)
+        rms = trim_silence(audio, 16000)
+        np.testing.assert_array_equal(neural, rms)
 
 
 if __name__ == "__main__":

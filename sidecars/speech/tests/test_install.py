@@ -90,6 +90,38 @@ class ArchiveInstallTests(unittest.TestCase):
             self.assertEqual(download.call_count, 1)
             self.assertFalse(list(model_root.glob(".gigaam-install-*")))
 
+    def test_install_reports_atomic_phase_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            source = temp / "source.tar.bz2"
+            base = get_preset("gigaam")
+            _build_archive(source, base)
+            preset = replace(
+                base,
+                download_url="https://example.test/model.tar.bz2",
+                download_bytes=source.stat().st_size,
+                download_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
+            phases = []
+
+            def provide_archive(_preset, destination, progress):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                progress({"phase": "downloading", "bytes_present": source.stat().st_size})
+
+            with mock.patch.dict(
+                os.environ, {"SPEECH_MODELS_DIR": str(temp / "models")}
+            ), mock.patch.object(
+                install_module, "_download_archive", side_effect=provide_archive
+            ):
+                self.assertEqual(
+                    install_archive_model(
+                        preset, lambda update: phases.append(update["phase"])
+                    ),
+                    0,
+                )
+            self.assertEqual(phases, ["downloading", "installing", "ready"])
+
     def test_bad_digest_never_promotes_partial_model(self):
         with tempfile.TemporaryDirectory() as tmp:
             temp = Path(tmp)
@@ -163,12 +195,15 @@ class WhisperInstallTests(unittest.TestCase):
             install_module, "install_archive_model", return_value=0
         ) as archive, mock.patch.object(
             install_module, "install_whisper_model", return_value=0
-        ) as whisper:
+        ) as whisper, mock.patch.object(
+            install_module, "install_vad_model", return_value=0
+        ) as vad:
             self.assertEqual(install_module.install_model("qwen"), 0)
             self.assertEqual(install_module.install_model("gigaam"), 0)
             self.assertEqual(install_module.install_model("whisper"), 0)
         self.assertEqual(archive.call_count, 2)
         whisper.assert_called_once()
+        self.assertEqual(vad.call_count, 3)
 
 
 if __name__ == "__main__":

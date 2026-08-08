@@ -15,10 +15,10 @@ from typing import Any, Sequence
 import numpy as np
 
 from .engine_manager import EngineManager
-from .models import get_preset
+from .models import get_preset, resolve_engine
 from .settings import AppSettings
 from .textpost import postprocess
-from .vad import trim_silence
+from .vad import trim_for_recognition
 
 
 SUPPORTED_EXTENSIONS = {
@@ -375,6 +375,12 @@ def transcribe_audio_file(
             )
             segments = remote.get("segments")
             duration_seconds = float(remote.get("duration") or 0.0)
+            elapsed_ms = round((time.perf_counter() - started) * 1000)
+            rtf = (
+                round((elapsed_ms / 1000) / duration_seconds, 4)
+                if duration_seconds > 0
+                else None
+            )
             return {
                 "text": text,
                 "model": settings.remote_model_id,
@@ -384,7 +390,28 @@ def transcribe_audio_file(
                 "container": container_kind,
                 "audioTrack": duration_seconds > 0 or bool(text),
                 "segments": segments,
-                "elapsed_ms": round((time.perf_counter() - started) * 1000),
+                "elapsed_ms": elapsed_ms,
+                "real_time_factor": rtf,
+                "observed": {
+                    "source": "observed",
+                    "method": "local_file_access",
+                    "container": container_kind,
+                    "audioTrack": duration_seconds > 0 or bool(text),
+                },
+                "measured": {
+                    "source": "measured",
+                    "method": "wall_clock_and_provider_duration",
+                    "durationSeconds": duration_seconds,
+                    "elapsedMs": elapsed_ms,
+                    "realTimeFactor": rtf,
+                },
+                "inferred": {
+                    "source": "inferred",
+                    "method": "remote_asr",
+                    "text": text,
+                    "model": settings.remote_model_id,
+                    "segments": segments,
+                },
             }
     samples, sample_rate = load_audio_file(path)
     duration_seconds = float(samples.size / sample_rate) if sample_rate else 0.0
@@ -393,12 +420,24 @@ def transcribe_audio_file(
         # Silent video (no audio track): report it explicitly instead of
         # pretending there was nothing to transcribe.
         audio_track = False
-    trimmed = trim_silence(
+    trimmed = trim_for_recognition(
         samples,
         sample_rate=sample_rate,
         sensitivity=settings.vad_sensitivity,
+        use_neural=settings.vad_filter,
     )
-    if trimmed.size == 0:
+    segments = None
+    combined = getattr(engine, "transcribe_with_segments", None)
+    combined_used = False
+    if samples.size > 0 and resolve_engine(settings) == "whisper" and callable(combined):
+        raw_text, segments = combined(samples, sample_rate, settings)
+        combined_used = True
+        text = (
+            postprocess(raw_text)
+            if settings.postprocess_text
+            else (raw_text or "").strip()
+        )
+    elif trimmed.size == 0:
         text = ""
     else:
         raw_text = engine.transcribe(trimmed, sample_rate, settings)
@@ -410,10 +449,21 @@ def transcribe_audio_file(
     # Timestamped segments come from the full (untrimmed) audio so the
     # reported times match the original file; only engines that can produce
     # them (whisper) fill this in.
-    segments = None
     segment_getter = getattr(engine, "transcribe_segments", None)
-    if segment_getter is not None and samples.size > 0:
+    if not combined_used and segment_getter is not None and samples.size > 0:
         segments = segment_getter(samples, sample_rate, settings)
+    elapsed_ms = round((time.perf_counter() - started) * 1000)
+    rtf = (
+        round((elapsed_ms / 1000) / duration_seconds, 4)
+        if duration_seconds > 0
+        else None
+    )
+    reported_model_id = getattr(engine, "model_id", "")
+    model_id = (
+        reported_model_id
+        if isinstance(reported_model_id, str) and reported_model_id
+        else settings.model_id
+    )
     return {
         "text": text,
         "model": settings.model,
@@ -423,6 +473,28 @@ def transcribe_audio_file(
         "container": container_kind,
         "audioTrack": audio_track,
         "segments": segments,
-        "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        "elapsed_ms": elapsed_ms,
+        "real_time_factor": rtf,
+        "observed": {
+            "source": "observed",
+            "method": "local_media_decode",
+            "container": container_kind,
+            "audioTrack": audio_track,
+            "sampleRate": sample_rate,
+        },
+        "measured": {
+            "source": "measured",
+            "method": "pcm_sample_count_and_wall_clock",
+            "durationSeconds": duration_seconds,
+            "inputSamples": int(samples.size),
+            "elapsedMs": elapsed_ms,
+            "realTimeFactor": rtf,
+        },
+        "inferred": {
+            "source": "inferred",
+            "method": f"{engine.kind}_asr",
+            "text": text,
+            "model": model_id,
+            "segments": segments,
+        },
     }
-

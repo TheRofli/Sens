@@ -130,6 +130,9 @@ class SettingsStore:
             defaults = AppSettings()
             settings.model = defaults.model
             settings.model_id = defaults.model_id
+        # Local Hearing is deliberately CPU-only. Normalize old cuda/auto
+        # settings so no engine can consume a GPU accidentally.
+        settings.device = "cpu"
         return settings
 
     def save(self, settings: AppSettings) -> None:

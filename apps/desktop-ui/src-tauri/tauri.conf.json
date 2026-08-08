@@ -52,6 +52,7 @@
       "../../../sidecars/sight-worker.py": "sidecars/sight-worker.py",
       "../../../sidecars/rapidocr-cyrillic.yaml": "sidecars/rapidocr-cyrillic.yaml",
       "../../../sidecars/sight/": "sidecars/sight/",
+      "../../../sidecars/speech/": "sidecars/speech/",
       "../../../scripts/download-vision-models.py": "scripts/download-vision-models.py",
       "runtime/python/": "runtime/python/"
     },

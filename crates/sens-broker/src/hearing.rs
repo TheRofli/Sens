@@ -6,7 +6,7 @@ use std::{
 
 use async_trait::async_trait;
 use sens_core::{CapabilityExecutor, CapabilityOutput, RuntimePaths};
-use sens_protocol::{InvokeRequest, SensError};
+use sens_protocol::{InvokeRequest, Provenance, SensError};
 use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
@@ -153,6 +153,13 @@ impl HearingExecutor {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
+        if let Some(runtime_root) = self.config.python_executable.parent() {
+            let tcl = runtime_root.join("tcl").join("tcl8.6");
+            let tk = runtime_root.join("tcl").join("tk8.6");
+            if tcl.is_dir() && tk.is_dir() {
+                command.env("TCL_LIBRARY", tcl).env("TK_LIBRARY", tk);
+            }
+        }
         crate::process_group::hide_console(&mut command);
         let mut child = command.spawn().map_err(|error| {
             runtime_error(
@@ -301,18 +308,82 @@ impl HearingExecutor {
 impl CapabilityExecutor for HearingExecutor {
     async fn invoke(&self, request: &InvokeRequest) -> Result<CapabilityOutput, SensError> {
         let result = self.invoke_worker(request).await?;
+        let (provenance, usage) = hearing_metadata(&result, &request.operation);
         Ok(CapabilityOutput {
             data: result,
+            provenance,
+            usage,
             ..Default::default()
         })
     }
 }
 
+fn hearing_metadata(result: &Value, operation: &str) -> (Vec<Provenance>, Value) {
+    let mut provenance = Vec::new();
+    for kind in ["observed", "measured", "inferred"] {
+        let Some(claim) = result.get(kind).and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(method) = claim.get("method").and_then(Value::as_str) else {
+            continue;
+        };
+        provenance.push(Provenance {
+            kind: kind.into(),
+            method: method.into(),
+            confidence: claim.get("confidence").and_then(Value::as_f64),
+            source_artifact_id: None,
+            region: None,
+        });
+    }
+    if provenance.is_empty() {
+        let (kind, method) = match operation {
+            "model_status" | "model_install" => ("observed", "local_model_state"),
+            "dictation_status" | "dictation_start" | "dictation_settings" | "dictation_stop" => {
+                ("observed", "broker_owned_dictation_state")
+            }
+            "fetch" => ("observed", "public_media_fetch"),
+            _ => ("inferred", "automatic_speech_recognition"),
+        };
+        provenance.push(Provenance {
+            kind: kind.into(),
+            method: method.into(),
+            confidence: None,
+            source_artifact_id: None,
+            region: None,
+        });
+    }
+    let usage = result.get("measured").cloned().unwrap_or(Value::Null);
+    (provenance, usage)
+}
+
 fn validate_hearing_input(request: &InvokeRequest) -> Result<(), SensError> {
     if matches!(
         request.operation.as_str(),
-        "dictation_status" | "dictation_start" | "dictation_settings" | "dictation_stop"
+        "dictation_status"
+            | "dictation_start"
+            | "dictation_settings"
+            | "dictation_stop"
+            | "model_status"
+            | "model_install"
     ) {
+        if matches!(request.operation.as_str(), "model_status" | "model_install") {
+            let input = request.input.as_object().ok_or_else(|| {
+                runtime_error(
+                    "invalid_input",
+                    "Hearing model input must be a JSON object",
+                    "Pass a supported model key.",
+                )
+            })?;
+            if let Some(model) = input.get("model").and_then(Value::as_str)
+                && !matches!(model, "qwen" | "gigaam" | "whisper" | "remote")
+            {
+                return Err(runtime_error(
+                    "invalid_model",
+                    format!("Unknown Hearing model: {model}"),
+                    "Choose qwen, gigaam, whisper, or remote.",
+                ));
+            }
+        }
         return Ok(());
     }
     let input = request.input.as_object().ok_or_else(|| {
@@ -397,5 +468,52 @@ mod tests {
         );
 
         assert!(validate_hearing_input(&request).is_ok());
+    }
+
+    #[test]
+    fn model_setup_accepts_supported_keys_without_an_audio_path() {
+        let request = InvokeRequest::new("hearing", "model_install", json!({"model": "gigaam"}));
+        assert!(validate_hearing_input(&request).is_ok());
+
+        let invalid = InvokeRequest::new("hearing", "model_status", json!({"model": "legacy"}));
+        assert_eq!(
+            validate_hearing_input(&invalid)
+                .expect_err("invalid model")
+                .code,
+            "invalid_model"
+        );
+    }
+
+    #[test]
+    fn hearing_metadata_preserves_epistemic_sources_and_metrics() {
+        let result = json!({
+            "text": "hello",
+            "observed": {"method": "local_media_decode"},
+            "measured": {
+                "method": "pcm_sample_count_and_wall_clock",
+                "durationSeconds": 1.5,
+                "elapsedMs": 300,
+                "realTimeFactor": 0.2
+            },
+            "inferred": {"method": "gigaam_asr"}
+        });
+
+        let (provenance, usage) = hearing_metadata(&result, "hear");
+
+        assert_eq!(provenance.len(), 3);
+        assert_eq!(provenance[0].kind, "observed");
+        assert_eq!(provenance[1].kind, "measured");
+        assert_eq!(provenance[2].method, "gigaam_asr");
+        assert_eq!(usage["realTimeFactor"], 0.2);
+    }
+
+    #[test]
+    fn hearing_runtime_operations_get_truthful_default_provenance() {
+        let (provenance, usage) = hearing_metadata(&json!({"running": true}), "dictation_status");
+
+        assert_eq!(provenance.len(), 1);
+        assert_eq!(provenance[0].kind, "observed");
+        assert_eq!(provenance[0].method, "broker_owned_dictation_state");
+        assert!(usage.is_null());
     }
 }

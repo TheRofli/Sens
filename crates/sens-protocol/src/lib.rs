@@ -281,6 +281,8 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
                 "dictation_start",
                 "dictation_settings",
                 "dictation_stop",
+                "model_status",
+                "model_install",
                 "fetch",
             ]
                 .into_iter()
@@ -294,6 +296,7 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
                 Permission::LocalFileRead,
                 Permission::LiveMicrophone,
                 Permission::SystemOutput,
+                Permission::ProviderNetwork,
             ],
             state: CapabilityState::Asleep,
             artifact_types: vec!["audio", "transcript"]

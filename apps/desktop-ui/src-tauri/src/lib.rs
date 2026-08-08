@@ -10,7 +10,7 @@ use sens_connect::{InstallResult, default_zcode_config_path, install};
 use sens_protocol::{BrokerRequest, BrokerResponse, CapabilityManifest, StatusSnapshot};
 use serde_json::Value;
 use settings::CapabilitySettings;
-use speech_runtime::SpeechRuntimeStatus;
+use speech_runtime::{HearingModelStatus, SpeechRuntimeStatus};
 use tauri::{
     AppHandle, Emitter, Manager, State,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -131,6 +131,16 @@ async fn speech_runtime_status() -> SpeechRuntimeStatus {
 async fn start_speech_runtime() -> Result<SpeechRuntimeStatus, String> {
     let settings = settings::load()?.hearing;
     speech_runtime::start(&settings).await
+}
+
+#[tauri::command]
+async fn hearing_model_status(model: String) -> Result<HearingModelStatus, String> {
+    speech_runtime::model_status(&model).await
+}
+
+#[tauri::command]
+async fn install_hearing_model(model: String) -> Result<HearingModelStatus, String> {
+    speech_runtime::install_model(&model).await
 }
 
 #[tauri::command]
@@ -298,6 +308,8 @@ pub fn run() {
             save_capability_settings,
             speech_runtime_status,
             start_speech_runtime,
+            hearing_model_status,
+            install_hearing_model,
             sight_setup_status,
             install_sight_pack,
             connect_client,

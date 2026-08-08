@@ -10,11 +10,20 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..models import ModelPreset, available_presets, get_preset
+from ..vad import (
+    SILERO_VAD_BYTES,
+    SILERO_VAD_SHA256,
+    SILERO_VAD_URL,
+    silero_vad_path,
+)
 from .paths import installed_marker, model_dir, models_root, pack_download_dir
+
+ProgressCallback = Callable[[dict[str, object]], None]
 
 
 def _print(message: str, *, error: bool = False) -> None:
@@ -58,7 +67,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _download_archive(preset: ModelPreset, target: Path) -> None:
+def _download_archive(
+    preset: ModelPreset,
+    target: Path,
+    progress: ProgressCallback | None = None,
+) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     existing = target.stat().st_size if target.is_file() else 0
     if preset.download_bytes and existing == preset.download_bytes:
@@ -76,8 +89,23 @@ def _download_archive(preset: ModelPreset, target: Path) -> None:
     with urllib.request.urlopen(request, timeout=60) as response:
         resumed = existing > 0 and getattr(response, "status", 200) == 206
         mode = "ab" if resumed else "wb"
+        received = existing if resumed else 0
         with target.open(mode) as stream:
-            shutil.copyfileobj(response, stream, length=1024 * 1024)
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                stream.write(chunk)
+                received += len(chunk)
+                if progress is not None:
+                    progress(
+                        {
+                            "phase": "downloading",
+                            "model": preset.key,
+                            "bytes_present": received,
+                            "bytes_required": preset.download_bytes,
+                        }
+                    )
     actual_size = target.stat().st_size
     if preset.download_bytes and actual_size != preset.download_bytes:
         if actual_size > preset.download_bytes:
@@ -90,6 +118,35 @@ def _download_archive(preset: ModelPreset, target: Path) -> None:
     if actual_digest.lower() != preset.download_sha256.lower():
         target.unlink(missing_ok=True)
         raise RuntimeError(f"{preset.key} model archive failed SHA-256 verification")
+
+
+def install_vad_model() -> int:
+    destination = silero_vad_path()
+    if (
+        destination.is_file()
+        and destination.stat().st_size == SILERO_VAD_BYTES
+        and _sha256(destination).lower() == SILERO_VAD_SHA256
+    ):
+        return 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(".onnx.part")
+    try:
+        asset = ModelPreset(
+            key="vad",
+            label="Silero VAD",
+            engine="vad",
+            model_id="silero-vad",
+            family="silero-vad",
+            download_url=SILERO_VAD_URL,
+            download_sha256=SILERO_VAD_SHA256,
+            download_bytes=SILERO_VAD_BYTES,
+        )
+        _download_archive(asset, temporary)
+        os.replace(temporary, destination)
+        return 0
+    except Exception as exc:
+        _print(f"Could not install Silero VAD: {exc}", error=True)
+        return 1
 
 
 def _safe_extract(archive: Path, destination: Path) -> None:
@@ -136,8 +193,13 @@ def _promote_model(source: Path, destination: Path) -> None:
         shutil.rmtree(backup)
 
 
-def install_archive_model(preset: ModelPreset) -> int:
+def install_archive_model(
+    preset: ModelPreset,
+    progress: ProgressCallback | None = None,
+) -> int:
     if _is_installed(preset):
+        if progress is not None:
+            progress({"phase": "ready", "model": preset.key})
         _print(f"{preset.label} is already installed at {model_dir(preset)}")
         return 0
     downloads = pack_download_dir()
@@ -152,12 +214,19 @@ def install_archive_model(preset: ModelPreset) -> int:
         _print(
             f"Downloading {preset.label} ({preset.download_bytes / 1024**2:.0f} MiB)..."
         )
-        _download_archive(preset, archive)
+        if progress is None:
+            _download_archive(preset, archive)
+        else:
+            _download_archive(preset, archive, progress)
+        if progress is not None:
+            progress({"phase": "installing", "model": preset.key})
         _safe_extract(archive, extraction)
         payload = _payload_root(extraction, preset)
         _write_installed_marker(payload, preset)
         _promote_model(payload, model_dir(preset))
         archive.unlink(missing_ok=True)
+        if progress is not None:
+            progress({"phase": "ready", "model": preset.key})
         _print(f"{preset.label} is ready at {model_dir(preset)}")
         return 0
     except Exception as exc:
@@ -167,8 +236,13 @@ def install_archive_model(preset: ModelPreset) -> int:
         shutil.rmtree(extraction, ignore_errors=True)
 
 
-def install_whisper_model(preset: ModelPreset) -> int:
+def install_whisper_model(
+    preset: ModelPreset,
+    progress: ProgressCallback | None = None,
+) -> int:
     if _is_installed(preset):
+        if progress is not None:
+            progress({"phase": "ready", "model": preset.key})
         _print(f"{preset.label} is already installed at {model_dir(preset)}")
         return 0
     try:
@@ -181,6 +255,15 @@ def install_whisper_model(preset: ModelPreset) -> int:
     root.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".whisper-install-", dir=root))
     try:
+        if progress is not None:
+            progress(
+                {
+                    "phase": "downloading",
+                    "model": preset.key,
+                    "bytes_present": 0,
+                    "bytes_required": preset.download_bytes,
+                }
+            )
         _print(f"Downloading pinned {preset.label}...")
         download_model(
             "small",
@@ -190,8 +273,12 @@ def install_whisper_model(preset: ModelPreset) -> int:
         )
         if not _required_files_exist(preset, staging):
             raise RuntimeError("Whisper download is missing required model files")
+        if progress is not None:
+            progress({"phase": "installing", "model": preset.key})
         _write_installed_marker(staging, preset)
         _promote_model(staging, model_dir(preset))
+        if progress is not None:
+            progress({"phase": "ready", "model": preset.key})
         _print(f"{preset.label} is ready at {model_dir(preset)}")
         return 0
     except Exception as exc:
@@ -201,12 +288,19 @@ def install_whisper_model(preset: ModelPreset) -> int:
         shutil.rmtree(staging, ignore_errors=True)
 
 
-def install_model(preset_key: str) -> int:
+def install_model(
+    preset_key: str,
+    progress: ProgressCallback | None = None,
+) -> int:
     preset = get_preset(preset_key)
+    if progress is not None:
+        progress({"phase": "preparing", "model": preset.key})
+    if preset.engine != "remote" and install_vad_model() != 0:
+        return 1
     if preset.engine in {"qwen", "gigaam"}:
-        return install_archive_model(preset)
+        return install_archive_model(preset, progress)
     if preset.engine == "whisper":
-        return install_whisper_model(preset)
+        return install_whisper_model(preset, progress)
     _print("Remote transcription does not install a local model", error=True)
     return 1
 

@@ -38,6 +38,7 @@ import {
   shouldOfferSightOnboarding,
   sightDownloadPercent,
 } from "./sightOnboarding.js";
+import { hearingDownloadPercent, hearingModelReady } from "./hearingSetup.js";
 
 const navItems = [
   { id: "home", icon: IconHome },
@@ -317,7 +318,7 @@ function SettingsToggle({ label, description, checked, onChange, disabled = fals
   );
 }
 
-function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup, sightInstalling, onInstallSightPack, onStartSpeech, onBack, onSave, saving }) {
+function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup, sightInstalling, hearingSetup, onInstallSightPack, onInstallHearingModel, onCheckHearingModel, onStartSpeech, onBack, onSave, saving }) {
   const t = useT();
   const meta = capabilityMeta[capability];
   const Icon = meta.icon;
@@ -331,6 +332,14 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
     const option = data.sightProviders.find((item) => item.value === provider);
     setDraft((previous) => ({ ...previous, provider, model: option?.model || previous.model }));
   };
+  const hearingModelChanged = (model) => {
+    update("model", model);
+    onCheckHearingModel?.(model);
+  };
+  const hearingSetupMatches = hearingSetup?.model === draft.model;
+  const hearingInstalled = hearingModelReady(hearingSetup, draft.model);
+  const hearingInstalling = hearingSetupMatches && hearingSetup?.installing;
+  const hearingProgress = hearingDownloadPercent(hearingSetup);
 
   return (
     <section className="capability-settings" aria-label={t(meta.openSettingsKey)}>
@@ -388,7 +397,7 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
           ) : (
             <>
               <label className="setting-field">{t("field.recognitionModel")}
-                <select value={draft.model} onChange={(event) => update("model", event.target.value)}>
+                <select value={draft.model} onChange={(event) => hearingModelChanged(event.target.value)}>
                   {data.hearingModels.map((option) => <option key={option.value} value={option.value}>{modelDisplay(t, option.value, option.label)}</option>)}
                 </select>
                 <small>{modelDescription(t, draft.model, data.hearingModels.find((item) => item.value === draft.model)?.description)}</small>
@@ -410,9 +419,10 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
                 </div>
               ) : null}
               <label className="setting-field">{t("field.device")}
-                <select value={draft.device} onChange={(event) => update("device", event.target.value)}>
-                  <option value="auto">{t("device.auto")}</option><option value="cpu">{t("device.cpu")}</option><option value="cuda">{t("device.cuda")}</option>
+                <select value="cpu" disabled>
+                  <option value="cpu">{t("device.cpu")}</option>
                 </select>
+                <small>{t("device.cpuOnlyHint")}</small>
               </label>
             </>
           )}
@@ -458,6 +468,20 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
             )
           ) : (
             <>
+              {draft.model === "remote" ? null : (
+                <div className={`sight-pack-status${hearingInstalled ? " sight-pack-status--ready" : ""}`}>
+                  <div>
+                    <strong>{hearingInstalled ? t("hearingPack.ready") : t("hearingPack.required")}</strong>
+                    <span>{hearingInstalling ? t("hearingPack.downloading", { progress: hearingProgress }) : hearingSetup?.installError || (hearingInstalled ? t("hearingPack.readyHint") : t(`hearingPack.${draft.model}Hint`))}</span>
+                    {hearingInstalling ? <div className="sight-progress-track" role="progressbar" aria-label={t("hearingPack.progressLabel")} aria-valuemin="0" aria-valuemax="100" aria-valuenow={hearingProgress}><span style={{ width: `${hearingProgress}%` }} /></div> : null}
+                  </div>
+                  {hearingInstalled ? null : (
+                    <button className="secondary-button" type="button" disabled={hearingInstalling} onClick={() => onInstallHearingModel?.(draft.model)}>
+                      <IconDownload size={18} />{hearingInstalling ? t("hearingPack.installing") : t("hearingPack.install")}
+                    </button>
+                  )}
+                </div>
+              )}
               <label className="setting-field">{t("field.beam")}
                 <input type="number" min="1" max="10" value={draft.beamSize} onChange={(event) => update("beamSize", Number(event.target.value))} />
                 <small>{t("beam.hint")}</small>
@@ -664,6 +688,7 @@ export function App() {
   const [sightInstalling, setSightInstalling] = useState(false);
   const [sightInstallError, setSightInstallError] = useState("");
   const [sightOnboardingOpen, setSightOnboardingOpen] = useState(previewSightOnboarding);
+  const [hearingSetup, setHearingSetup] = useState(nativeRuntime ? null : { model: "qwen", modelInstalled: true, installing: false, installPhase: "ready", installBytesPresent: 0, installBytesRequired: 878702423 });
   const [updateState, setUpdateState] = useState({ phase: "idle", version: "", progress: 0, error: "" });
   const [pendingUpdate, setPendingUpdate] = useState(null);
   // While an update is being installed the broker must stay stopped so the
@@ -700,21 +725,33 @@ export function App() {
   useEffect(() => {
     if (!nativeRuntime) return;
     invoke("capability_settings")
-      .then(async (settings) => {
+      .then((settings) => {
         setCapabilitySettings(settings);
-        const status = await invoke("sight_setup_status", { pack: "lite" });
-        setSightSetup(status);
-        if (status.ready) {
-          saveSightOnboardingDecision("complete");
-        } else if (shouldOfferSightOnboarding({
-          nativeRuntime,
-          trayView,
-          provider: settings.sight?.provider || "local",
-          status,
-          decision: readSightOnboardingDecision(),
-        })) {
-          setSightOnboardingOpen(true);
-        }
+        invoke("hearing_model_status", { model: settings.hearing.model })
+          .then(setHearingSetup)
+          .catch((error) => setHearingSetup({
+            model: settings.hearing.model,
+            modelInstalled: false,
+            installing: false,
+            installPhase: "failed",
+            installError: String(error),
+          }));
+        invoke("sight_setup_status", { pack: "lite" })
+          .then((status) => {
+            setSightSetup(status);
+            if (status.ready) {
+              saveSightOnboardingDecision("complete");
+            } else if (shouldOfferSightOnboarding({
+              nativeRuntime,
+              trayView,
+              provider: settings.sight?.provider || "local",
+              status,
+              decision: readSightOnboardingDecision(),
+            })) {
+              setSightOnboardingOpen(true);
+            }
+          })
+          .catch((error) => setRuntimeError(String(error)));
       })
       .catch((error) => setRuntimeError(String(error)));
   }, [nativeRuntime, trayView]);
@@ -731,6 +768,22 @@ export function App() {
     const timer = window.setInterval(refreshSightProgress, 500);
     return () => { active = false; window.clearInterval(timer); };
   }, [nativeRuntime, sightInstalling]);
+
+  useEffect(() => {
+    if (!nativeRuntime || !hearingSetup?.installing || !hearingSetup?.model) return undefined;
+    let active = true;
+    const refreshHearingProgress = () => {
+      invoke("hearing_model_status", { model: hearingSetup.model })
+        .then((status) => {
+          if (!active) return;
+          setHearingSetup(status);
+          if (status.modelInstalled) showToast(t("toast.hearingModelReady", { model: modelDisplay(t, status.model, status.model) }));
+        })
+        .catch(() => {});
+    };
+    const timer = window.setInterval(refreshHearingProgress, 500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [nativeRuntime, hearingSetup?.installing, hearingSetup?.model, t]);
 
   useEffect(() => {
     if (!nativeRuntime) return undefined;
@@ -800,6 +853,30 @@ export function App() {
     } catch (error) {
       setSpeechRuntime((previous) => ({ ...previous, running: false, error: String(error) }));
       showToast(t("toast.speechFailed", { error: String(error) }));
+    }
+  }
+
+  async function checkHearingModel(model) {
+    if (!nativeRuntime || model === "remote") {
+      setHearingSetup(model === "remote" ? { model, modelInstalled: true, installing: false, installPhase: "ready" } : hearingSetup);
+      return;
+    }
+    try {
+      setHearingSetup(await invoke("hearing_model_status", { model }));
+    } catch (error) {
+      setHearingSetup({ model, modelInstalled: false, installing: false, installPhase: "failed", installError: String(error) });
+    }
+  }
+
+  async function installHearingModel(model) {
+    if (!nativeRuntime || hearingSetup?.installing || model === "remote") return;
+    try {
+      setHearingSetup(await invoke("install_hearing_model", { model }));
+      showToast(t("toast.hearingModelInstalling", { model: modelDisplay(t, model, model) }));
+    } catch (error) {
+      const detail = String(error);
+      setHearingSetup({ model, modelInstalled: false, installing: false, installPhase: "failed", installError: detail });
+      showToast(t("toast.hearingModelFailed", { error: detail }));
     }
   }
 
@@ -919,7 +996,7 @@ export function App() {
             {view === "home" ? (
               <HomeContent settings={capabilitySettings} speechRuntime={speechRuntime} openCapability={openCapability} openCapabilities={() => navigate("capabilities")} openConnect={() => setConnectOpen(true)} />
             ) : selectedCapability ? (
-              <CapabilitySettingsContent capability={selectedCapability} data={capabilitySettings} speechRuntime={speechRuntime} sightSetup={sightSetup} sightInstalling={sightInstalling} onInstallSightPack={installSightPack} onStartSpeech={startSpeech} onBack={() => setSelectedCapability(null)} onSave={saveSettings} saving={savingSettings} />
+              <CapabilitySettingsContent capability={selectedCapability} data={capabilitySettings} speechRuntime={speechRuntime} sightSetup={sightSetup} sightInstalling={sightInstalling} hearingSetup={hearingSetup} onInstallSightPack={installSightPack} onInstallHearingModel={installHearingModel} onCheckHearingModel={checkHearingModel} onStartSpeech={startSpeech} onBack={() => setSelectedCapability(null)} onSave={saveSettings} saving={savingSettings} />
             ) : (
               <DetailContent view={view} settings={capabilitySettings} speechRuntime={speechRuntime} runtimeStatus={runtimeStatus} updateState={updateState} onCheckUpdate={checkForUpdates} onInstallUpdate={installUpdate} onOpenCapability={openCapability} openConnect={() => setConnectOpen(true)} />
             )}

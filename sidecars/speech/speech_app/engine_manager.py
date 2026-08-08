@@ -108,6 +108,33 @@ class EngineManager:
             return None
         return getter(samples, sample_rate, settings)
 
+    def transcribe_with_segments(
+        self, samples: np.ndarray, sample_rate: int, settings: "AppSettings"
+    ) -> tuple[str, list[dict[str, Any]] | None]:
+        """Transcribe once and return timestamps when the engine supports them.
+
+        Whisper's segment call already performs recognition. Keeping this
+        combined path prevents file transcription from running Whisper twice.
+        """
+        if samples.size == 0:
+            return "", []
+        kind = resolve_engine(settings)
+        if (
+            self._current is None
+            or self._kind != kind
+            or not self._current.is_loaded
+        ):
+            self.load(settings)
+        assert self._current is not None
+        getter = getattr(self._current, "transcribe_segments", None)
+        if getter is None:
+            return self._current.transcribe(samples, sample_rate, settings), None
+        segments = getter(samples, sample_rate, settings)
+        if segments is None:
+            return self._current.transcribe(samples, sample_rate, settings), None
+        text = " ".join(str(segment.get("text", "")).strip() for segment in segments)
+        return text.strip(), segments
+
     def transcribe_file(
         self, path: Any, settings: "AppSettings"
     ) -> dict[str, Any] | None:

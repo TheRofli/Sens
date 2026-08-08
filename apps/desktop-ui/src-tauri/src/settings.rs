@@ -217,7 +217,9 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
         hearing: HearingSettings {
             enabled: bool_field(&speech, "engine_enabled", true),
             model: normalize_hearing_model(&string_field(&speech, "model", "qwen")).into(),
-            device: string_field(&speech, "device", "cpu"),
+            // Sens 1.3.5 local ASR is intentionally CPU-only on every host.
+            // Normalize legacy auto/cuda values instead of ever touching GPU.
+            device: "cpu".into(),
             hotkey: string_field(&speech, "hotkey", "ctrl+win"),
             copy_to_clipboard: bool_field(&speech, "copy_to_clipboard", true),
             paste_to_active_input: bool_field(&speech, "paste_to_active_input", true),
@@ -373,8 +375,8 @@ fn validate_hearing(settings: &HearingSettings) -> Result<(), String> {
     if !(2..=3).contains(&hotkey_parts) {
         return Err("Горячая клавиша должна содержать два или три сочетания".into());
     }
-    if !matches!(settings.device.as_str(), "auto" | "cpu" | "cuda") {
-        return Err("Устройство должно быть auto, cpu или cuda".into());
+    if settings.device != "cpu" {
+        return Err("Локальный слух Sens поддерживает только CPU".into());
     }
     if !(1..=10).contains(&settings.beam_size) {
         return Err("Beam size должен быть от 1 до 10".into());
