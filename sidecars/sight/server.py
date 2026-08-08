@@ -46,6 +46,8 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             payload.get("pack"),
             payload.get("prompt"),
             max_semantic_calls,
+            profile=payload.get("profile"),
+            response=str(payload.get("response") or "compact"),
         )
     if operation == "read":
         dump = analyze(str(payload["imagePath"]), payload.get("region"), no_store)
@@ -61,6 +63,8 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             no_store,
             bool(payload.get("quality", False)),
             payload.get("pack"),
+            profile=payload.get("profile"),
+            response=str(payload.get("response") or "compact"),
         )
     if operation == "ask":
         return ask(
@@ -90,7 +94,9 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         raise ValueError("region or target is required for inspect")
     if operation == "compare":
         return compare_images(
-            str(payload["referencePath"]), str(payload["candidatePath"])
+            str(payload["referencePath"]),
+            str(payload["candidatePath"]),
+            fit=str(payload.get("fit", "strict")),
         )
     raise ValueError(f"Unsupported Sight operation: {operation}")
 

@@ -123,6 +123,29 @@ def test_multimodal_message_uses_model_card_content_order(tmp_path, monkeypatch)
     assert host.ask(str(image), "What is shown?") == "ok"
     content = captured["messages"][0]["content"]
     assert [item["type"] for item in content] == ["text", "image_url"]
+    assert captured["max_tokens"] == 192
+    assert captured["temperature"] == 0.0
+
+
+def test_vlm_tasks_use_bounded_generation_budgets(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "fixture.png"
+    cv2.imwrite(str(image), np.zeros((16, 16, 3), np.uint8))
+    budgets = []
+
+    class FakeModel:
+        def create_chat_completion(self, **kwargs):
+            budgets.append(kwargs["max_tokens"])
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    host = vlm.VlmHost("lite")
+    host._llm = FakeModel()
+    monkeypatch.setattr(host, "_touch", lambda: None)
+
+    assert host.vibe(str(image)) == "ok"
+    assert host.describe(str(image), [0, 0, 16, 16]) == "ok"
+    assert host.transcribe(str(image), [0, 0, 16, 16]) == "ok"
+    assert host.ask(str(image), "What is shown?") == "ok"
+    assert budgets == [96, 96, 128, 192]
 
 
 def test_benchmark_required_groups_score_independent_visual_facts() -> None:

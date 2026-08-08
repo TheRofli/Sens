@@ -117,3 +117,181 @@ single process for both internal dictation control and MCP transcription, then
 replace engines behind the preserved public behavior. Package one Python
 runtime with Tk and the CPU inference dependencies. Delete `D:\Speech` only
 after the installed-build gate, immediately before the final 1.3.5 release.
+
+# Media and Voice brownfield extension (2026-08-08)
+
+## Existing contracts to preserve
+
+| Contract | Current owner | Preserve while extending |
+| --- | --- | --- |
+| `sens_see` / `sens_inspect` | Rust Sight executor + Sight workers | Image/OCR/measurement behavior and shared result envelope |
+| `sens_watch` | Rust Sight executor + legacy/cloud Eye | Tool schema and compatibility behavior until local Media is proven |
+| `sens_hear` | Rust Hearing executor + Hearing worker | Side-effect-free file transcription and timestamped segments |
+| `sens_fetch` | Rust Hearing executor + Hearing worker | Public tool response shape during migration; fix path identity first |
+| Ctrl+Win dictation | Desktop -> broker-owned Hearing worker | Visible user consent and its explicit clipboard/paste flow only |
+
+## Target ownership map
+
+```text
+sens-mcp / desktop UI
+        |
+        v
+Rust broker (only mutable runtime owner)
+  |-- shared Arc<SightExecutor>   -> local/cloud Sight workers
+  |-- shared Arc<HearingExecutor> -> Hearing worker
+  |-- MediaExecutor              -> lightweight media preparation worker
+  |      |-- calls the same Sight executor
+  |      `-- calls the same Hearing executor
+  `-- VoiceExecutor              -> lazy sherpa-onnx TTS worker
+```
+
+`build_core` must construct Sight and Hearing once and pass the same `Arc`
+instances to Media. Media must not spawn duplicate VLM/ASR workers or own
+settings outside the broker. Fetch/demux/frame preparation moves from Hearing
+to `sidecars/media`; Hearing delegates to it temporarily for compatibility.
+
+## New public contracts
+
+- `sens_analyze`: exactly one of `path`, `url`, or `text`; optional `detail`,
+  `question`, language/model preferences, and `noStore`.
+- `sens_media_inspect`: a content ID plus `at` or `range` and an optional
+  question; produces a focused source-backed result.
+- `sens_speak`: text, voice, speed, format, and optional explicit `play`;
+  returns an audio artifact and measured synthesis metadata.
+- `MediaDocument v1`: source identity, media metadata, transcript/captions,
+  timestamped audio events and visual observations, timeline, chapters,
+  coverage, warnings, and next actions. Each claim is observed, measured, or
+  inferred.
+
+## Dependency and side-effect boundaries
+
+- Media preparation may read local files and explicitly submitted public URLs,
+  create bounded cache entries, and delete only its own staged/derived files.
+- Sight remains the only owner of vision model state; Hearing remains the only
+  owner of ASR model state; Voice owns one lazy TTS model.
+- `sens_analyze` never captures screen/microphone and never writes clipboard,
+  paste, or history.
+- `sens_speak` writes a file by default. System playback is a visible,
+  separately requested side effect.
+- All worker diagnostics use stderr. MCP stdout remains protocol-only. No URL
+  credentials, API keys, IPC secrets, transcripts, or document content enter
+  process arguments or diagnostic exports.
+
+## Known brownfield defects to close before exposure
+
+1. Media fetch currently determines output by scanning a shared directory, so
+   audio can be misreported as video.
+2. URL capture/fetch has no complete SSRF/private-network/redirect policy.
+3. Fetch omits caption-first extraction, final cumulative size checks, atomic
+   promotion, cache TTL/quota, and full `noStore` cleanup.
+4. Extracted frames are paths without visual analysis or transcript fusion.
+5. Current tests mock download success and do not prove distinct audio/video
+   paths, redirect safety, cleanup, cancellation, or installed-runtime codecs.
+
+## Compatibility strategy
+
+Land Media additively. Internally route `sens_watch` and `sens_fetch` through
+the new preparation path only after equivalence tests pass. Deprecation, if
+ever useful, is a later explicit release decision. Voice is additive and must
+not change Ctrl+Win dictation.
+
+# Vision reconstruction hardening (2026-08-08)
+
+## Failure being corrected
+
+The first Summer Drive reconstruction proved that the current scene document is
+useful for semantic orientation but is not yet a safe completion contract for
+pixel-accurate work. A text-only host accepted false controls inferred from
+poster lettering, mixed coordinate systems in the implementation, compared
+different render sizes after an implicit resize, and treated a low aggregate
+similarity as success. The repair loop then repeated the full, duplicated Sight
+payload until the session reached roughly 23 million aggregate input tokens.
+
+## Boundaries and ownership
+
+- `sidecars/sight` continues to own deterministic image analysis, the Visual
+  Scene document, reconstruction guidance, and compare metrics.
+- The Rust broker remains the only owner of the Sight worker and mutable
+  runtime state. It validates files and forwards additive request options; it
+  does not reimplement image analysis.
+- `sens-mcp` owns the model-facing tool schema and instructions. Its default
+  path must be compact and unambiguous, while an explicit compatibility mode
+  retains the full legacy projection for existing 1.x consumers.
+- Z-Code must launch the installed `sens-mcp.exe`, not a stale repository build.
+  A client restart is required after the executable/configuration changes.
+
+## Contract changes
+
+### Reconstruction profile
+
+`sens_see` accepts an additive `profile` option. `profile=reconstruct` returns
+a `ReconstructionSpec` inside Visual Scene v2 with exact source dimensions and
+aspect ratio, a single coordinate-system recommendation, confirmed and
+uncertain text, foreground regions, asset strategy, static-artwork warnings,
+and a bounded first set of focus actions. It must explicitly prohibit adding
+content or interactions that are not visible in the reference.
+
+The full reconstruction pass does not call a generative model. It returns at
+most four source-pixel focus regions; `sens_zoom(profile=reconstruct)` applies
+the configured local Qwen pack only to that crop, exposes disagreements and a
+low-confidence `preferredValue`, and returns an empty `focusPlan` so the host
+cannot recursively inspect the same region. Dense screenshots auto-select this
+profile when an MCP client drops the user's prompt/profile arguments.
+
+Static artwork suppresses UI-control claims unless a candidate has measured
+closed-boundary evidence. Saturated glyph columns, inter-letter gaps, or an OCR
+box alone are never enough to call text a button or pill.
+
+### Compare gate
+
+`sens_compare` is strict by default. It never silently resamples a candidate.
+The result reports both decoded sizes, aspect-ratio delta, whether resampling
+was requested, foreground-weighted mismatch metrics, largest-hot-region ratio,
+an explicit `pass|partial|fail` verdict, blocking reasons, and `canComplete`.
+An explicit compatibility fit mode may resize, but its result remains marked
+as resampled and cannot prove exact-size completion.
+
+Initial fixture thresholds are exact dimensions, similarity at least `0.88`,
+pixel mismatch at most `0.12`, foreground mismatch at most `0.18`, layout
+similarity at least `0.80`, and largest hot region at most `0.05` of the
+reference. They are release-policy starting points and must be calibrated
+against checked-in fixtures rather than weakened to make a failing poster pass.
+
+### Compact MCP projection
+
+The default Sight response contains the canonical `doc`, compact summary,
+artifact references, pack, and compatibility metadata. It does not duplicate
+the same data as rendered Markdown plus `doc` plus the entire legacy dump.
+`response=full` retains those fields for explicit legacy/debug use. Zoom uses
+the same compact projection and identifies the analyzed source region.
+
+For reconstruction, compact `doc` also omits generic claims, the composition
+ASCII preview, and the generic element projection because those duplicate the
+exact reconstruction contract. The Summer Drive payload measured about 25-28k
+JSON characters after this projection.
+
+## Must-preserve behavior
+
+- Existing tool names and the shared request/result envelope remain valid.
+- `response=full` exposes the existing `document`, `doc`, `somPath`, `legacy`,
+  and `pack` fields while clients migrate.
+- OCR and VLM text remain inferred; decoded dimensions and deterministic
+  geometry remain measured.
+- Source coordinates stay reversible through crop/upscale operations.
+- `noStore` still leaves no cache or artifact.
+- Sight stays local and CPU-only, `sens-mcp` stdout stays protocol-only, and
+  unrelated Hearing/Media/Voice behavior is unchanged.
+
+## Verification surface
+
+1. Synthetic strict-size and threshold tests fail before compare changes and
+   pass after them.
+2. A poster-text fixture proves plain saturated text produces no controls while
+   a genuinely outlined button remains detectable.
+3. Protocol tests prove compact is the default and full compatibility is
+   opt-in without losing canonical `doc` data.
+4. Rust schema tests prove reconstruction/profile/response/fit options and
+   completion-language instructions are visible to the host.
+5. The Summer Drive reference is rendered and compared at exactly
+   `2557x1273`, DPR 1, after fonts settle; a result below the gate remains a
+   hard failure with an actionable largest region.

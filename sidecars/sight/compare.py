@@ -11,6 +11,15 @@ import numpy as np
 from sight.ocr import load_cv, run_ocr
 
 
+PASS_THRESHOLDS = {
+    "similarityScore": 0.88,
+    "pixelMismatchRatio": 0.12,
+    "foregroundMismatchRatio": 0.18,
+    "layoutSimilarity": 0.80,
+    "largestHotRegionRatio": 0.05,
+}
+
+
 
 
 # --------------------------------------------------------------------------
@@ -63,24 +72,73 @@ def _normalized_text(path: str) -> str:
     return " ".join(re.findall(r"[\w.-]+", text.casefold()))
 
 
-def compare_images(reference_path: str, candidate_path: str) -> dict[str, Any]:
-    """Numerical visual difference: HSV delta, mismatch ratio, hot zones.
+def _foreground_mask(image: Any) -> Any:
+    """Estimate visible content against the decoded image-border background."""
+    pixels = image.astype(np.float32)
+    border = np.concatenate(
+        (pixels[0, :, :], pixels[-1, :, :], pixels[:, 0, :], pixels[:, -1, :]),
+        axis=0,
+    )
+    background = np.median(border, axis=0)
+    return np.linalg.norm(pixels - background, axis=2) > 18.0
 
-    Deterministic and local — no provider needed. Candidate is resized to
-    the reference size first, so different resolutions still compare.
+
+def _strict_candidate_canvas(reference: Any, candidate: Any) -> Any:
+    """Align a different-sized candidate without resampling it.
+
+    Pixels outside the candidate are deliberately made maximally different
+    from the reference so a missing strip remains visible in the diff. Pixels
+    beyond the reference are represented by the separate dimension gate.
+    """
+    aligned = 255 - reference
+    overlap_height = min(reference.shape[0], candidate.shape[0])
+    overlap_width = min(reference.shape[1], candidate.shape[1])
+    aligned[:overlap_height, :overlap_width] = candidate[
+        :overlap_height, :overlap_width
+    ]
+    return aligned
+
+
+def compare_images(
+    reference_path: str, candidate_path: str, *, fit: str = "strict"
+) -> dict[str, Any]:
+    """Numerical visual difference with explicit reconstruction gates.
+
+    Deterministic and local. Strict mode never resamples the candidate.
+    ``fit=resize`` is an explicit compatibility view and cannot prove exact
+    completion when it changes the decoded candidate pixels.
     """
     import cv2
 
     reference = load_cv(reference_path)
     candidate = load_cv(candidate_path)
-    if candidate.shape[:2] != reference.shape[:2]:
+    if fit not in {"strict", "resize"}:
+        raise ValueError("fit must be 'strict' or 'resize'")
+    reference_height, reference_width = reference.shape[:2]
+    candidate_height, candidate_width = candidate.shape[:2]
+    exact_dimensions = candidate.shape[:2] == reference.shape[:2]
+    resampled = False
+    if not exact_dimensions and fit == "resize":
         candidate = cv2.resize(
-            candidate, (reference.shape[1], reference.shape[0]),
+            candidate,
+            (reference_width, reference_height),
             interpolation=cv2.INTER_AREA,
         )
+        resampled = True
+    elif not exact_dimensions:
+        candidate = _strict_candidate_canvas(reference, candidate)
     absolute_bgr = cv2.absdiff(reference, candidate)
     pixel_mask = np.any(absolute_bgr > 8, axis=2)
     pixel_mismatch = float(pixel_mask.mean())
+    foreground_mask = np.logical_or(
+        _foreground_mask(reference), _foreground_mask(candidate)
+    )
+    foreground_coverage = float(foreground_mask.mean())
+    foreground_mismatch = (
+        float(pixel_mask[foreground_mask].mean())
+        if bool(foreground_mask.any())
+        else 0.0
+    )
 
     reference_lab = cv2.cvtColor(reference, cv2.COLOR_BGR2LAB).astype(np.float32)
     candidate_lab = cv2.cvtColor(candidate, cv2.COLOR_BGR2LAB).astype(np.float32)
@@ -128,6 +186,7 @@ def compare_images(reference_path: str, candidate_path: str) -> dict[str, Any]:
             zones.append({
                 "box": [x, y, x + w, y + h],
                 "area": w * h,
+                "areaRatio": round((w * h) / (reference_width * reference_height), 4),
                 "meanDelta": round(float(score[y:y + h, x:x + w].mean()), 2),
                 "signals": ["pixel", "color", "edge"],
             })
@@ -136,6 +195,11 @@ def compare_images(reference_path: str, candidate_path: str) -> dict[str, Any]:
             "mismatchRatio": round(pixel_mismatch, 4),
             "meanAbsoluteChannelDelta": round(float(absolute_bgr.mean()), 3),
             "method": "absolute-bgr-delta",
+        },
+        "foreground": {
+            "mismatchRatio": round(foreground_mismatch, 4),
+            "coverageRatio": round(foreground_coverage, 4),
+            "method": "border-background-union-mask",
         },
         "color": {
             "meanLabDelta": round(color_mean, 3),
@@ -183,16 +247,125 @@ def compare_images(reference_path: str, candidate_path: str) -> dict[str, Any]:
                 },
             }
         )
+    similarity_score = round(max(0.0, min(1.0, similarity)), 4)
+    largest_hot_region_ratio = zones[0]["areaRatio"] if zones else 0.0
+    checks = [
+        {
+            "name": "dimensions_exact",
+            "blockingReason": "dimension_mismatch",
+            "actual": exact_dimensions,
+            "expected": True,
+            "passed": exact_dimensions,
+        },
+        {
+            "name": "resampled_candidate",
+            "actual": resampled,
+            "expected": False,
+            "passed": not resampled,
+        },
+        {
+            "name": "similarity_minimum",
+            "actual": similarity_score,
+            "operator": ">=",
+            "threshold": PASS_THRESHOLDS["similarityScore"],
+            "passed": similarity_score >= PASS_THRESHOLDS["similarityScore"],
+        },
+        {
+            "name": "pixel_mismatch_maximum",
+            "actual": round(pixel_mismatch, 4),
+            "operator": "<=",
+            "threshold": PASS_THRESHOLDS["pixelMismatchRatio"],
+            "passed": pixel_mismatch <= PASS_THRESHOLDS["pixelMismatchRatio"],
+        },
+        {
+            "name": "foreground_mismatch_maximum",
+            "actual": round(foreground_mismatch, 4),
+            "operator": "<=",
+            "threshold": PASS_THRESHOLDS["foregroundMismatchRatio"],
+            "passed": foreground_mismatch
+            <= PASS_THRESHOLDS["foregroundMismatchRatio"],
+        },
+        {
+            "name": "layout_similarity_minimum",
+            "actual": round(layout_similarity, 4),
+            "operator": ">=",
+            "threshold": PASS_THRESHOLDS["layoutSimilarity"],
+            "passed": layout_similarity >= PASS_THRESHOLDS["layoutSimilarity"],
+        },
+        {
+            "name": "largest_hot_region_maximum",
+            "actual": largest_hot_region_ratio,
+            "operator": "<=",
+            "threshold": PASS_THRESHOLDS["largestHotRegionRatio"],
+            "passed": largest_hot_region_ratio
+            <= PASS_THRESHOLDS["largestHotRegionRatio"],
+        },
+    ]
+    blocking_reasons = [
+        check.get("blockingReason", check["name"])
+        for check in checks
+        if not check["passed"]
+    ]
+    if all(check["passed"] for check in checks):
+        verdict = "pass"
+    elif (
+        exact_dimensions
+        and similarity_score >= 0.82
+        and pixel_mismatch <= 0.15
+        and foreground_mismatch <= 0.24
+        and layout_similarity >= 0.70
+        and largest_hot_region_ratio <= 0.08
+    ):
+        verdict = "partial"
+    else:
+        verdict = "fail"
+    required_action = None
+    if not exact_dimensions:
+        required_action = {
+            "kind": "rerender_exact_dimensions",
+            "referenceSize": {"width": reference_width, "height": reference_height},
+            "candidateSize": {"width": candidate_width, "height": candidate_height},
+            "reason": "Candidate dimensions must exactly match the immutable reference before visual completion can be evaluated.",
+        }
+    elif zones and verdict != "pass":
+        required_action = {
+            "kind": "repair_largest_hot_region",
+            "region": zones[0]["box"],
+            "areaRatio": zones[0]["areaRatio"],
+            "reason": "Repair the largest measured mismatch, render again at the same viewport, then rerun sens_compare.",
+        }
     return {
         "width": reference.shape[1],
         "height": reference.shape[0],
-        "similarityScore": round(max(0.0, min(1.0, similarity)), 4),
+        "dimensions": {
+            "reference": {"width": reference_width, "height": reference_height},
+            "candidate": {"width": candidate_width, "height": candidate_height},
+            "exactMatch": exact_dimensions,
+            "aspectRatioDelta": round(
+                abs(
+                    reference_width / max(1, reference_height)
+                    - candidate_width / max(1, candidate_height)
+                ),
+                6,
+            ),
+            "fit": fit,
+            "resampled": resampled,
+        },
+        "verdict": verdict,
+        "canComplete": verdict == "pass",
+        "blockingReasons": blocking_reasons,
+        "requiredAction": required_action,
+        "acceptance": {
+            "policy": "sens-reconstruction-v1",
+            "checks": checks,
+        },
+        "similarityScore": similarity_score,
         "metrics": metrics,
         "hotRegions": zones,
         "nextActions": next_actions,
         "provenance": {
             "source": "measured",
-            "method": "sens-multisignal-compare-v2",
+            "method": "sens-multisignal-compare-v3",
         },
         # Compatibility projection retained for 1.x callers.
         "mismatchRatio": round(ratio, 4),

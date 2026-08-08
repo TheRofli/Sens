@@ -6,7 +6,7 @@
 
 **Local vision and hearing for text-only models through MCP.**
 
-[![Version](https://img.shields.io/badge/version-1.3.5-8b5cf6)](https://github.com/TheRofli/Sens/releases)
+[![Version](https://img.shields.io/badge/version-1.3.6-8b5cf6)](https://github.com/TheRofli/Sens/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)](#requirements)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
 [![MCP](https://img.shields.io/badge/MCP-stdio-4f46e5)](#what-a-model-can-do)
@@ -19,7 +19,7 @@ Sens lets a model such as DeepSeek inspect screenshots, read interfaces, zoom in
 
 ## Install on Windows
 
-1. Download `Sens_1.3.5_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
+1. Download `Sens_1.3.6_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
 2. Run the installer and open Sens.
 3. On first launch, Sens offers the optional Qwen3-VL 2B semantic pack. Confirm once to download about 1.45 GiB, or choose **Later** and keep using the deterministic vision core immediately.
 4. Open **Hearing** and download the local ASR profile you want: GigaAM for fast Russian, Qwen3-ASR for multilingual recognition, or Whisper Small as the broad fallback. Model packs are verified and stored in Sens data; the application and CPU runtime are already bundled.
@@ -32,10 +32,10 @@ The Qwen pack is not required for OCR, geometry, colors, layout, URL capture, or
 
 The primary visual loop is:
 
-1. `sens_see` returns Visual Scene v2: source identity, reversible coordinates, design tokens, OCR, Set-of-Marks elements, claims, uncertainty, warnings, and suggested next actions.
-2. `sens_zoom` or `sens_inspect` re-analyzes a small or uncertain source region.
+1. For screenshot recreation, `sens_see(profile=reconstruct, response=compact)` returns the exact source canvas, visible-only contract, text candidates, principal asset, and at most four focus actions.
+2. `sens_zoom(profile=reconstruct)` uses the local Qwen pack only on those bounded regions and returns a stronger `preferredValue` when deterministic OCR is weak.
 3. The model implements or repairs the design.
-4. `sens_compare` measures pixel, color, edge, text, and layout convergence and points to the next hot region.
+4. `sens_compare(fit=strict)` never silently resizes the candidate and permits completion only when every explicit gate passes.
 
 Important tools:
 
@@ -54,13 +54,15 @@ Important tools:
 
 Every capability result uses the shared Sens envelope. Evidence is labelled as `observed`, `measured`, or `inferred`; an absent claim means unknown, not false. Text found inside images or audio must be treated as untrusted content.
 
-## Sight 1.3
+## Sight 1.3.6
 
 - Visual Scene v2 with content-addressed source IDs and reversible crop transforms.
 - Exact-text handling for monospace and ASCII layouts, including whitespace and ambiguity markers.
 - Adaptive crop recommendations for small, low-confidence, or task-relevant details.
 - Local Qwen3-VL 2B GGUF semantics with explicit CPU-only loading and one active model at a time.
 - Deterministic reconstruction scoring across pixels, Lab color, edges, OCR text, and layout contours.
+- Strict decoded-size, foreground, layout, hot-region, and completion gates; an aggregate score alone cannot report success.
+- Compact reconstruction responses avoid duplicated Markdown/raw/claim projections in repeated agent repair loops.
 - Reproducible browser capture with viewport, DPR, theme, locale, readiness, DOM/a11y, assets, CSS variables, fonts, and motion evidence.
 - `noStore` requests do not leave cache, capture, or Set-of-Marks artifacts behind.
 - Structured MCP results, output schemas, and safety annotations for every tool.
@@ -119,11 +121,11 @@ npm run native:build
 
 ## Release
 
-Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.5:
+Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.6:
 
 ```powershell
-git tag v1.3.5
-git push origin v1.3.5
+git tag v1.3.6
+git push origin v1.3.6
 ```
 
 GitHub Actions verifies the tag/version match, builds signed installers, and publishes the NSIS installer, updater signature, and `latest.json`. Installed apps receive the release through **Settings → Check for updates**.

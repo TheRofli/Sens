@@ -7,9 +7,9 @@ import tempfile
 import time
 from typing import Any
 
-from sight.ocr import load_cv, run_ocr
+from sight.ocr import load_cv, refine_ocr_for_reconstruction, run_ocr
 from sight.perception import _controls_around_text, _glyph_metrics, _hex_to_bgr, _intersection_ratio, _luminance, attention_map, color_zones, layout_blocks, layout_gaps, layout_skeleton, objects_yolo, scene_clip, texture_blocks
-from sight.qa import _center_in, control_icons, control_style, cross_verify, design_qa, section_style, shadow_bands
+from sight.qa import control_icons, control_style, cross_verify, design_qa, section_style, shadow_bands
 from sight.tree import _assign_roles, annotate_som, build_element_tree, build_section_tree, expand_button_subparts, summarize_screen
 from sight.cache import cache_key, cache_root, read_cache, write_cache
 from sight.coordinates import crop_coordinates, identity_coordinates
@@ -111,30 +111,21 @@ def analyze(
 def _plausible_controls(
     controls: list[dict[str, Any]],
     background_bgr: Any,
-    ocr_items: list[dict[str, Any]],
+    _ocr_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Drop ghost controls and merge duplicates.
 
-    A control whose fill equals the page background, has no border and no
-    label text inside is layout noise (a text zone), not a button. Boxes
-    overlapping 85%+ are the same widget detected twice."""
+    A control whose fill equals the page background and has no measured border
+    is layout/text noise, not a button. OCR inside a box is evidence for text,
+    not interaction. Boxes overlapping 85%+ are the same widget detected
+    twice."""
     kept: list[dict[str, Any]] = []
     for control in controls:
         keep = True
         if not control.get("borderColor") and control.get("background"):
             bg = _hex_to_bgr(control["background"])
             if abs(_luminance(bg) - _luminance(background_bgr)) < 15:
-                # A fill equal to the page background is a button only if a
-                # label of plausible size sits inside it (its center within
-                # the box and not vastly larger than the box itself).
-                cx0, cy0, cx1, cy1 = control["box"]
-                control_area = max(1, (cx1 - cx0) * (cy1 - cy0))
-                keep = any(
-                    _center_in(item["box"], control["box"])
-                    and (item["box"][2] - item["box"][0]) * (item["box"][3] - item["box"][1])
-                    <= 2 * control_area
-                    for item in ocr_items
-                )
+                keep = False
         if not keep:
             continue
         box = [int(v) for v in control["box"]]
@@ -168,7 +159,7 @@ def analyze_full(
     image = load_cv(image_path)
     ocr_items = run_ocr(image_path)
     for item in ocr_items:
-        metrics = _glyph_metrics(image, item["box"])
+        metrics = _glyph_metrics(image, item["box"], item.get("text"))
         if metrics is not None:
             item["metrics"] = metrics
     colors = color_zones(image)
@@ -342,6 +333,142 @@ def _image_for(image_path: str, region: dict | None):
     return image
 
 
+_RECONSTRUCTION_INTENT_MARKERS = (
+    "reconstruct",
+    "recreate",
+    "reproduce",
+    "repeat this design",
+    "copy this design",
+    "clone this",
+    "match this screenshot",
+    "pixel-perfect",
+    "screenshot to code",
+    "повтори",
+    "повторить",
+    "воссозд",
+    "скопир",
+    "точь-в-точь",
+    "как на скриншоте",
+    "сверст",
+)
+
+
+def _resolve_profile(
+    profile: str | None,
+    intent: str | None,
+    dump: dict[str, Any] | None = None,
+) -> str:
+    if profile is not None:
+        if profile not in {"analyze", "reconstruct"}:
+            raise ValueError("profile must be 'analyze' or 'reconstruct'")
+        return profile
+    normalized = (intent or "").casefold()
+    if any(marker in normalized for marker in _RECONSTRUCTION_INTENT_MARKERS):
+        return "reconstruct"
+    if dump is not None:
+        text_count = len(dump.get("ocr", []))
+        element_count = len(dump.get("elements", []))
+        # Some agent clients omit the user's task when they call an MCP tool.
+        # Dense, structured screenshots/posters still need the safe exact-copy
+        # contract; photos with little text retain the semantic analyze profile.
+        if text_count >= 4 and element_count >= 5:
+            return "reconstruct"
+    return "analyze"
+
+
+def _compact_summary(doc: dict[str, Any]) -> dict[str, Any]:
+    reconstruction = doc.get("reconstruction") or {}
+    next_actions = (
+        reconstruction.get("focusPlan", [])
+        if doc.get("profile") == "reconstruct"
+        else doc.get("nextActions", [])[:4]
+    )
+    return {
+        "schemaVersion": doc.get("schemaVersion"),
+        "profile": doc.get("profile"),
+        "source": doc.get("source"),
+        "canvas": reconstruction.get("canvas") or {
+            "size": (doc.get("header") or {}).get("size")
+        },
+        "semanticsStatus": doc.get("semantics_status"),
+        "warningCodes": [
+            warning.get("code") for warning in doc.get("warnings", [])
+        ],
+        "nextActions": next_actions,
+        "completionRule": (
+            "For reconstruction, render at the exact source dimensions and stop only when strict sens_compare returns canComplete=true."
+            if doc.get("profile") == "reconstruct"
+            else None
+        ),
+    }
+
+
+def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
+    """Keep reconstruction responses task-complete without replaying analysis.
+
+    Claims, ASCII previews, and the generic element projection duplicate the
+    exact reconstruction spec and caused large agent contexts on every repair
+    loop. They remain available through ``response=full``.
+    """
+    if doc.get("profile") != "reconstruct":
+        return doc
+    keys = (
+        "schemaVersion",
+        "profile",
+        "source",
+        "coordinateSpaces",
+        "header",
+        "tokens",
+        "measurements",
+        "reconstruction",
+        "artifacts",
+        "warnings",
+        "semantics_status",
+    )
+    return {key: doc.get(key) for key in keys}
+
+
+def _apply_reconstruction_ocr(image_path: str, dump: dict[str, Any]) -> None:
+    refined = refine_ocr_for_reconstruction(image_path, dump.get("ocr", []))
+    dump["ocr"] = refined
+    dump["ocrConsensus"] = {
+        "passes": 2,
+        "scale": 1.5,
+        "method": "rapidocr-multiscale-consensus",
+    }
+    if not refined:
+        return
+    image = load_cv(image_path)
+    elements = dump.setdefault("elements", [])
+    text_by_box = {
+        tuple(element["box"]): element
+        for element in elements
+        if element.get("kind") == "text"
+    }
+    next_id = max((int(element.get("id", 0)) for element in elements), default=0) + 1
+    for item in refined:
+        box = [int(value) for value in item["box"]]
+        element = text_by_box.get(tuple(box))
+        if element is None:
+            element = {
+                "id": next_id,
+                "kind": "text",
+                "box": box,
+                "font": _glyph_metrics(image, box, item.get("text")),
+            }
+            next_id += 1
+            elements.append(element)
+        element.update(
+            {
+                "text": item.get("text"),
+                "confidence": round(float(item.get("confidence") or 0.0), 3),
+                "verified": bool(item.get("verified", False)),
+                "method": item.get("method"),
+                "alternatives": item.get("alternatives", []),
+            }
+        )
+
+
 def see_document(
     image_path: str,
     region: dict | None = None,
@@ -351,8 +478,15 @@ def see_document(
     pack: str | None = None,
     intent: str | None = None,
     max_semantic_calls: int = 2,
+    profile: str | None = None,
+    response: str = "compact",
 ) -> dict:
+    if response not in {"compact", "full"}:
+        raise ValueError("response must be 'compact' or 'full'")
     dump = analyze(image_path, region, no_store)
+    resolved_profile = _resolve_profile(profile, intent, dump)
+    if resolved_profile == "reconstruct" and region is None:
+        _apply_reconstruction_ocr(image_path, dump)
     pack_name, vlm = (None, None) if fast else _pick(quality, pack)
     doc = docmod.build_document(
         dump,
@@ -361,7 +495,22 @@ def see_document(
         image_path=image_path,
         intent=intent,
         max_semantic_calls=max_semantic_calls,
+        profile=resolved_profile,
     )
+    summary = _compact_summary(doc)
+    compatibility = {
+        "response": response,
+        "legacyIncluded": response == "full",
+        "fullResponse": "Set response=full only for legacy debugging.",
+    }
+    if response == "compact":
+        return {
+            "doc": _compact_document(doc),
+            "summary": summary,
+            "artifacts": doc.get("artifacts", []),
+            "pack": pack_name,
+            "compatibility": compatibility,
+        }
     legacy = dict(dump)
     if "facts" in legacy.get("design", {}):
         legacy["design"] = {"issues": legacy["design"]["facts"]}
@@ -371,6 +520,9 @@ def see_document(
         "somPath": dump.get("somPath"),
         "legacy": legacy,
         "pack": pack_name,
+        "summary": summary,
+        "artifacts": doc.get("artifacts", []),
+        "compatibility": compatibility,
     }
 
 
@@ -381,6 +533,8 @@ def zoom(
     no_store: bool = False,
     quality: bool = False,
     pack: str | None = None,
+    profile: str | None = None,
+    response: str = "compact",
 ) -> dict:
     if region is None and som_id is not None:
         dump = analyze(image_path, None, no_store)
@@ -396,7 +550,15 @@ def zoom(
         }
     if region is None:
         raise ValueError("region or somId is required for zoom")
-    return see_document(image_path, region, no_store, quality=quality, pack=pack)
+    return see_document(
+        image_path,
+        region,
+        no_store,
+        quality=quality,
+        pack=pack,
+        profile=profile,
+        response=response,
+    )
 
 
 def ask(

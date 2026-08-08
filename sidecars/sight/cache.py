@@ -27,7 +27,8 @@ _last_cache_cleanup: float = 0.0
 # design QA or section style) are not served from cache.
 # qa9: see returns a visual context document (Task 7, Vision 2.0).
 # scene1: content-addressed artifacts and no-store-safe analysis (Sens 1.3).
-CACHE_SCHEMA_VERSION = "scene1"
+# scene5: reconstruction-safe controls and OCR-counted font metrics (Sens 1.3.6).
+CACHE_SCHEMA_VERSION = "scene5"
 
 
 

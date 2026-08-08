@@ -462,9 +462,26 @@ _KNOWN_FONTS: list[tuple[str, float, float]] = [
 ]
 
 
+def rank_font_candidates(width_em: float, limit: int = 3) -> list[dict[str, Any]]:
+    """Rank silhouette matches without presenting a font family as observed."""
+    ranked = sorted(_KNOWN_FONTS, key=lambda item: abs(item[1] - width_em))
+    return [
+        {
+            "family": family,
+            "widthEm": width,
+            "distance": round(abs(width - width_em), 4),
+            "status": "candidate",
+            "method": "glyph-width-silhouette",
+        }
+        for family, width, _cap_height in ranked[: max(1, limit)]
+    ]
 
 
-def _glyph_metrics(image: Any, box: list[int]) -> dict[str, Any] | None:
+
+
+def _glyph_metrics(
+    image: Any, box: list[int], text: str | None = None
+) -> dict[str, Any] | None:
     """Cap height / average glyph width of an OCR line, plus a best-effort
     family guess. The copier sizes fonts from these numbers instead of
     guessing; `custom` means no known font matches the silhouette (cut the
@@ -476,52 +493,85 @@ def _glyph_metrics(image: Any, box: list[int]) -> dict[str, Any] | None:
         return None
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     patch = gray[y0:y1, x0:x1].astype(int)
-    bg = float(np.median(patch))
-    amp = float(np.percentile(np.abs(patch - bg), 90))
-    if amp < 18:
-        return None  # low contrast: not reliably readable text
-    mask = np.abs(patch - bg) > 0.35 * amp
-    rows = np.where(mask.any(axis=1))[0]
-    if len(rows) < 3:
+    border = np.concatenate(
+        (patch[0, :], patch[-1, :], patch[:, 0], patch[:, -1]), axis=0
+    )
+    image_border = np.concatenate(
+        (gray[0, :], gray[-1, :], gray[:, 0], gray[:, -1]), axis=0
+    )
+
+    def measure(background: float) -> tuple[int, float, float, float] | None:
+        amp = float(np.percentile(np.abs(patch - background), 90))
+        if amp < 18:
+            return None
+        mask = np.abs(patch - background) > 0.35 * amp
+        rows = np.where(mask.any(axis=1))[0]
+        if len(rows) < 3:
+            return None
+        # Cap rows: rows with a substantial share of the busiest row. This
+        # keeps ascender rows of tall caps and drops descender tails (p, y)
+        # that only carry a few glyph pixels.
+        per_row = mask.sum(axis=1)
+        if int(per_row.max()) == 0:
+            return None
+        strong = np.where(per_row > 0.08 * per_row.max())[0]
+        if len(strong) < 2:
+            return None
+        cap_height = int(strong[-1] - strong[0] + 1)
+        # Split strokes into letters; fuse sloppy anti-alias gaps, split glued
+        # pairs by the median run width.
+        widths: list[int] = []
+        run = 0
+        for col in range(x1 - x0):
+            if mask[:, col].any():
+                run += 1
+            else:
+                if run > 0:
+                    widths.append(run)
+                run = 0
+        if run > 0:
+            widths.append(run)
+        if not widths:
+            return None
+        median_w = float(np.median(widths))
+        stroke_letters = sum(
+            max(1, round(w / max(1.6, median_w))) for w in widths
+        )
+        recognized_characters = sum(not char.isspace() for char in (text or ""))
+        letters = max(stroke_letters, recognized_characters)
+        average_glyph = float(np.sum(widths)) / max(1, letters)
+        size = cap_height / 0.73
+        width_in_em = average_glyph / size if size > 0 else 0.0
+        return cap_height, average_glyph, size, width_in_em
+
+    measured = measure(float(np.median(border)))
+    if measured is None:
+        measured = measure(float(np.median(image_border)))
+    elif not 0.12 <= measured[3] <= 1.2:
+        fallback = measure(float(np.median(image_border)))
+        if fallback is not None and 0.12 <= fallback[3] <= 1.2:
+            measured = fallback
+    if measured is None:
         return None
-    # Cap rows: rows with a substantial share of the busiest row. This
-    # keeps ascender rows of tall caps and drops descender tails (p, y)
-    # that only carry a few glyph pixels.
-    per_row = mask.sum(axis=1)
-    if int(per_row.max()) == 0:
-        return None
-    strong = np.where(per_row > 0.08 * per_row.max())[0]
-    if len(strong) < 2:
-        return None
-    cap = int(strong[-1] - strong[0] + 1)
-    # Split strokes into letters; fuse sloppy anti-alias gaps, split glued
-    # pairs by the median run width.
-    widths: list[int] = []
-    run = 0
-    for col in range(x1 - x0):
-        if mask[:, col].any():
-            run += 1
-        else:
-            if run > 0:
-                widths.append(run)
-            run = 0
-    if run > 0:
-        widths.append(run)
-    if not widths:
-        return None
-    median_w = float(np.median(widths))
-    letters = sum(max(1, round(w / max(1.6, median_w))) for w in widths)
-    avg_glyph = float(np.sum(widths)) / max(1, letters)
-    font_size = cap / 0.73  # cap-based reference em
-    width_em = avg_glyph / font_size if font_size > 0 else 0.0
-    best = min(_KNOWN_FONTS, key=lambda f: abs(f[1] - width_em))
-    custom = abs(best[1] - width_em) > 0.07
+    cap, avg_glyph, font_size, width_em = measured
+    candidates = rank_font_candidates(width_em)
+    best = candidates[0]
+    custom = best["distance"] > 0.07
     return {
         "capHeight": int(cap),
         "avgGlyphWidth": round(avg_glyph, 1),
         "fontSize": int(round(font_size)),
         "widthEm": round(width_em, 2),
-        "family": "custom" if custom else best[0],
+        # Compatibility hint only. The candidate list is the canonical result;
+        # pixels cannot confirm an installed font family.
+        "family": "custom" if custom else best["family"],
+        "familyStatus": "unknown" if custom else "candidate",
+        "familyCandidates": candidates,
+        "familyConfidence": 0.0
+        if custom
+        else round(max(0.0, 0.6 * (1.0 - best["distance"] / 0.07)), 3),
+        "characterCount": sum(not char.isspace() for char in (text or "")) or None,
+        "method": "glyph-width-silhouette+ocr-character-count",
     }
 
 
