@@ -1,136 +1,174 @@
-import json
+import hashlib
+import io
 import os
+import shutil
+import sys
+import tarfile
 import tempfile
 import unittest
-import unittest.mock
+from dataclasses import replace
 from pathlib import Path
+from types import ModuleType
+from unittest import mock
 
 from speech_app.engines import install as install_module
-from speech_app.engines.install import install_whisper_model
+from speech_app.engines.install import install_archive_model, install_whisper_model
 from speech_app.models import get_preset
 
 
+def _build_archive(path: Path, preset, *, unsafe: bool = False) -> None:
+    with tarfile.open(path, "w:bz2") as bundle:
+        for relative in preset.required_files:
+            name = "../escape" if unsafe else f"pack/{relative}"
+            payload = b"model-data"
+            info = tarfile.TarInfo(name)
+            info.size = len(payload)
+            bundle.addfile(info, io.BytesIO(payload))
+            if unsafe:
+                break
+
+
+class ArchiveInstallTests(unittest.TestCase):
+    def test_complete_verified_partial_is_reused_without_network(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "model.part"
+            target.write_bytes(b"complete")
+            preset = replace(
+                get_preset("gigaam"),
+                download_bytes=target.stat().st_size,
+                download_sha256=hashlib.sha256(target.read_bytes()).hexdigest(),
+            )
+            with mock.patch("urllib.request.urlopen") as open_url:
+                install_module._download_archive(preset, target)
+            open_url.assert_not_called()
+
+    def test_corrupt_complete_partial_is_deleted_before_retry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "model.part"
+            target.write_bytes(b"corrupt")
+            preset = replace(
+                get_preset("gigaam"),
+                download_bytes=target.stat().st_size,
+                download_sha256=hashlib.sha256(b"expected").hexdigest(),
+            )
+            with mock.patch(
+                "urllib.request.urlopen", side_effect=RuntimeError("offline")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "offline"):
+                    install_module._download_archive(preset, target)
+            self.assertFalse(target.exists())
+
+    def test_verified_archive_is_staged_marked_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            source = temp / "source.tar.bz2"
+            base = get_preset("gigaam")
+            _build_archive(source, base)
+            preset = replace(
+                base,
+                download_url="https://example.test/model.tar.bz2",
+                download_bytes=source.stat().st_size,
+                download_sha256=hashlib.sha256(source.read_bytes()).hexdigest(),
+            )
+            model_root = temp / "models"
+
+            def provide_archive(_preset, destination):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+
+            with mock.patch.dict(
+                os.environ, {"SPEECH_MODELS_DIR": str(model_root)}
+            ), mock.patch.object(
+                install_module, "_download_archive", side_effect=provide_archive
+            ) as download:
+                self.assertEqual(install_archive_model(preset), 0)
+                self.assertEqual(install_archive_model(preset), 0)
+
+            destination = model_root / "gigaam"
+            self.assertTrue((destination / "INSTALLED.json").is_file())
+            self.assertTrue((destination / "encoder.int8.onnx").is_file())
+            self.assertEqual(download.call_count, 1)
+            self.assertFalse(list(model_root.glob(".gigaam-install-*")))
+
+    def test_bad_digest_never_promotes_partial_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            source = temp / "source.tar.bz2"
+            base = get_preset("gigaam")
+            _build_archive(source, base)
+            preset = replace(
+                base,
+                download_url="https://example.test/model.tar.bz2",
+                download_bytes=source.stat().st_size,
+                download_sha256="0" * 64,
+            )
+            model_root = temp / "models"
+
+            def provide_bad(_preset, destination):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+                raise RuntimeError("digest mismatch")
+
+            with mock.patch.dict(
+                os.environ, {"SPEECH_MODELS_DIR": str(model_root)}
+            ), mock.patch.object(
+                install_module, "_download_archive", side_effect=provide_bad
+            ):
+                self.assertEqual(install_archive_model(preset), 1)
+            self.assertFalse((model_root / "gigaam").exists())
+
+    def test_safe_extract_rejects_path_traversal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            temp = Path(tmp)
+            archive = temp / "unsafe.tar.bz2"
+            _build_archive(archive, get_preset("gigaam"), unsafe=True)
+            destination = temp / "extract"
+            destination.mkdir()
+            with self.assertRaisesRegex(RuntimeError, "unsafe path"):
+                install_module._safe_extract(archive, destination)
+            self.assertFalse((temp / "escape").exists())
+
+
 class WhisperInstallTests(unittest.TestCase):
-    def test_writes_marker_and_keeps_weights_after_conversion(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                preset = get_preset("whisper-ru")
+    def test_pinned_download_is_marked_and_idempotent(self):
+        preset = get_preset("whisper")
+        calls = []
 
-                def fake_convert(model_id, out_dir):
-                    # Simulate ct2 output: a weights file lands in out_dir.
-                    out_dir.mkdir(parents=True, exist_ok=True)
-                    (out_dir / "model.bin").write_bytes(b"x" * 1024)
-                    return 0
+        def fake_download(model, *, output_dir, revision, use_auth_token):
+            calls.append((model, revision, use_auth_token))
+            root = Path(output_dir)
+            for relative in preset.required_files:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x")
 
-                with unittest.mock.patch.object(
-                    install_module, "_run_ct2_converter", side_effect=fake_convert
-                ):
-                    rc = install_whisper_model(preset)
+        package = ModuleType("faster_whisper")
+        utils = ModuleType("faster_whisper.utils")
+        utils.download_model = fake_download
+        package.utils = utils
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"SPEECH_MODELS_DIR": tmp}
+        ), mock.patch.dict(
+            sys.modules,
+            {"faster_whisper": package, "faster_whisper.utils": utils},
+        ):
+            self.assertEqual(install_whisper_model(preset), 0)
+            self.assertEqual(install_whisper_model(preset), 0)
+            marker = Path(tmp) / "whisper" / "INSTALLED.json"
+            self.assertTrue(marker.is_file())
+        self.assertEqual(calls, [("small", preset.revision, False)])
 
-                self.assertEqual(rc, 0)
-                marker = (
-                    os.path.join(tmp, "whisper", "whisper-ru", "INSTALLED.json")
-                )
-                self.assertTrue(os.path.exists(marker))
-                with open(marker, encoding="utf-8") as handle:
-                    payload = json.load(handle)
-                self.assertEqual(payload["preset"], "whisper-ru")
-                # Idempotent: a second run should not reconvert.
-                with unittest.mock.patch.object(
-                    install_module, "_run_ct2_converter"
-                ) as conv:
-                    rc2 = install_whisper_model(preset)
-                self.assertEqual(rc2, 0)
-                conv.assert_not_called()
-
-    def test_install_model_dispatches_to_whisper_for_whisper_preset(self):
-        with unittest.mock.patch.object(
+    def test_install_model_dispatches_supported_local_presets(self):
+        with mock.patch.object(
+            install_module, "install_archive_model", return_value=0
+        ) as archive, mock.patch.object(
             install_module, "install_whisper_model", return_value=0
-        ) as whisper_install:
-            rc = install_module.install_model("whisper-ru")
-        self.assertEqual(rc, 0)
-        whisper_install.assert_called_once()
-
-    def test_install_model_dispatches_to_parakeet_for_parakeet_preset(self):
-        with unittest.mock.patch.object(
-            install_module, "install_parakeet_model", return_value=0
-        ) as parakeet_install:
-            rc = install_module.install_model("parakeet")
-        self.assertEqual(rc, 0)
-        parakeet_install.assert_called_once_with("nvidia/parakeet-tdt-0.6b-v3")
-
-    def test_converter_uses_in_process_transformers_converter_not_path_cli(self):
-        """Conversion must run via ctranslate2's TransformersConverter inside
-        the current process, never via a PATH-resolved ct2-transformers-converter
-        binary (which can belong to an unrelated venv). Regression guard."""
-        import sys
-        import tempfile
-        from pathlib import Path
-
-        fake_converter = unittest.mock.MagicMock()
-        fake_converter.convert.return_value = str("ok")
-
-        with tempfile.TemporaryDirectory() as out:
-            out_dir = Path(out) / "model"
-            # Ensure the `import transformers` check inside _run_ct2_converter
-            # succeeds even on interpreters without transformers installed.
-            sys.modules.setdefault("transformers", unittest.mock.MagicMock())
-            try:
-                with unittest.mock.patch(
-                    "ctranslate2.converters.TransformersConverter",
-                    return_value=fake_converter,
-                ) as ctor:
-                    rc = install_module._run_ct2_converter("some/model", out_dir)
-            finally:
-                sys.modules.pop("transformers", None)
-            self.assertEqual(rc, 0)
-            ctor.assert_called_once_with("some/model")
-            fake_converter.convert.assert_called_once()
-            # Confirm INT8 quantization and force are requested.
-            _args, kwargs = fake_converter.convert.call_args
-            self.assertEqual(kwargs.get("quantization"), "int8")
-            self.assertTrue(kwargs.get("force"))
-
-
-if __name__ == "__main__":
-    unittest.main()
-
-
-class GigaAMInstallTests(unittest.TestCase):
-    """_patch_gigaam_module applies all three transformers-v5 fixes."""
-
-    STOCK_SNIPPET = '''        self.featurizer = nn.Sequential(
-            torchaudio.transforms.MelSpectrogram(
-                sample_rate=sample_rate,
-                n_mels=features,
-                win_length=self.win_length,
-                hop_length=self.hop_length,
-                n_fft=self.n_fft,
-                center=self.center,
-            ),
-            SpecScaler(),
-        )
-    cmd = [
-        "ffmpeg",
-        "-nostdin",
-    ]
-        self.model = instantiate(config.cfg["model"], _recursive_=False)
-'''
-
-    def test_patch_applies_all_three_fixes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "modeling_gigaam.py"
-            path.write_text(self.STOCK_SNIPPET, encoding="utf-8")
-            install_module._patch_gigaam_module(path)
-            patched = path.read_text(encoding="utf-8")
-
-        # Fix 1: MelSpectrogram built under CPU context.
-        self.assertIn('with torch.device("cpu"):', patched)
-        # Fix 2: soundfile replaces the ffmpeg subprocess list.
-        self.assertIn("import soundfile as _sf", patched)
-        self.assertNotIn('cmd = [\n        "ffmpeg",', patched)
-        # Fix 3: all_tied_weights_keys provided for transformers v5.
-        self.assertIn("self.all_tied_weights_keys = {}", patched)
+        ) as whisper:
+            self.assertEqual(install_module.install_model("qwen"), 0)
+            self.assertEqual(install_module.install_model("gigaam"), 0)
+            self.assertEqual(install_module.install_model("whisper"), 0)
+        self.assertEqual(archive.call_count, 2)
+        whisper.assert_called_once()
 
 
 if __name__ == "__main__":

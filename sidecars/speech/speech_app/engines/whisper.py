@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from ..models import get_preset
+from ..cpu import inference_threads
 from ..settings import AppSettings
 from .base import EngineUnavailable
 from .paths import whisper_model_dir
@@ -58,7 +59,7 @@ class WhisperEngine:
         except ImportError as exc:
             raise EngineUnavailable(
                 "faster-whisper is not installed. Run install.ps1 or install "
-                "requirements-whisper.txt, then `speech model install whisper-ru`."
+                "requirements-runtime.txt, then `speech model install whisper`."
             ) from exc
 
         preset = get_preset(settings.model)
@@ -66,13 +67,13 @@ class WhisperEngine:
         if not model_dir.exists():
             raise EngineUnavailable(
                 f"Whisper model is not installed at {model_dir}. "
-                "Run: speech model install whisper-ru"
+                "Run: speech model install whisper"
             )
 
         # CPU + INT8 is the documented sweet spot for faster-whisper on CPU.
         device = "cpu"
         compute_type = "int8"
-        cpu_threads = _cpu_threads()
+        cpu_threads = inference_threads()
         try:
             self._model = WhisperModel(
                 str(model_dir),
@@ -135,22 +136,6 @@ class WhisperEngine:
             for segment in segments
             if segment.text.strip()
         ]
-
-
-def _cpu_threads() -> int:
-    """Pick a thread count that leaves headroom for the UI thread.
-
-    CTranslate2 defaults to using every logical core; on a desktop that makes
-    the tray/tkinter UI janky during transcription. Cap at physical cores and
-    leave at least one core free.
-    """
-    try:
-        import os
-
-        total = os.cpu_count() or 4
-        return max(1, min(total - 1, 4))
-    except Exception:
-        return 2
 
 
 def _resample_linear(

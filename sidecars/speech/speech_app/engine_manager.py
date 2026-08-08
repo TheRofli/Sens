@@ -12,9 +12,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from .engines.base import EngineUnavailable, SpeechEngine
-from .engines.gigaam import GigaAMEngine
-from .engines.parakeet import ParakeetEngine
 from .engines.remote import RemoteEngine
+from .engines.sherpa import SherpaEngine
 from .engines.whisper import WhisperEngine
 from .models import resolve_engine
 
@@ -24,14 +23,14 @@ if TYPE_CHECKING:
 
 def make_engine(kind: str) -> SpeechEngine:
     """Instantiate the concrete engine for ``kind``
-    ("parakeet" | "whisper" | "gigaam" | "remote")."""
+    ("qwen" | "gigaam" | "whisper" | "remote")."""
     if kind == "whisper":
         return WhisperEngine()
-    if kind == "gigaam":
-        return GigaAMEngine()
+    if kind in {"qwen", "gigaam"}:
+        return SherpaEngine(kind)
     if kind == "remote":
         return RemoteEngine()
-    return ParakeetEngine()
+    raise EngineUnavailable(f"Unsupported Hearing engine: {kind}")
 
 
 class EngineManager:
@@ -51,7 +50,7 @@ class EngineManager:
 
     @property
     def kind(self) -> str:
-        """Engine kind of the currently loaded engine ("parakeet"|"whisper"|"")."""
+        """Engine kind of the currently loaded engine."""
         return self._kind or ""
 
     def load(self, settings: "AppSettings") -> None:

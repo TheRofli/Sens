@@ -83,17 +83,17 @@ class FakeApp:
         return "ok"
 
     def model_status(self):
-        from speech_app.model_status import find_model_status
-        from pathlib import Path
+        from speech_app.model_status import find_model_status_for_preset
+        from speech_app.models import get_preset
 
-        return find_model_status(Path(os.environ.get("HF_HOME", "/tmp")), "x/y")
+        return find_model_status_for_preset(get_preset(self.settings.model))
 
     # actions
     def available_models(self):
         return [
-            {"key": "parakeet", "label": "Parakeet", "engine": "parakeet",
+            {"key": "qwen", "label": "Qwen3-ASR", "engine": "qwen",
              "installed": True, "size_label": "1 GB", "active": True},
-            {"key": "whisper-ru", "label": "Whisper RU", "engine": "whisper",
+            {"key": "whisper", "label": "Whisper Small", "engine": "whisper",
              "installed": False, "size_label": "Not installed", "active": False},
         ]
 
@@ -190,7 +190,7 @@ class SpeechAPIServerTests(unittest.TestCase):
     def test_get_settings_returns_defaults(self):
         status, body = self._get("/api/settings")
         self.assertEqual(status, 200)
-        self.assertEqual(body["model"], "parakeet")
+        self.assertEqual(body["model"], "qwen")
         self.assertEqual(body["beam_size"], 5)
 
     def test_post_settings_merges_and_applies(self):
@@ -204,18 +204,18 @@ class SpeechAPIServerTests(unittest.TestCase):
         status, body = self._get("/api/models")
         self.assertEqual(status, 200)
         keys = [item["key"] for item in body]
-        self.assertIn("parakeet", keys)
-        self.assertIn("whisper-ru", keys)
+        self.assertIn("qwen", keys)
+        self.assertIn("whisper", keys)
 
     def test_post_model_selects_preset(self):
         try:
-            status, body = self._post("/api/model", {"key": "whisper-ru"})
+            status, body = self._post("/api/model", {"key": "whisper"})
             self.assertEqual(status, 200)
-            self.assertEqual(self.app.settings.model, "whisper-ru")
-            self.assertEqual(self.app.set_model_calls, ["whisper-ru"])
+            self.assertEqual(self.app.settings.model, "whisper")
+            self.assertEqual(self.app.set_model_calls, ["whisper"])
         finally:
             # Restore default so test ordering does not bleed into other tests.
-            self.app.settings.model = "parakeet"
+            self.app.settings.model = "qwen"
 
     def test_post_model_load_triggers_load(self):
         status, _ = self._post("/api/model/load", {})

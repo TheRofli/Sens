@@ -216,7 +216,7 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
         },
         hearing: HearingSettings {
             enabled: bool_field(&speech, "engine_enabled", true),
-            model: string_field(&speech, "model", "parakeet"),
+            model: normalize_hearing_model(&string_field(&speech, "model", "qwen")).into(),
             device: string_field(&speech, "device", "cpu"),
             hotkey: string_field(&speech, "hotkey", "ctrl+win"),
             copy_to_clipboard: bool_field(&speech, "copy_to_clipboard", true),
@@ -603,19 +603,19 @@ fn provider_label(value: &str) -> String {
 fn hearing_models() -> Vec<HearingModelOption> {
     vec![
         HearingModelOption {
-            value: "parakeet".into(),
-            label: "Parakeet · быстрая".into(),
-            description: "600M, мультиязычная, быстрая на CPU".into(),
-        },
-        HearingModelOption {
-            value: "whisper-ru".into(),
-            label: "Whisper RU · точная".into(),
-            description: "RU + EN code-switching, высокая точность".into(),
+            value: "qwen".into(),
+            label: "Qwen3-ASR 0.6B INT8 · авто".into(),
+            description: "Сбалансированная CPU-модель: русский, английский и ещё 28 языков".into(),
         },
         HearingModelOption {
             value: "gigaam".into(),
-            label: "GigaAM v3 · русский".into(),
-            description: "230M, локальная русская модель с пунктуацией".into(),
+            label: "GigaAM v3 INT8 · русский".into(),
+            description: "Быстрая русская модель с пунктуацией без старого лимита записи".into(),
+        },
+        HearingModelOption {
+            value: "whisper".into(),
+            label: "Whisper Small INT8 · 99 языков".into(),
+            description: "Широкий мультиязычный fallback, заметно легче прежнего Whisper Large".into(),
         },
         HearingModelOption {
             value: "remote".into(),
@@ -627,11 +627,23 @@ fn hearing_models() -> Vec<HearingModelOption> {
 
 fn hearing_model_id(value: &str) -> Result<&'static str, String> {
     match value {
-        "parakeet" => Ok("nvidia/parakeet-tdt-0.6b-v3"),
-        "whisper-ru" => Ok("coriollon/whisper-large-v3-turbo-russian-codeswitch"),
-        "gigaam" => Ok("ai-sage/GigaAM-v3"),
+        "qwen" => Ok("Qwen/Qwen3-ASR-0.6B"),
+        "gigaam" => {
+            Ok("csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16")
+        }
+        "whisper" => Ok("Systran/faster-whisper-small"),
         "remote" => Ok("openai/gpt-4o-transcribe"),
         _ => Err(format!("Неизвестная модель слуха: {value}")),
+    }
+}
+
+fn normalize_hearing_model(value: &str) -> &'static str {
+    match value {
+        "qwen" | "parakeet" => "qwen",
+        "gigaam" => "gigaam",
+        "whisper" | "whisper-ru" => "whisper",
+        "remote" => "remote",
+        _ => "qwen",
     }
 }
 
@@ -704,7 +716,10 @@ mod tests {
         .expect("save");
         let document = read_json(&path).expect("document");
         assert_eq!(document["model"], "gigaam");
-        assert_eq!(document["model_id"], "ai-sage/GigaAM-v3");
+        assert_eq!(
+            document["model_id"],
+            "csukuangfj/sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16"
+        );
         assert_eq!(document["keep"], 9);
     }
 

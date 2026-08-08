@@ -1,6 +1,0 @@
-numpy
-sounddevice
-pillow
-pystray
-pynput
-pyperclip

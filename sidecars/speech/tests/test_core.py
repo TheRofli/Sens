@@ -16,8 +16,8 @@ class SettingsStoreTests(unittest.TestCase):
 
             settings = store.load()
 
-            self.assertEqual(settings.model, "parakeet")
-            self.assertEqual(settings.model_id, "nvidia/parakeet-tdt-0.6b-v3")
+            self.assertEqual(settings.model, "qwen")
+            self.assertEqual(settings.model_id, "Qwen/Qwen3-ASR-0.6B")
             self.assertEqual(settings.device, "cpu")
             self.assertEqual(settings.hotkey, "ctrl+win")
             self.assertTrue(settings.copy_to_clipboard)
@@ -52,6 +52,27 @@ class SettingsStoreTests(unittest.TestCase):
             self.assertEqual(settings.backend, "nemo")
             self.assertFalse(settings.engine_enabled)
             self.assertNotIn("unknown_future_field", reloaded)
+
+    def test_legacy_model_keys_are_normalized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"model":"parakeet"}', encoding="utf-8")
+            settings = SettingsStore(path).load()
+            self.assertEqual(settings.model, "qwen")
+            self.assertEqual(settings.model_id, "Qwen/Qwen3-ASR-0.6B")
+
+            path.write_text('{"model":"whisper-ru"}', encoding="utf-8")
+            settings = SettingsStore(path).load()
+            self.assertEqual(settings.model, "whisper")
+            self.assertEqual(settings.model_id, "Systran/faster-whisper-small")
+
+    def test_unknown_model_falls_back_to_qwen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text('{"model":"unknown"}', encoding="utf-8")
+            settings = SettingsStore(path).load()
+            self.assertEqual(settings.model, "qwen")
+            self.assertEqual(settings.model_id, "Qwen/Qwen3-ASR-0.6B")
 
 
 class TranscriptHistoryTests(unittest.TestCase):

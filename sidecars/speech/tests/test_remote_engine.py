@@ -273,7 +273,7 @@ class RemoteEngineTests(unittest.TestCase):
         from speech_app.transcription import transcribe_audio_file
 
         class _LocalFake:
-            kind = "parakeet"
+            kind = "qwen"
 
             @property
             def is_loaded(self) -> bool:
@@ -281,7 +281,7 @@ class RemoteEngineTests(unittest.TestCase):
 
             @property
             def model_id(self) -> str:
-                return "fake-parakeet"
+                return "fake-qwen"
 
             def load(self, settings) -> None:
                 pass
@@ -296,15 +296,15 @@ class RemoteEngineTests(unittest.TestCase):
             wav = Path(tmp) / "voice.wav"
             _write_wav(wav)
             engine = EngineManager()
-            settings = AppSettings(model="parakeet", remote_api_key="")
+            settings = AppSettings(model="qwen", remote_api_key="")
             with mock.patch.object(
                 engine_manager_module, "make_engine", return_value=_LocalFake()
             ):
                 result = transcribe_audio_file(
                     str(wav), settings=settings, engine=engine
                 )
-            # Falls through to the local parakeet path (no network anywhere).
-            self.assertEqual(result["engine"], "parakeet")
+            # Falls through to the local Qwen path (no network anywhere).
+            self.assertEqual(result["engine"], "qwen")
             self.assertEqual(result["text"], "")
 
 

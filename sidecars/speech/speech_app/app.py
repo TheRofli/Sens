@@ -19,9 +19,7 @@ from .history import TranscriptHistory
 from .hotkeys import GlobalHotkeyListener
 from .model_status import (
     ModelStatus,
-    find_gigaam_model_status,
-    find_model_status,
-    find_whisper_model_status,
+    find_model_status_for_preset,
 )
 from .models import available_presets, get_preset, resolve_engine, resolve_model_id
 from .output import TranscriptPublisher
@@ -599,13 +597,7 @@ class SpeechApp:
     def model_status_for(self, key: str) -> ModelStatus:
         """Installation status for a given preset key."""
         preset = get_preset(key)
-        if preset.engine == "whisper":
-            return find_whisper_model_status(preset)
-        if preset.engine == "gigaam":
-            return find_gigaam_model_status(preset)
-        fallback = Path(__file__).resolve().parents[1] / "models" / "huggingface"
-        hf_home = Path(os.environ.get("HF_HOME", str(fallback)))
-        return find_model_status(hf_home, preset.model_id)
+        return find_model_status_for_preset(preset)
 
 
 def diagnose() -> int:
@@ -617,10 +609,9 @@ def diagnose() -> int:
         "PIL",
         "pynput",
         "pyperclip",
-        "torch",
-        "transformers",
-        "librosa",
-        "nemo",
+        "sherpa_onnx",
+        "faster_whisper",
+        "ctranslate2",
     ]
     print(f"Python: {sys.version}")
     for module in modules:
@@ -632,27 +623,6 @@ def diagnose() -> int:
     except ImportError:
         pass
     return 0
-
-
-def install_parakeet_model(model_id: str | None = None) -> int:
-    """Back-compat wrapper around the shared installer.
-
-    Kept so legacy callers (and tests) that import this name keep working.
-    """
-    from .engines.install import install_model
-
-    if model_id is None:
-        return install_model(AppSettings().model)
-    # Resolve the preset key from a raw model id if possible, else treat the
-    # value as a parakeet id directly.
-    settings = AppSettings()
-    for preset in available_presets():
-        if preset.model_id == model_id:
-            return install_model(preset.key)
-    settings.model_id = model_id
-    from .engines.install import install_parakeet_model as _install
-
-    return _install(model_id)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -676,25 +646,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers.add_parser("diagnose", help="Check Python and dependency state.")
 
-    parakeet = subparsers.add_parser(
-        "parakeet", help="(legacy) Manage the Parakeet model."
-    )
-    parakeet_sub = parakeet.add_subparsers(dest="parakeet_command")
-    parakeet_sub.add_parser(
-        "install",
-        help="Download Parakeet into the configured local model cache.",
-    )
-
     model = subparsers.add_parser("model", help="Manage ASR models.")
     model_sub = model.add_subparsers(dest="model_command")
     install_parser = model_sub.add_parser(
-        "install", help="Download/convert a model (parakeet or whisper-ru)."
+        "install", help="Download a local model (qwen, gigaam, or whisper)."
     )
     install_parser.add_argument(
         "key",
         nargs="?",
         default=None,
-        help="Preset key (parakeet, whisper-ru). Defaults to the active model.",
+        help="Preset key. Defaults to the active model.",
     )
     model_sub.add_parser("list", help="Show installation status of all models.")
     return parser
@@ -719,10 +680,6 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.diagnose or args.command == "diagnose":
         return diagnose()
-    if args.command == "parakeet" and args.parakeet_command == "install":
-        return install_parakeet_model()
-    if args.command == "parakeet":
-        parser.error("Choose a Parakeet command, for example: speech parakeet install")
     if args.command == "model":
         from .engines.install import install_model, list_models
 
@@ -732,7 +689,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.model_command == "list":
             return list_models()
         parser.error(
-            "Choose a model command, for example: speech model install whisper-ru"
+            "Choose a model command, for example: speech model install qwen"
         )
 
     lock = SingleInstanceLock(default_data_dir() / "speech.lock")

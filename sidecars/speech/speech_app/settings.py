@@ -17,11 +17,8 @@ _MIGRATED_FILES = ("settings.json", "history.jsonl")
 
 @dataclass(slots=True)
 class AppSettings:
-    # Model selection. `model` is the preset key (see speech_app/models.py);
-    # `model_id` is kept for back-compat and as the resolved HF repo id for the
-    # parakeet backend.
-    model: str = "parakeet"
-    model_id: str = "nvidia/parakeet-tdt-0.6b-v3"
+    model: str = "qwen"
+    model_id: str = "Qwen/Qwen3-ASR-0.6B"
     backend: str = "auto"
     device: str = "cpu"
     hotkey: str = "ctrl+win"
@@ -123,7 +120,17 @@ class SettingsStore:
         known: dict[str, Any] = {
             key: value for key, value in payload.items() if key in allowed
         }
-        return AppSettings(**known)
+        settings = AppSettings(**known)
+        from .models import get_preset, normalize_model_key
+
+        settings.model = normalize_model_key(settings.model)
+        try:
+            settings.model_id = get_preset(settings.model).model_id
+        except KeyError:
+            defaults = AppSettings()
+            settings.model = defaults.model
+            settings.model_id = defaults.model_id
+        return settings
 
     def save(self, settings: AppSettings) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)

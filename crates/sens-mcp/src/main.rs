@@ -573,7 +573,7 @@ impl SensMcp {
     }
 
     #[tool(
-        description = "Transcribe a supplied local audio or video file (video uses its audio track) without clipboard, paste, or history side effects by default. Returns timestamped transcript segments. Uses the multilingual Whisper model (auto language detection) unless another model is requested. Pass frames (uniform count), every (one still per N seconds), or at (exact seconds) to extract stills from a video so the visual content can be discussed via sens_see.",
+        description = "Transcribe a supplied local audio or video file (video uses its audio track) without clipboard, paste, or history side effects by default. Returns timestamped transcript segments. Uses local CPU-only Qwen3-ASR with automatic language handling unless qwen, gigaam, whisper, or remote is requested explicitly. Pass frames (uniform count), every (one still per N seconds), or at (exact seconds) to extract stills from a video so the visual content can be discussed via sens_see.",
         output_schema = sens_result_schema(),
         annotations(title = "Transcribe local media", read_only_hint = false, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
     )]
@@ -583,10 +583,10 @@ impl SensMcp {
     ) -> Result<CallToolResult, McpError> {
         let save_to_history = args.save_to_history;
         let timeout_ms = args.timeout_ms.or(Some(180_000));
-        // Audio-file transcription must handle any language, so default to the
-        // multilingual Whisper model instead of the dictation engine (GigaAM).
+        // Use the balanced local multilingual model unless the caller selects
+        // the Russian specialist, broad Whisper fallback, or remote provider.
         if args.model.is_none() {
-            args.model = Some("whisper-ru".to_string());
+            args.model = Some("qwen".to_string());
         }
         info!(timeout_ms = ?timeout_ms, model = ?args.model, "sens_hear received");
         let mut request = InvokeRequest::new(

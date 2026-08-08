@@ -1,10 +1,4 @@
-"""Registry of selectable ASR model presets.
-
-A :class:`ModelPreset` describes one model that the user can pick from the tray
-or window UI. Each preset maps to a concrete engine (parakeet / whisper) and a
-Hugging Face repo id. ``EngineManager`` and the install flow both read from this
-registry so the model list has a single source of truth.
-"""
+"""Single source of truth for selectable Hearing model presets."""
 
 from __future__ import annotations
 
@@ -17,40 +11,93 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True, slots=True)
 class ModelPreset:
-    """One selectable ASR model."""
-
     key: str
     label: str
-    engine: str  # "parakeet" | "whisper"
-    model_id: str  # Hugging Face repo id
-    family: str  # cache-family identifier, e.g. "parakeet-tdt" | "whisper"
+    engine: str
+    model_id: str
+    family: str
     description: str = ""
+    download_url: str = ""
+    download_sha256: str = ""
+    download_bytes: int = 0
+    revision: str = ""
+    required_files: tuple[str, ...] = ()
 
 
 MODELS: dict[str, ModelPreset] = {
-    "parakeet": ModelPreset(
-        key="parakeet",
-        label="Parakeet (быстрая)",
-        engine="parakeet",
-        model_id="nvidia/parakeet-tdt-0.6b-v3",
-        family="parakeet-tdt",
-        description="600M, мультиязычная, быстрая на CPU.",
-    ),
-    "whisper-ru": ModelPreset(
-        key="whisper-ru",
-        label="Whisper RU codeswitch (точная)",
-        engine="whisper",
-        model_id="coriollon/whisper-large-v3-turbo-russian-codeswitch",
-        family="whisper",
-        description="809M, файн-тюн large-v3-turbo под RU+EN код-свичинг.",
+    "qwen": ModelPreset(
+        key="qwen",
+        label="Qwen3-ASR 0.6B INT8 (авто, 30 языков)",
+        engine="qwen",
+        model_id="Qwen/Qwen3-ASR-0.6B",
+        family="sherpa-qwen3-asr",
+        description=(
+            "Сбалансированная локальная CPU-модель: русский, английский, "
+            "code-switching и ещё 28 языков."
+        ),
+        download_url=(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+            "sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25.tar.bz2"
+        ),
+        download_sha256=(
+            "393f8a14e2f5fb96746aaab342997a40641001fbd5bf9592a080a8329178ee96"
+        ),
+        download_bytes=878_702_423,
+        required_files=(
+            "conv_frontend.onnx",
+            "encoder.int8.onnx",
+            "decoder.int8.onnx",
+            "tokenizer/vocab.json",
+            "tokenizer/merges.txt",
+            "tokenizer/tokenizer_config.json",
+        ),
     ),
     "gigaam": ModelPreset(
         key="gigaam",
-        label="GigaAM v3 (русский, точная)",
+        label="GigaAM v3 INT8 (русский)",
         engine="gigaam",
-        model_id="ai-sage/GigaAM-v3",
-        family="gigaam",
-        description="230M, Sber, лучший русский на CPU, e2e с пунктуацией.",
+        model_id=(
+            "csukuangfj/"
+            "sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16"
+        ),
+        family="sherpa-transducer",
+        description=(
+            "Компактная быстрая русская модель с пунктуацией, без 25-секундного "
+            "ограничения старого Transformers backend."
+        ),
+        download_url=(
+            "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/"
+            "sherpa-onnx-nemo-transducer-punct-giga-am-v3-russian-2025-12-16.tar.bz2"
+        ),
+        download_sha256=(
+            "f9620a0099019c6afcee26525ef9ed3297fa50dd5691c1902af0c948fc1a470b"
+        ),
+        download_bytes=170_197_019,
+        required_files=(
+            "encoder.int8.onnx",
+            "decoder.onnx",
+            "joiner.onnx",
+            "tokens.txt",
+        ),
+    ),
+    "whisper": ModelPreset(
+        key="whisper",
+        label="Whisper Small INT8 (99 языков)",
+        engine="whisper",
+        model_id="Systran/faster-whisper-small",
+        family="faster-whisper",
+        description=(
+            "Быстрый мультиязычный fallback для языков вне набора Qwen; "
+            "значительно легче прежнего Whisper Large."
+        ),
+        revision="536b0662742c02347bc0e980a01041f333bce120",
+        download_bytes=483_546_902,
+        required_files=(
+            "config.json",
+            "model.bin",
+            "tokenizer.json",
+            "vocabulary.txt",
+        ),
     ),
     "remote": ModelPreset(
         key="remote",
@@ -58,50 +105,40 @@ MODELS: dict[str, ModelPreset] = {
         engine="remote",
         model_id="openai/gpt-4o-transcribe",
         family="remote",
-        description="Транскрипция через OpenRouter по API-ключу: GPT-4o Transcribe, "
-        "Voxtral Mini, Chirp и другие модели.",
+        description="Опциональная транскрипция через пользовательский API-ключ.",
     ),
+}
+
+LEGACY_MODEL_ALIASES = {
+    "parakeet": "qwen",
+    "whisper-ru": "whisper",
 }
 
 
 class UnknownModel(KeyError):
-    """Raised when a model key is not in the registry."""
+    pass
+
+
+def normalize_model_key(key: str) -> str:
+    return LEGACY_MODEL_ALIASES.get(key, key)
 
 
 def get_preset(key: str) -> ModelPreset:
-    """Return the preset for ``key`` or raise :class:`UnknownModel`."""
     try:
-        return MODELS[key]
+        return MODELS[normalize_model_key(key)]
     except KeyError as exc:
         raise UnknownModel(key) from exc
 
 
 def available_presets() -> list[ModelPreset]:
-    """Return all presets in a stable display order."""
-    return [MODELS[key] for key in ("parakeet", "whisper-ru", "gigaam", "remote")]
+    return [MODELS[key] for key in ("qwen", "gigaam", "whisper", "remote")]
 
 
 def resolve_engine(settings: "AppSettings") -> str:
-    """Return the engine kind ("parakeet" | "whisper" | "gigaam" | "remote")
-    for the active model.
-
-    Falls back to "parakeet" for unknown ``settings.model`` values so a stale
-    settings file from an older install never hard-blocks startup.
-    """
-    preset = MODELS.get(settings.model)
-    if preset is not None:
-        return preset.engine
-    # Back-compat: older settings had no `model` field but carried a model_id.
-    return "parakeet"
+    preset = MODELS.get(normalize_model_key(settings.model))
+    return preset.engine if preset is not None else "qwen"
 
 
 def resolve_model_id(settings: "AppSettings") -> str:
-    """Return the canonical HF repo id for the active model preset.
-
-    Falls back to ``settings.model_id`` for unknown presets so an older config
-    that pinned a custom parakeet model id keeps working.
-    """
-    preset = MODELS.get(settings.model)
-    if preset is not None:
-        return preset.model_id
-    return settings.model_id
+    preset = MODELS.get(normalize_model_key(settings.model))
+    return preset.model_id if preset is not None else MODELS["qwen"].model_id

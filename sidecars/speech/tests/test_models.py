@@ -5,6 +5,7 @@ from speech_app.models import (
     UnknownModel,
     available_presets,
     get_preset,
+    normalize_model_key,
     resolve_engine,
     resolve_model_id,
 )
@@ -12,48 +13,52 @@ from speech_app.settings import AppSettings
 
 
 class ModelRegistryTests(unittest.TestCase):
-    def test_registry_has_parakeet_and_whisper_presets(self):
-        self.assertIn("parakeet", MODELS)
-        self.assertIn("whisper-ru", MODELS)
-        self.assertIn("gigaam", MODELS)
-        self.assertIn("remote", MODELS)
+    def test_registry_exposes_only_supported_presets(self):
+        self.assertEqual(set(MODELS), {"qwen", "gigaam", "whisper", "remote"})
 
     def test_presets_have_distinct_engines_and_ids(self):
-        engines = {preset.engine for preset in MODELS.values()}
-        self.assertIn("parakeet", engines)
-        self.assertIn("whisper", engines)
-        self.assertIn("gigaam", engines)
-        self.assertIn("remote", engines)
+        self.assertEqual(
+            {preset.engine for preset in MODELS.values()},
+            {"qwen", "gigaam", "whisper", "remote"},
+        )
         ids = [preset.model_id for preset in MODELS.values()]
         self.assertEqual(len(ids), len(set(ids)))
 
-    def test_get_preset_returns_match_and_raises_for_unknown(self):
-        self.assertEqual(get_preset("parakeet").key, "parakeet")
+    def test_archive_presets_are_pinned_and_verified(self):
+        for key in ("qwen", "gigaam"):
+            preset = get_preset(key)
+            self.assertTrue(preset.download_url.startswith("https://"))
+            self.assertEqual(len(preset.download_sha256), 64)
+            self.assertGreater(preset.download_bytes, 1_000_000)
+            self.assertTrue(preset.required_files)
+
+    def test_get_preset_normalizes_legacy_keys_but_does_not_list_them(self):
+        self.assertEqual(get_preset("parakeet").key, "qwen")
+        self.assertEqual(get_preset("whisper-ru").key, "whisper")
+        self.assertEqual(normalize_model_key("parakeet"), "qwen")
         with self.assertRaises(UnknownModel):
             get_preset("does-not-exist")
 
     def test_available_presets_is_stable_ordered(self):
-        presets = available_presets()
-        self.assertGreater(len(presets), 1)
-        self.assertEqual(presets[0].key, "parakeet")
-        # The remote API preset is the last, online option.
-        self.assertEqual(presets[-1].key, "remote")
+        self.assertEqual(
+            [preset.key for preset in available_presets()],
+            ["qwen", "gigaam", "whisper", "remote"],
+        )
 
-    def test_resolve_engine_for_known_model(self):
-        self.assertEqual(resolve_engine(AppSettings(model="whisper-ru")), "whisper")
-        self.assertEqual(resolve_engine(AppSettings(model="parakeet")), "parakeet")
+    def test_resolve_engine_and_model_id(self):
+        self.assertEqual(resolve_engine(AppSettings(model="qwen")), "qwen")
         self.assertEqual(resolve_engine(AppSettings(model="gigaam")), "gigaam")
+        self.assertEqual(resolve_engine(AppSettings(model="whisper")), "whisper")
         self.assertEqual(resolve_engine(AppSettings(model="remote")), "remote")
-
-    def test_resolve_engine_falls_back_to_parakeet_for_unknown_model(self):
-        self.assertEqual(resolve_engine(AppSettings(model="legacy-key")), "parakeet")
-
-    def test_resolve_model_id_uses_preset_then_falls_back_to_settings(self):
-        preset_id = resolve_model_id(AppSettings(model="whisper-ru"))
-        self.assertEqual(preset_id, "coriollon/whisper-large-v3-turbo-russian-codeswitch")
-        # Unknown model -> fall back to the legacy model_id field.
-        legacy = AppSettings(model="legacy-key", model_id="custom/parakeet")
-        self.assertEqual(resolve_model_id(legacy), "custom/parakeet")
+        self.assertEqual(resolve_engine(AppSettings(model="legacy-key")), "qwen")
+        self.assertEqual(
+            resolve_model_id(AppSettings(model="whisper")),
+            "Systran/faster-whisper-small",
+        )
+        self.assertEqual(
+            resolve_model_id(AppSettings(model="legacy-key")),
+            "Qwen/Qwen3-ASR-0.6B",
+        )
 
 
 if __name__ == "__main__":

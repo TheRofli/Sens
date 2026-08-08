@@ -1,6 +1,6 @@
 """ASR engine package.
 
-Each concrete engine (parakeet, whisper) implements :class:`SpeechEngine`.
+Each concrete engine (sherpa, whisper, remote) implements :class:`SpeechEngine`.
 :class:`~speech_app.engine_manager.EngineManager` selects one based on the
 active model preset.
 """

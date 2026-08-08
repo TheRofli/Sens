@@ -45,20 +45,20 @@ class EngineManagerTests(unittest.TestCase):
 
         return mock.patch.object(engine_manager, "make_engine", side_effect=factory)
 
-    def test_load_uses_parakeet_engine_for_default_model(self):
+    def test_load_uses_qwen_engine_for_default_model(self):
         engines: dict[str, _FakeEngine] = {}
         manager = EngineManager()
         with self._patch_make(engines):
-            manager.load(AppSettings(model="parakeet"))
-        self.assertEqual(manager.kind, "parakeet")
-        self.assertIn("parakeet", engines)
+            manager.load(AppSettings(model="qwen"))
+        self.assertEqual(manager.kind, "qwen")
+        self.assertIn("qwen", engines)
         self.assertTrue(manager.is_loaded)
 
     def test_load_uses_whisper_engine_for_whisper_model(self):
         engines: dict[str, _FakeEngine] = {}
         manager = EngineManager()
         with self._patch_make(engines):
-            manager.load(AppSettings(model="whisper-ru"))
+            manager.load(AppSettings(model="whisper"))
         self.assertEqual(manager.kind, "whisper")
         self.assertIn("whisper", engines)
 
@@ -66,27 +66,27 @@ class EngineManagerTests(unittest.TestCase):
         engines: dict[str, _FakeEngine] = {}
         manager = EngineManager()
         with self._patch_make(engines):
-            manager.load(AppSettings(model="parakeet"))
-            parakeet = engines["parakeet"]
-            self.assertEqual(parakeet.load_calls, 1)
-            manager.load(AppSettings(model="whisper-ru"))
-        self.assertEqual(parakeet.unload_calls, 1)
+            manager.load(AppSettings(model="qwen"))
+            qwen = engines["qwen"]
+            self.assertEqual(qwen.load_calls, 1)
+            manager.load(AppSettings(model="whisper"))
+        self.assertEqual(qwen.unload_calls, 1)
         self.assertEqual(manager.kind, "whisper")
 
     def test_load_same_kind_keeps_engine_loaded(self):
         engines: dict[str, _FakeEngine] = {}
         manager = EngineManager()
         with self._patch_make(engines):
-            manager.load(AppSettings(model="parakeet"))
-            manager.load(AppSettings(model="parakeet"))
-        self.assertEqual(engines["parakeet"].load_calls, 1)
+            manager.load(AppSettings(model="qwen"))
+            manager.load(AppSettings(model="qwen"))
+        self.assertEqual(engines["qwen"].load_calls, 1)
 
     def test_transcribe_routes_to_current_engine(self):
         engines: dict[str, _FakeEngine] = {}
         manager = EngineManager()
         samples = np.ones(160, dtype=np.float32)
         with self._patch_make(engines):
-            text = manager.transcribe(samples, 16000, AppSettings(model="whisper-ru"))
+            text = manager.transcribe(samples, 16000, AppSettings(model="whisper"))
         self.assertEqual(text, "whisper:160")
 
     def test_transcribe_empty_samples_short_circuits(self):
@@ -98,7 +98,7 @@ class EngineManagerTests(unittest.TestCase):
         engines: dict[str, _FakeEngine] = {}
         manager = EngineManager()
         with self._patch_make(engines):
-            manager.load(AppSettings(model="parakeet"))
+            manager.load(AppSettings(model="qwen"))
             manager.unload()
         self.assertFalse(manager.is_loaded)
         self.assertEqual(manager.kind, "")

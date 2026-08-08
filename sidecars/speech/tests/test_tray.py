@@ -6,27 +6,27 @@ from speech_app.tray import TrayController
 class FakeApp:
     """Minimal app double for tray menu construction tests."""
 
-    def __init__(self, active="parakeet"):
+    def __init__(self, active="qwen"):
         self._active = active
         self.set_model_calls = []
 
     def available_models(self):
         return [
             {
-                "key": "parakeet",
-                "label": "Parakeet",
-                "engine": "parakeet",
+                "key": "qwen",
+                "label": "Qwen3-ASR",
+                "engine": "qwen",
                 "installed": True,
                 "size_label": "1 GB",
-                "active": self._active == "parakeet",
+                "active": self._active == "qwen",
             },
             {
-                "key": "whisper-ru",
-                "label": "Whisper RU",
+                "key": "whisper",
+                "label": "Whisper Small",
                 "engine": "whisper",
                 "installed": False,
                 "size_label": "Not installed",
-                "active": self._active == "whisper-ru",
+                "active": self._active == "whisper",
             },
         ]
 
@@ -37,7 +37,7 @@ class FakeApp:
         return self._active
 
     def current_model_label(self):
-        return "Whisper RU" if self._active == "whisper-ru" else "Parakeet"
+        return "Whisper Small" if self._active == "whisper" else "Qwen3-ASR"
 
     def engine_enabled(self):
         return True
@@ -72,7 +72,7 @@ class TrayModelMenuTests(unittest.TestCase):
         """pystray invokes checked(menu_item) with a single argument."""
         import functools
 
-        controller = TrayController(FakeApp(active="whisper-ru"))
+        controller = TrayController(FakeApp(active="whisper"))
         menu = controller._build_model_menu()
         # The Menu's descriptors are the MenuItems we built.
         for descriptor in menu._descriptors if hasattr(menu, "_descriptors") else []:
@@ -83,18 +83,18 @@ class TrayModelMenuTests(unittest.TestCase):
 
     def test_model_menu_action_selects_model(self):
         """Invoking the per-model action calls app.set_model with its key."""
-        app = FakeApp(active="parakeet")
+        app = FakeApp(active="qwen")
         controller = TrayController(app)
         menu = controller._build_model_menu()
         descriptors = (
             menu._descriptors if hasattr(menu, "_descriptors") else list(menu)
         )
         self.assertGreaterEqual(len(descriptors), 2)
-        # The second item is the whisper-ru entry. Invoke its action the way
+        # The second item is the whisper entry. Invoke its action the way
         # pystray would: action(icon, item).
         whisper_action = descriptors[1]._action
         whisper_action(object(), object())
-        self.assertEqual(app.set_model_calls, ["whisper-ru"])
+        self.assertEqual(app.set_model_calls, ["whisper"])
 
 
 class TrayLoadUnloadLabelTests(unittest.TestCase):
@@ -114,7 +114,7 @@ class TrayLoadUnloadLabelTests(unittest.TestCase):
         """
         import pystray
 
-        app = FakeApp(active="whisper-ru")
+        app = FakeApp(active="whisper")
         controller = TrayController(app)
         # Reproduce the menu built in TrayController.start without the icon.
         # We piggy-back on start()'s lambda builders by calling _build_model_menu
@@ -127,21 +127,21 @@ class TrayLoadUnloadLabelTests(unittest.TestCase):
         controller = self._build_menu()
         label = lambda _item: f"Load {controller.app.current_model_label()}"
         # pystray calls label(menuitem) — one positional arg.
-        self.assertIn("Whisper RU", label(object()))
+        self.assertIn("Whisper Small", label(object()))
 
     def test_pystray_menuitem_accepts_single_arg_label(self):
         """End-to-end: building a MenuItem with a 1-arg label lambda and
         resolving its .text must not raise."""
         import pystray
 
-        app = FakeApp(active="whisper-ru")
+        app = FakeApp(active="whisper")
         mi = pystray.MenuItem(
             lambda _item: f"Load {app.current_model_label()}",
             lambda _icon, _item: None,
         )
         # This is exactly what pystray does when rendering the menu.
         rendered = mi.text
-        self.assertIn("Whisper RU", rendered)
+        self.assertIn("Whisper Small", rendered)
 
 
 if __name__ == "__main__":

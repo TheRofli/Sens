@@ -1,6 +1,6 @@
 """Shared engine interface and types.
 
-Concrete engines live in :mod:`speech_app.engines.parakeet` and
+Concrete engines live in :mod:`speech_app.engines.sherpa` and
 :mod:`speech_app.engines.whisper`. The :class:`SpeechEngine` protocol keeps them
 interchangeable for :class:`~speech_app.engine_manager.EngineManager`.
 """
@@ -8,6 +8,9 @@ interchangeable for :class:`~speech_app.engine_manager.EngineManager`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import tempfile
+import wave
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -18,6 +21,22 @@ if TYPE_CHECKING:
 
 class EngineUnavailable(RuntimeError):
     """Raised when a backend's optional dependencies are missing or unusable."""
+
+
+def write_temp_wav(samples: np.ndarray, sample_rate: int) -> Path:
+    descriptor, name = tempfile.mkstemp(prefix="sens-hearing-", suffix=".wav")
+    import os
+
+    os.close(descriptor)
+    path = Path(name)
+    pcm = np.clip(np.asarray(samples).reshape(-1), -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype("<i2")
+    with wave.open(str(path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(sample_rate)
+        stream.writeframes(pcm.tobytes())
+    return path
 
 
 @dataclass(slots=True)

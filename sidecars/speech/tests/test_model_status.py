@@ -1,138 +1,89 @@
+import json
 import os
 import tempfile
 import unittest
-import unittest.mock
 from pathlib import Path
+from unittest import mock
 
-from speech_app.model_status import (
-    ModelStatus,
-    find_gigaam_model_status,
-    find_model_status,
-    find_whisper_model_status,
-)
+from speech_app.model_status import ModelStatus, find_model_status_for_preset
 from speech_app.models import get_preset
 
 
-class ModelStatusTests(unittest.TestCase):
-    def test_reports_missing_model_when_snapshot_dir_is_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            status = find_model_status(Path(tmp), "nvidia/parakeet-tdt-0.6b-v3")
+def _write_complete_model(root: Path, key: str, *, marker: bool = True) -> Path:
+    preset = get_preset(key)
+    destination = root / key
+    for relative in preset.required_files:
+        path = destination / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * 1024)
+    if marker:
+        (destination / "INSTALLED.json").write_text(
+            json.dumps(
+                {
+                    "preset": preset.key,
+                    "revision": preset.revision or None,
+                    "archive_sha256": preset.download_sha256 or None,
+                }
+            ),
+            encoding="utf-8",
+        )
+    return destination
 
+
+class ModelStatusTests(unittest.TestCase):
+    def test_reports_missing_model_when_directory_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+            os.environ, {"SPEECH_MODELS_DIR": tmp}
+        ):
+            status = find_model_status_for_preset(get_preset("qwen"))
         self.assertFalse(status.installed)
         self.assertEqual(status.label, "Not installed")
 
-    def test_reports_installed_model_and_size(self):
+    def test_reports_verified_complete_model_and_size(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            snapshot = (
-                root
-                / "hub"
-                / "models--nvidia--parakeet-tdt-0.6b-v3"
-                / "snapshots"
-                / "abc"
-            )
-            snapshot.mkdir(parents=True)
-            (snapshot / "weights.bin").write_bytes(b"x" * 1024)
-
-            status = find_model_status(root, "nvidia/parakeet-tdt-0.6b-v3")
-
+            _write_complete_model(root, "gigaam")
+            with mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
+                status = find_model_status_for_preset(get_preset("gigaam"))
         self.assertTrue(status.installed)
-        self.assertEqual(status.snapshot, "abc")
-        self.assertEqual(status.size_mb, 0.001)
-        self.assertIn("Installed", status.label)
+        self.assertEqual(status.snapshot, get_preset("gigaam").download_sha256)
+        self.assertGreater(status.size_mb, 0)
 
-    def test_incomplete_snapshot_without_weights_reports_not_installed(self):
-        """A snapshot with only config/tokenizer (no weight files) is an
-        incomplete download and must NOT be reported as installed."""
+    def test_missing_marker_or_required_file_is_not_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            snapshot = (
-                root
-                / "hub"
-                / "models--nvidia--parakeet-tdt-0.6b-v3"
-                / "snapshots"
-                / "abc"
-            )
-            snapshot.mkdir(parents=True)
-            (snapshot / "config.json").write_text("{}")
-            (snapshot / "tokenizer.json").write_text("{}")
+            destination = _write_complete_model(root, "whisper", marker=False)
+            with mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
+                self.assertFalse(
+                    find_model_status_for_preset(get_preset("whisper")).installed
+                )
+                _write_complete_model(root, "whisper")
+                (destination / "model.bin").unlink()
+                self.assertFalse(
+                    find_model_status_for_preset(get_preset("whisper")).installed
+                )
 
-            status = find_model_status(root, "nvidia/parakeet-tdt-0.6b-v3")
+    def test_mismatched_revision_or_digest_is_not_installed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            destination = _write_complete_model(root, "whisper")
+            marker = destination / "INSTALLED.json"
+            metadata = json.loads(marker.read_text(encoding="utf-8"))
+            metadata["revision"] = "wrong"
+            marker.write_text(json.dumps(metadata), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
+                self.assertFalse(
+                    find_model_status_for_preset(get_preset("whisper")).installed
+                )
 
-        self.assertFalse(status.installed)
+    def test_remote_is_available_without_local_files(self):
+        status = find_model_status_for_preset(get_preset("remote"))
+        self.assertTrue(status.installed)
+        self.assertEqual(status.snapshot, "remote")
 
-    def test_resource_status_formats_memory_and_cpu(self):
-        status = ModelStatus(
-            installed=True,
-            snapshot="abc",
-            path=Path("D:/Speech/model"),
-            size_mb=1536.0,
-        )
-
+    def test_resource_status_formats_gigabytes(self):
+        status = ModelStatus(True, "abc", Path("model"), 1536.0)
         self.assertEqual(status.size_label, "1.50 GB")
-
-
-class WhisperModelStatusTests(unittest.TestCase):
-    def test_reports_missing_when_dir_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                status = find_whisper_model_status(get_preset("whisper-ru"))
-        self.assertFalse(status.installed)
-
-    def test_reports_installed_when_weights_and_marker_present(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model_dir = (
-                Path(tmp) / "whisper" / "whisper-ru"
-            )
-            model_dir.mkdir(parents=True)
-            (model_dir / "model.bin").write_bytes(b"x" * (2 * 1024 * 1024))
-            (model_dir / "INSTALLED.json").write_text("{}")
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                status = find_whisper_model_status(get_preset("whisper-ru"))
-        self.assertTrue(status.installed)
-        self.assertEqual(status.snapshot, "whisper-ru")
-        self.assertAlmostEqual(status.size_mb, 2.0, places=3)
-
-    def test_reports_missing_when_marker_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model_dir = (
-                Path(tmp) / "whisper" / "whisper-ru"
-            )
-            model_dir.mkdir(parents=True)
-            (model_dir / "model.bin").write_bytes(b"x" * 1024)
-            # No INSTALLED.json marker -> not considered installed.
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                status = find_whisper_model_status(get_preset("whisper-ru"))
-        self.assertFalse(status.installed)
-
-
-class GigaAMModelStatusTests(unittest.TestCase):
-    def test_reports_missing_when_dir_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                status = find_gigaam_model_status(get_preset("gigaam"))
-        self.assertFalse(status.installed)
-
-    def test_reports_missing_when_weights_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model_dir = Path(tmp) / "gigaam" / "gigaam"
-            model_dir.mkdir(parents=True)
-            (model_dir / "modeling_gigaam.py").write_text("x")  # code but no weights
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                status = find_gigaam_model_status(get_preset("gigaam"))
-        self.assertFalse(status.installed)
-
-    def test_reports_installed_when_weights_present(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model_dir = Path(tmp) / "gigaam" / "gigaam"
-            model_dir.mkdir(parents=True)
-            (model_dir / "pytorch_model.bin").write_bytes(b"x" * (2 * 1024 * 1024))
-            (model_dir / "modeling_gigaam.py").write_text("x")
-            with unittest.mock.patch.dict(os.environ, {"SPEECH_MODELS_DIR": tmp}):
-                status = find_gigaam_model_status(get_preset("gigaam"))
-        self.assertTrue(status.installed)
-        self.assertEqual(status.snapshot, "gigaam")
-        self.assertAlmostEqual(status.size_mb, 2.0, places=3)
 
 
 if __name__ == "__main__":

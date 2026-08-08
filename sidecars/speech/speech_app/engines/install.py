@@ -1,348 +1,220 @@
-"""Model installation: parakeet (HF snapshot) and whisper (CT2 conversion).
-
-This module backs the ``speech model install <key>`` CLI. Parakeet is a plain
-Hugging Face snapshot download. Whisper presets point at a Transformers
-(PyTorch) checkpoint, which faster-whisper cannot consume directly; we convert
-it to CTranslate2 INT8 once, locally, and write a marker file so the engine and
-status detector treat it as installed.
-"""
+"""Verified, staged installers for Sens Hearing model packs."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import shutil
 import sys
+import tarfile
+import tempfile
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..models import ModelPreset, get_preset
-from .paths import (
-    huggingface_home,
-    whisper_installed_marker,
-    whisper_model_dir,
-)
+from ..models import ModelPreset, available_presets, get_preset
+from .paths import installed_marker, model_dir, models_root, pack_download_dir
 
 
-def install_parakeet_model(model_id: str) -> int:
-    """Download a parakeet model snapshot into the HF cache."""
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print(
-            "huggingface_hub is not installed. Run: speech install",
-            file=sys.stderr,
+def _print(message: str, *, error: bool = False) -> None:
+    """Write human CLI status without failing on a legacy Windows code page."""
+    stream = sys.stderr if error else sys.stdout
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    safe = message.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(safe, file=stream)
+
+
+def _required_files_exist(preset: ModelPreset, root: Path) -> bool:
+    return bool(preset.required_files) and all(
+        (root / relative).is_file() for relative in preset.required_files
+    )
+
+
+def _write_installed_marker(root: Path, preset: ModelPreset) -> None:
+    payload = {
+        "schema_version": 1,
+        "preset": preset.key,
+        "model_id": preset.model_id,
+        "revision": preset.revision or None,
+        "archive_sha256": preset.download_sha256 or None,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (root / "INSTALLED.json").write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _is_installed(preset: ModelPreset) -> bool:
+    root = model_dir(preset)
+    return installed_marker(preset).is_file() and _required_files_exist(preset, root)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _download_archive(preset: ModelPreset, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = target.stat().st_size if target.is_file() else 0
+    if preset.download_bytes and existing == preset.download_bytes:
+        if _sha256(target).lower() == preset.download_sha256.lower():
+            return
+        target.unlink()
+        existing = 0
+    elif preset.download_bytes and existing > preset.download_bytes:
+        target.unlink()
+        existing = 0
+    headers = {"User-Agent": "Sens/1.3.5"}
+    if existing:
+        headers["Range"] = f"bytes={existing}-"
+    request = urllib.request.Request(preset.download_url, headers=headers)
+    with urllib.request.urlopen(request, timeout=60) as response:
+        resumed = existing > 0 and getattr(response, "status", 200) == 206
+        mode = "ab" if resumed else "wb"
+        with target.open(mode) as stream:
+            shutil.copyfileobj(response, stream, length=1024 * 1024)
+    actual_size = target.stat().st_size
+    if preset.download_bytes and actual_size != preset.download_bytes:
+        if actual_size > preset.download_bytes:
+            target.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Incomplete {preset.key} download: {actual_size} of "
+            f"{preset.download_bytes} bytes"
         )
-        return 1
+    actual_digest = _sha256(target)
+    if actual_digest.lower() != preset.download_sha256.lower():
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f"{preset.key} model archive failed SHA-256 verification")
 
-    print(f"Downloading {model_id} into the configured Hugging Face cache...")
-    path = snapshot_download(repo_id=model_id)
-    print(f"Parakeet is ready at: {path}")
-    return 0
+
+def _safe_extract(archive: Path, destination: Path) -> None:
+    root = destination.resolve()
+    with tarfile.open(archive, "r:bz2") as bundle:
+        for member in bundle.getmembers():
+            target = (destination / member.name).resolve()
+            try:
+                target.relative_to(root)
+            except ValueError as exc:
+                raise RuntimeError("Model archive contains an unsafe path") from exc
+            if member.issym() or member.islnk() or member.isdev():
+                raise RuntimeError("Model archive contains an unsupported link or device")
+        bundle.extractall(destination)
+
+
+def _payload_root(extraction_root: Path, preset: ModelPreset) -> Path:
+    if _required_files_exist(preset, extraction_root):
+        return extraction_root
+    candidates = [
+        path
+        for path in extraction_root.iterdir()
+        if path.is_dir() and _required_files_exist(preset, path)
+    ]
+    if len(candidates) != 1:
+        raise RuntimeError(f"{preset.key} archive is missing required model files")
+    return candidates[0]
+
+
+def _promote_model(source: Path, destination: Path) -> None:
+    backup = destination.with_name(destination.name + ".previous")
+    if backup.exists():
+        shutil.rmtree(backup)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.rename(backup)
+    try:
+        source.rename(destination)
+    except Exception:
+        if backup.exists() and not destination.exists():
+            backup.rename(destination)
+        raise
+    if backup.exists():
+        shutil.rmtree(backup)
+
+
+def install_archive_model(preset: ModelPreset) -> int:
+    if _is_installed(preset):
+        _print(f"{preset.label} is already installed at {model_dir(preset)}")
+        return 0
+    downloads = pack_download_dir()
+    archive_name = preset.download_url.rsplit("/", 1)[-1]
+    archive = downloads / (archive_name + ".part")
+    extraction_parent = models_root()
+    extraction_parent.mkdir(parents=True, exist_ok=True)
+    extraction = Path(
+        tempfile.mkdtemp(prefix=f".{preset.key}-install-", dir=extraction_parent)
+    )
+    try:
+        _print(
+            f"Downloading {preset.label} ({preset.download_bytes / 1024**2:.0f} MiB)..."
+        )
+        _download_archive(preset, archive)
+        _safe_extract(archive, extraction)
+        payload = _payload_root(extraction, preset)
+        _write_installed_marker(payload, preset)
+        _promote_model(payload, model_dir(preset))
+        archive.unlink(missing_ok=True)
+        _print(f"{preset.label} is ready at {model_dir(preset)}")
+        return 0
+    except Exception as exc:
+        _print(f"Could not install {preset.label}: {exc}", error=True)
+        return 1
+    finally:
+        shutil.rmtree(extraction, ignore_errors=True)
 
 
 def install_whisper_model(preset: ModelPreset) -> int:
-    """Convert a Transformers whisper checkpoint to CTranslate2 INT8 locally."""
-    if _ensure_whisper_installed(preset):
-        print(f"Whisper model already converted at {whisper_model_dir(preset)}")
+    if _is_installed(preset):
+        _print(f"{preset.label} is already installed at {model_dir(preset)}")
         return 0
-
     try:
-        from transformers import AutoTokenizer  # noqa: F401  (import check)
+        from faster_whisper.utils import download_model
     except ImportError:
-        print(
-            "transformers is required to convert the Whisper model. "
-            "Run: speech install",
-            file=sys.stderr,
-        )
+        _print("faster-whisper is missing from the Sens runtime", error=True)
         return 1
 
-    out_dir = whisper_model_dir(preset)
-    tmp_dir = out_dir.with_name(out_dir.name + ".tmp")
-    if tmp_dir.exists():
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-
-    print(
-        f"Converting {preset.model_id} to CTranslate2 INT8 (this needs torch and "
-        "may take several minutes and several GB of RAM)..."
-    )
-    rc = _run_ct2_converter(preset.model_id, tmp_dir)
-    if rc != 0:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        print(
-            "Conversion failed. See the output above. Common causes: not enough "
-            "RAM, incompatible transformers/ctranslate2 versions, or network "
-            "issues downloading the source checkpoint.",
-            file=sys.stderr,
+    root = models_root()
+    root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".whisper-install-", dir=root))
+    try:
+        _print(f"Downloading pinned {preset.label}...")
+        download_model(
+            "small",
+            output_dir=str(staging),
+            revision=preset.revision,
+            use_auth_token=False,
         )
-        return rc
-
-    if out_dir.exists():
-        shutil.rmtree(out_dir, ignore_errors=True)
-    tmp_dir.rename(out_dir)
-    _write_installed_marker(preset)
-    print(f"Whisper model is ready at: {out_dir}")
-    return 0
-
-
-def _run_ct2_converter(model_id: str, out_dir: Path) -> int:
-    """Convert a Transformers checkpoint to CTranslate2 INT8 in-process.
-
-    We deliberately avoid the ``ct2-transformers-converter`` CLI entry point.
-    On a machine with several Python projects, ``shutil.which`` can resolve
-    that script from a *different* virtualenv (e.g. another agent's venv),
-    whose ctranslate2/transformers versions are incompatible with this one —
-    that surfaces as cryptic ``NameError``s from inside ctranslate2. Running
-    the conversion inside the current process guarantees the same libraries
-    that Speech uses at inference time are the ones doing the conversion.
-    """
-    try:
-        from ctranslate2.converters import TransformersConverter
-    except ImportError as exc:
-        print(
-            f"ctranslate2 is not installed, cannot convert: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-
-    # transformers must be importable for the converter to load the source
-    # checkpoint; surface a clear error if it is missing.
-    try:
-        import transformers  # noqa: F401
-    except ImportError as exc:
-        print(
-            f"transformers is not installed, cannot convert: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        TransformersConverter(model_id).convert(
-            str(out_dir), quantization="int8", force=True
-        )
-    except Exception as exc:
-        print(f"CTranslate2 conversion failed: {exc}", file=sys.stderr)
-        return 1
-
-    # CTranslate2's converter saves weights + vocabulary + config.json, but NOT
-    # the preprocessor config. faster-whisper reads preprocessor_config.json to
-    # pick the mel-bin count (80 for whisper v1/v2, 128 for v3/large-v3-turbo).
-    # Without it, faster-whisper defaults to 80 mels and crashes large-v3 models
-    # with "Invalid input features shape: expected (1, 128, 3000), got (1, 80, 3000)".
-    # Save the full HF preprocessor/processor config next to the converted model.
-    _save_preprocessor_config(model_id, out_dir)
-    return 0
-
-
-def _save_preprocessor_config(model_id: str, out_dir: Path) -> None:
-    """Persist preprocessor_config.json into the converted model directory.
-
-    Tries the HF AutoProcessor first (covers most whisper checkpoints); falls
-    back to copying the raw file from the snapshot cache. Non-fatal: if neither
-    works we print a warning, since some models genuinely have no preprocessor.
-    """
-    try:
-        from transformers import AutoProcessor
-    except ImportError:
-        pass
-    else:
-        try:
-            processor = AutoProcessor.from_pretrained(model_id)
-            processor.save_pretrained(str(out_dir))
-            if (out_dir / "preprocessor_config.json").is_file():
-                return
-        except Exception as exc:  # noqa: BLE001 - fall back to cache lookup
-            print(
-                f"AutoProcessor save failed ({exc}); trying raw file copy.",
-                file=sys.stderr,
-            )
-
-    # Fallback: locate the snapshot in the HF hub cache and copy the file.
-    try:
-        from huggingface_hub import snapshot_download
-
-        snapshot_dir = snapshot_download(repo_id=model_id)
-        src = Path(snapshot_dir) / "preprocessor_config.json"
-        if src.is_file():
-            shutil.copy2(src, out_dir / "preprocessor_config.json")
-            return
-    except Exception as exc:  # noqa: BLE001
-        print(f"Could not locate preprocessor_config.json: {exc}", file=sys.stderr)
-
-    print(
-        "Warning: preprocessor_config.json not found for this model. "
-        "faster-whisper will assume 80 mel bins and may fail on Whisper v3.",
-        file=sys.stderr,
-    )
-
-
-def _write_installed_marker(preset: ModelPreset) -> None:
-    marker = whisper_installed_marker(preset)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "preset": preset.key,
-        "model_id": preset.model_id,
-        "installed_at": datetime.now(timezone.utc).isoformat(),
-    }
-    marker.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _ensure_whisper_installed(preset: ModelPreset) -> bool:
-    marker = whisper_installed_marker(preset)
-    model_dir = whisper_model_dir(preset)
-    if not marker.exists() or not model_dir.exists():
-        return False
-    has_weights = any(
-        (model_dir / name).is_file() for name in ("model.bin", "model.int8.bin")
-    )
-    return has_weights
-
-
-def install_gigaam_model(preset: ModelPreset) -> int:
-    """Download GigaAM v3 weights and apply the transformers-v5 compatibility
-    patch to the remote-code module.
-
-    GigaAM is remote code (``trust_remote_code``) written for transformers v4.
-    transformers v5 instantiates models under ``torch.device("meta")`` and
-    expects ``all_tied_weights_keys`` during loading, both of which crash the
-    stock module. We keep a patched copy under ``models/gigaam/<key>`` so the
-    engine never depends on a specific transformers version. ``install``
-    re-downloads the source checkpoint and re-applies the patch.
-    """
-    from .paths import gigaam_model_dir
-
-    out_dir = gigaam_model_dir(preset)
-    if (out_dir / "pytorch_model.bin").is_file() and (
-        out_dir / "modeling_gigaam.py"
-    ).is_file():
-        print(f"GigaAM model already installed at {out_dir}")
+        if not _required_files_exist(preset, staging):
+            raise RuntimeError("Whisper download is missing required model files")
+        _write_installed_marker(staging, preset)
+        _promote_model(staging, model_dir(preset))
+        _print(f"{preset.label} is ready at {model_dir(preset)}")
         return 0
-
-    try:
-        from huggingface_hub import snapshot_download
-    except ImportError:
-        print(
-            "huggingface_hub is not installed. Run: speech install",
-            file=sys.stderr,
-        )
-        return 1
-
-    print(f"Downloading {preset.model_id} (revision e2e_rnnt)...")
-    try:
-        snapshot = Path(snapshot_download(repo_id=preset.model_id, revision="e2e_rnnt"))
     except Exception as exc:
-        print(f"Download failed: {exc}", file=sys.stderr)
+        _print(f"Could not install {preset.label}: {exc}", error=True)
         return 1
-
-    out_dir.parent.mkdir(parents=True, exist_ok=True)
-    if out_dir.exists():
-        shutil.rmtree(out_dir, ignore_errors=True)
-    shutil.copytree(snapshot, out_dir)
-    _patch_gigaam_module(out_dir / "modeling_gigaam.py")
-    print(f"GigaAM model is ready at: {out_dir}")
-    return 0
-
-
-def _patch_gigaam_module(path: Path) -> None:
-    """Apply the three transformers-v5 compatibility fixes to modeling_gigaam.py.
-
-    Fixes (all additive, verified against ai-sage/GigaAM-v3 @ e2e_rnnt):
-
-    1. ``FeatureExtractor`` builds the torchaudio MelSpectrogram under a CPU
-       device context — torchaudio calls ``.item()`` during ``__init__``,
-       which raises on the meta tensors transformers v5 creates by default.
-    2. ``load_audio`` reads via soundfile instead of shelling out to ffmpeg
-       (no external binary needed on Windows).
-    3. ``GigaAMModel.__init__`` sets ``all_tied_weights_keys = {}``, required
-       by transformers v5's ``_finalize_model_loading`` for models that never
-       call ``post_init()`` (which would re-randomise loaded weights).
-    """
-    text = path.read_text(encoding="utf-8")
-
-    # Fix 1: CPU context around MelSpectrogram construction.
-    old_fe = """        self.featurizer = nn.Sequential(
-            torchaudio.transforms.MelSpectrogram(
-                sample_rate=sample_rate,
-                n_mels=features,
-                win_length=self.win_length,
-                hop_length=self.hop_length,
-                n_fft=self.n_fft,
-                center=self.center,
-            ),
-            SpecScaler(),
-        )"""
-    new_fe = """        # transformers v5 instantiates models inside torch.device("meta");
-        # torchaudio's MelSpectrogram calls .item() during __init__, which
-        # raises on meta tensors. Build it under a CPU context instead.
-        with torch.device("cpu"):
-            _mel = torchaudio.transforms.MelSpectrogram(
-                sample_rate=sample_rate,
-                n_mels=features,
-                win_length=self.win_length,
-                hop_length=self.hop_length,
-                n_fft=self.n_fft,
-                center=self.center,
-            )
-        self.featurizer = nn.Sequential(_mel, SpecScaler())"""
-    if old_fe in text:
-        text = text.replace(old_fe, new_fe)
-    else:
-        print(
-            "Warning: could not patch FeatureExtractor (unexpected layout).",
-            file=sys.stderr,
-        )
-
-    # Fix 2: soundfile-based audio loading (no ffmpeg subprocess).
-    old_cmd = '    cmd = [\n        "ffmpeg",'
-    new_cmd = '    import soundfile as _sf\n\n    _wav, _sr = _sf.read(audio_path, dtype="float32")\n    if _wav.ndim > 1:\n        _wav = _wav.mean(axis=1)\n    if _sr != sample_rate:\n        _wav = torch.from_numpy(_wav).double()\n        _new = max(1, int(round(_wav.numel() * sample_rate / _sr)))\n        _wav = torch.nn.functional.interpolate(\n            _wav.view(1, 1, -1), size=_new, mode="linear", align_corners=False\n        ).view(-1)\n        return _wav.float()\n    return torch.from_numpy(_wav).float()\n\n    _dead_code = [\n        "ffmpeg",'
-    if old_cmd in text:
-        # Keep the rest of the original function (try/except below the cmd
-        # list becomes unreachable after the early return — harmless).
-        text = text.replace(old_cmd, new_cmd)
-    else:
-        print(
-            "Warning: could not patch load_audio (unexpected layout).",
-            file=sys.stderr,
-        )
-
-    # Fix 3: provide all_tied_weights_keys for transformers v5 loading.
-    old_init = '        self.model = instantiate(config.cfg["model"], _recursive_=False)'
-    new_init = (
-        '        self.model = instantiate(config.cfg["model"], _recursive_=False)\n'
-        "        # transformers v5 requires all_tied_weights_keys during loading;\n"
-        "        # post_init() would re-randomise weights, so provide empty map.\n"
-        "        self.all_tied_weights_keys = {}"
-    )
-    if old_init in text:
-        text = text.replace(old_init, new_init)
-    else:
-        print(
-            "Warning: could not patch all_tied_weights_keys (unexpected layout).",
-            file=sys.stderr,
-        )
-
-    path.write_text(text, encoding="utf-8")
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def install_model(preset_key: str) -> int:
-    """Install the model for ``preset_key`` (dispatches by engine family)."""
     preset = get_preset(preset_key)
+    if preset.engine in {"qwen", "gigaam"}:
+        return install_archive_model(preset)
     if preset.engine == "whisper":
         return install_whisper_model(preset)
-    if preset.engine == "gigaam":
-        return install_gigaam_model(preset)
-    return install_parakeet_model(preset.model_id)
+    _print("Remote transcription does not install a local model", error=True)
+    return 1
 
 
 def list_models() -> int:
-    """Print installation status for every preset."""
-    # Imported here to avoid a circular import at module load.
     from ..model_status import find_model_status_for_preset
-    from ..models import available_presets
 
     for preset in available_presets():
-        status = find_model_status_for_preset(preset, huggingface_home())
-        state = status.label if status.installed else "Not installed"
-        print(f"{preset.key}\t{preset.label}\t{state}")
+        status = find_model_status_for_preset(preset)
+        _print(f"{preset.key}\t{preset.label}\t{status.label}")
     return 0

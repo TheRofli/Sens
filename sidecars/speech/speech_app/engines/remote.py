@@ -21,8 +21,7 @@ import numpy as np
 import requests
 
 from ..settings import AppSettings
-from .base import EngineUnavailable
-from .parakeet import _write_temp_wav
+from .base import EngineUnavailable, write_temp_wav
 
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL_ID = "openai/gpt-4o-transcribe"
@@ -62,7 +61,7 @@ class RemoteEngine:
     ) -> str:
         if samples.size == 0:
             return ""
-        wav_path = _write_temp_wav(samples, sample_rate)
+        wav_path = write_temp_wav(samples, sample_rate)
         try:
             return self.transcribe_file(wav_path, settings)["text"]
         finally:
@@ -77,7 +76,7 @@ class RemoteEngine:
         """Transcript with per-segment timestamps, like the whisper engine."""
         if samples.size == 0:
             return []
-        wav_path = _write_temp_wav(samples, sample_rate)
+        wav_path = write_temp_wav(samples, sample_rate)
         try:
             result = self.transcribe_file(wav_path, settings)
         finally:

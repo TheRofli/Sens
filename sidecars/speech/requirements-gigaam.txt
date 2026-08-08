@@ -1,8 +1,0 @@
-# Dependencies for the GigaAM v3 e2e engine (Sber, remote-code Transformers).
-# The model's modeling_gigaam.py imports these at load time; soundfile is
-# used by our load_audio patch instead of an ffmpeg subprocess.
-soundfile
-hydra-core
-omegaconf
-torchaudio
-sentencepiece

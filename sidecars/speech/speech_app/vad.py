@@ -110,8 +110,8 @@ def split_audio(
 ) -> list[np.ndarray]:
     """Split audio into chunks no longer than ``max_duration_s``.
 
-    Used for models that reject long inputs (GigaAM refuses audio above its
-    long-form threshold). Cuts are placed inside silence gaps — frames below
+    Used for models with a bounded decoder context (currently Qwen3-ASR).
+    Cuts are placed inside silence gaps — frames below
     the RMS threshold — so words are not split; when no gap is available
     before the limit, the chunk is hard-cut at the limit. The final chunk may
     be shorter than the rest.

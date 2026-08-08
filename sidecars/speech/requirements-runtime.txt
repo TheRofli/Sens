@@ -1,0 +1,11 @@
+# CPU-only Hearing runtime. Model weights are installed separately under the
+# Sens local data root; no Torch, NeMo, CUDA, or development Transformers build.
+numpy==2.4.6
+sounddevice==0.5.3
+pillow==12.3.0
+pynput==1.8.1
+pyperclip==1.11.0
+requests==2.34.2
+psutil==7.2.2
+sherpa-onnx==1.13.4
+faster-whisper==1.2.1

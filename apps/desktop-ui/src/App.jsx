@@ -49,7 +49,7 @@ const navItems = [
 ];
 
 const KNOWN_PROVIDERS = ["local", "mimo", "openai", "custom"];
-const KNOWN_MODELS = ["parakeet", "whisper-ru", "gigaam", "remote"];
+const KNOWN_MODELS = ["qwen", "gigaam", "whisper", "remote"];
 
 function providerDisplay(t, value, fallback = "") {
   return KNOWN_PROVIDERS.includes(value) ? t(`provider.${value}`) : fallback || value;
@@ -78,7 +78,7 @@ const defaultCapabilitySettings = {
   },
   hearing: {
     enabled: true,
-    model: "gigaam",
+    model: "qwen",
     device: "cpu",
     hotkey: "ctrl+win",
     copyToClipboard: true,
@@ -102,9 +102,10 @@ const defaultCapabilitySettings = {
     { value: "custom", label: "Свой провайдер", model: "vision-model-name" },
   ],
   hearingModels: [
-    { value: "parakeet", label: "Parakeet · быстрая", description: "600M, мультиязычная, быстрая на CPU" },
-    { value: "whisper-ru", label: "Whisper RU · точная", description: "RU + EN code-switching, высокая точность" },
-    { value: "gigaam", label: "GigaAM v3 · русский", description: "230M, локальная русская модель с пунктуацией" },
+    { value: "qwen", label: "Qwen3-ASR 0.6B INT8 · авто", description: "Русский, английский и ещё 28 языков на CPU" },
+    { value: "gigaam", label: "GigaAM v3 INT8 · русский", description: "Самая быстрая локальная русская модель с пунктуацией" },
+    { value: "whisper", label: "Whisper Small INT8 · 99 языков", description: "Широкий мультиязычный fallback" },
+    { value: "remote", label: "OpenRouter API · онлайн", description: "Опциональная транскрипция через API" },
   ],
 };
 
@@ -656,7 +657,7 @@ export function App() {
     managed: true,
     enabled: true,
     hotkey: "ctrl+win",
-    model: "gigaam",
+    model: "qwen",
     modelState: "ready",
   });
   const [sightSetup, setSightSetup] = useState(nativeRuntime ? null : { pack: "lite", title: "Qwen3-VL 2B", ready: !previewSightOnboarding, runtimeReady: true, bytesPresent: 0, bytesRequired: 1_552_463_168 });

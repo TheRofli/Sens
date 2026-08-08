@@ -1,7 +1,0 @@
-torch
-accelerate
-librosa
-safetensors
-sentencepiece
-huggingface-hub
-git+https://github.com/huggingface/transformers.git

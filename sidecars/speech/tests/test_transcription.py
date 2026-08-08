@@ -46,7 +46,7 @@ class FileTranscriptionTests(unittest.TestCase):
             self.assertEqual(samples.size, 3200)
 
     def test_request_settings_disable_system_output(self):
-        snapshot = settings_for_request(AppSettings(), model="parakeet")
+        snapshot = settings_for_request(AppSettings(), model="qwen")
 
         self.assertFalse(snapshot.copy_to_clipboard)
         self.assertFalse(snapshot.paste_to_active_input)
