@@ -16,3 +16,7 @@ The missing Hearing feature is an orchestration bug, not an ASR rewrite. Speech 
 ## External decision still required
 
 Choose the permanent HTTPS release location. A public GitHub Releases repository is the lowest-maintenance option and lets the build publish `latest.json`, signed NSIS artifacts, and release notes. No Git remote is configured today, so inventing an endpoint would make the updater appear complete while remaining unusable.
+
+## Sens 1.3 first-run vision recommendation
+
+Keep the Windows installer lightweight and require one visible confirmation before downloading Qwen3-VL 2B. Bundling the GGUF files would add roughly 1.45 GiB to every installer, while a silent first-launch download would consume material bandwidth without informed consent. The chosen path is a one-time native dialog with exact CPU, RAM, and download facts; **Install** starts the existing verified downloader, **Later** permanently dismisses the prompt while preserving the manual settings action, and active `.part` sizes provide honest progress.

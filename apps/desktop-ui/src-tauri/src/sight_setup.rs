@@ -1,4 +1,7 @@
-use std::{path::PathBuf, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use sens_broker::SightRuntimeConfig;
 use serde::Serialize;
@@ -55,12 +58,29 @@ fn file_size(path: PathBuf) -> u64 {
     path.metadata().map(|metadata| metadata.len()).unwrap_or(0)
 }
 
+fn partial_path(path: &Path) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(".part");
+    value.into()
+}
+
+fn downloaded_size(path: &Path) -> u64 {
+    let partial = partial_path(path);
+    if partial.is_file() {
+        file_size(partial)
+    } else {
+        file_size(path.to_path_buf())
+    }
+}
+
 pub fn status(pack: Option<String>) -> Result<SightSetupStatus, String> {
     let config = SightRuntimeConfig::discover().map_err(|error| error.to_string())?;
     let pack = pack.or(config.vision_pack).unwrap_or_else(|| "lite".into());
     let spec = pack_spec(&pack)?;
-    let text_size = file_size(config.models_root.join(spec.text));
-    let mmproj_size = file_size(config.models_root.join(spec.mmproj));
+    let text_path = config.models_root.join(spec.text);
+    let mmproj_path = config.models_root.join(spec.mmproj);
+    let text_size = file_size(text_path.clone());
+    let mmproj_size = file_size(mmproj_path.clone());
     let runtime_ready =
         config.python_executable.is_file() || config.python_executable.as_os_str() == "python";
     Ok(SightSetupStatus {
@@ -69,7 +89,8 @@ pub fn status(pack: Option<String>) -> Result<SightSetupStatus, String> {
         ready: text_size == spec.text_bytes && mmproj_size == spec.mmproj_bytes,
         runtime_ready,
         bytes_required: spec.text_bytes + spec.mmproj_bytes,
-        bytes_present: text_size + mmproj_size,
+        bytes_present: downloaded_size(&text_path).min(spec.text_bytes)
+            + downloaded_size(&mmproj_path).min(spec.mmproj_bytes),
         models_root: config.models_root,
     })
 }
@@ -138,5 +159,15 @@ mod tests {
     #[test]
     fn unknown_pack_is_rejected_before_starting_a_process() {
         assert!(pack_spec("turbo").is_err());
+    }
+
+    #[test]
+    fn setup_status_prefers_an_active_partial_download() {
+        let directory = tempfile::tempdir().expect("temporary model directory");
+        let model = directory.path().join("model.gguf");
+        std::fs::write(&model, [0_u8; 3]).expect("existing model");
+        std::fs::write(partial_path(&model), [0_u8; 7]).expect("partial model");
+
+        assert_eq!(downloaded_size(&model), 7);
     }
 }

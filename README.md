@@ -6,7 +6,7 @@
 
 **Local vision and hearing for text-only models through MCP.**
 
-[![Version](https://img.shields.io/badge/version-1.3.1-8b5cf6)](https://github.com/TheRofli/Sens/releases)
+[![Version](https://img.shields.io/badge/version-1.3.2-8b5cf6)](https://github.com/TheRofli/Sens/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)](#requirements)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
 [![MCP](https://img.shields.io/badge/MCP-stdio-4f46e5)](#what-a-model-can-do)
@@ -19,11 +19,11 @@ Sens lets a model such as DeepSeek inspect screenshots, read interfaces, zoom in
 
 ## Install on Windows
 
-1. Download `Sens_1.3.1_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
+1. Download `Sens_1.3.2_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
 2. Run the installer and open Sens.
-3. Click **Connect a model or app**, choose **Z-Code**, then restart Z-Code.
-4. Open **Vision settings**. The deterministic vision core is ready immediately.
-5. Optional: click **Download pack** to add Qwen3-VL 2B semantic descriptions. The verified download is about 1.45 GiB and runs on CPU only.
+3. On first launch, Sens offers the optional Qwen3-VL 2B semantic pack. Confirm once to download about 1.45 GiB, or choose **Later** and keep using the deterministic vision core immediately.
+4. Click **Connect a model or app**, choose **Z-Code**, then restart Z-Code.
+5. The Qwen download is verified, runs on CPU only, and remains installed across normal Sens updates. If it was deferred, the same action remains available in **Vision settings**.
 
 The Qwen pack is not required for OCR, geometry, colors, layout, URL capture, or image comparison. Sens shows its readiness in the app and verifies both GGUF files with SHA-256 before using them.
 
@@ -74,7 +74,7 @@ The Windows installer contains Sens's isolated Sight Python runtime and Latin/Cy
 |---|---|
 | Device | CPU only; GPU layers explicitly disabled |
 | Packaged runtime | about 413 MiB uncompressed |
-| Optional Qwen files | 1.45 GiB on disk |
+| Optional Qwen files | 1.45 GiB on disk; offered once during first launch |
 | Qwen benchmark peak | about 3.4 GiB RAM on the reference machine |
 | Idle VLM use | none; models load lazily and unload after inactivity |
 | API keys | none for local Sight |
@@ -118,11 +118,11 @@ npm run native:build
 
 ## Release
 
-Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.1:
+Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.2:
 
 ```powershell
-git tag v1.3.1
-git push origin v1.3.1
+git tag v1.3.2
+git push origin v1.3.2
 ```
 
 GitHub Actions verifies the tag/version match, builds signed installers, and publishes the NSIS installer, updater signature, and `latest.json`. Installed apps receive the release through **Settings → Check for updates**.

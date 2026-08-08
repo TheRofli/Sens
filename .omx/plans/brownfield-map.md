@@ -59,3 +59,23 @@ Repair the installed Windows experience reported after Sens 1.0: interactive Spe
 ## Recommended path
 
 Reuse Speech managed mode and its API; do not reimplement recording or hotkeys in Rust. Add a small Rust supervisor/control layer in the desktop app, expose runtime status to React, and keep broker Hearing for model-invoked audio-file transcription. Use the official signed Tauri updater once a release endpoint is selected.
+
+## Sens 1.3 first-run Sight onboarding
+
+### Boundary
+
+- The desktop UI owns the one-time offer, its persisted `complete` / `later` decision, and visible download progress.
+- The existing `install_sight_pack` command remains the only installation entry point; no model is downloaded silently.
+- `sight_setup_status` reports bytes from an active `.part` file so the UI can poll progress without introducing a second downloader or moving mutable worker state out of Rust.
+- The broker, MCP envelopes, capability settings, and model file location do not change.
+
+### Must-preserve behavior
+
+- Deterministic OCR, geometry, color, structure, capture, and comparison remain ready without Qwen.
+- The offer appears only in the main native window for the local provider and only until the user installs or defers it.
+- Deferring never disables vision; the manual Vision-settings download remains available.
+- Completed model files remain outside the installation directory and survive normal app updates.
+
+### Recommended path
+
+Add a focused first-run dialog over the existing UI, keep explicit consent for the 1.45 GiB network transfer, persist the UI-only decision in WebView local storage, and poll the existing setup status while the verified Python downloader runs.

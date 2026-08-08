@@ -32,6 +32,12 @@ import {
   IconX,
 } from "@tabler/icons-react";
 import { useLanguage, useT } from "./i18n.js";
+import {
+  readSightOnboardingDecision,
+  saveSightOnboardingDecision,
+  shouldOfferSightOnboarding,
+  sightDownloadPercent,
+} from "./sightOnboarding.js";
 
 const navItems = [
   { id: "home", icon: IconHome },
@@ -186,6 +192,47 @@ function ConnectModal({ onClose, onConnected }) {
           <option>Z-Code</option><option>Claude Desktop</option><option>Cursor</option><option>{t("modal.otherClient")}</option>
         </select>
         <button className="primary-button" type="button" onClick={() => onConnected(client)}><IconPlugConnected size={20} />{t("modal.connect", { client })}</button>
+      </section>
+    </div>
+  );
+}
+
+function SightOnboardingModal({ status, installing, error, onInstall, onLater }) {
+  const t = useT();
+  const progress = sightDownloadPercent(status);
+  const runtimeUnavailable = status?.runtimeReady === false;
+  return (
+    <div className="modal-backdrop sight-onboarding-backdrop" role="presentation">
+      <section className="sight-onboarding" role="dialog" aria-modal="true" aria-labelledby="sight-onboarding-title" aria-describedby="sight-onboarding-description">
+        <div className="sight-onboarding__mark"><IconEye size={32} stroke={1.8} /></div>
+        <p className="section-kicker">{t("onboarding.sight.kicker")}</p>
+        <h2 id="sight-onboarding-title">{t("onboarding.sight.title")}</h2>
+        <p id="sight-onboarding-description" className="sight-onboarding__description">{t("onboarding.sight.desc")}</p>
+        <div className="sight-onboarding__core">
+          <strong>{t("onboarding.sight.coreTitle")}</strong>
+          <span>{t("onboarding.sight.coreDesc")}</span>
+        </div>
+        <div className="sight-onboarding__facts" aria-label={t("onboarding.sight.resourcesLabel")}>
+          <span>{t("onboarding.sight.downloadSize")}</span>
+          <span>{t("onboarding.sight.memory")}</span>
+          <span>{t("onboarding.sight.local")}</span>
+        </div>
+        {installing ? (
+          <div className="sight-onboarding__progress" aria-live="polite">
+            <div><strong>{progress ? t("onboarding.sight.downloading", { progress }) : t("onboarding.sight.preparing")}</strong><span>{progress}%</span></div>
+            <div className="sight-progress-track" role="progressbar" aria-label={t("onboarding.sight.progressLabel")} aria-valuemin="0" aria-valuemax="100" aria-valuenow={progress}>
+              <span style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        ) : null}
+        {runtimeUnavailable ? <p className="sight-onboarding__error" role="alert">{t("onboarding.sight.runtimeUnavailable")}</p> : null}
+        {error ? <p className="sight-onboarding__error" role="alert"><strong>{t("onboarding.sight.error")}</strong><span>{error}</span></p> : null}
+        <div className="sight-onboarding__actions">
+          <button className="secondary-button" type="button" disabled={installing} onClick={onLater}>{t("onboarding.sight.later")}</button>
+          <button className="primary-button" type="button" disabled={installing || runtimeUnavailable} onClick={onInstall}>
+            <IconDownload size={20} />{error ? t("onboarding.sight.retry") : installing ? t("visionPack.downloading") : t("onboarding.sight.install")}
+          </button>
+        </div>
       </section>
     </div>
   );
@@ -592,7 +639,9 @@ function TrayPanel({ minimized, onOpen, onDiagnostics, onQuit, runtimeStatus, ru
 
 export function App() {
   const nativeRuntime = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-  const trayView = nativeRuntime && new URLSearchParams(window.location.search).get("view") === "tray";
+  const query = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : new URLSearchParams();
+  const trayView = nativeRuntime && query.get("view") === "tray";
+  const previewSightOnboarding = !nativeRuntime && query.get("onboarding") === "sight";
   const [view, setView] = useState("home");
   const [selectedCapability, setSelectedCapability] = useState(null);
   const [capabilitySettings, setCapabilitySettings] = useState(defaultCapabilitySettings);
@@ -610,8 +659,10 @@ export function App() {
     model: "gigaam",
     modelState: "ready",
   });
-  const [sightSetup, setSightSetup] = useState(nativeRuntime ? null : { pack: "lite", title: "Qwen3-VL 2B", ready: true, runtimeReady: true });
+  const [sightSetup, setSightSetup] = useState(nativeRuntime ? null : { pack: "lite", title: "Qwen3-VL 2B", ready: !previewSightOnboarding, runtimeReady: true, bytesPresent: 0, bytesRequired: 1_552_463_168 });
   const [sightInstalling, setSightInstalling] = useState(false);
+  const [sightInstallError, setSightInstallError] = useState("");
+  const [sightOnboardingOpen, setSightOnboardingOpen] = useState(previewSightOnboarding);
   const [updateState, setUpdateState] = useState({ phase: "idle", version: "", progress: 0, error: "" });
   const [pendingUpdate, setPendingUpdate] = useState(null);
   // While an update is being installed the broker must stay stopped so the
@@ -648,13 +699,37 @@ export function App() {
   useEffect(() => {
     if (!nativeRuntime) return;
     invoke("capability_settings")
-      .then((settings) => {
+      .then(async (settings) => {
         setCapabilitySettings(settings);
-        return invoke("sight_setup_status", { pack: "lite" });
+        const status = await invoke("sight_setup_status", { pack: "lite" });
+        setSightSetup(status);
+        if (status.ready) {
+          saveSightOnboardingDecision("complete");
+        } else if (shouldOfferSightOnboarding({
+          nativeRuntime,
+          trayView,
+          provider: settings.sight?.provider || "local",
+          status,
+          decision: readSightOnboardingDecision(),
+        })) {
+          setSightOnboardingOpen(true);
+        }
       })
-      .then((status) => setSightSetup(status))
       .catch((error) => setRuntimeError(String(error)));
-  }, [nativeRuntime]);
+  }, [nativeRuntime, trayView]);
+
+  useEffect(() => {
+    if (!nativeRuntime || !sightInstalling) return undefined;
+    let active = true;
+    const refreshSightProgress = () => {
+      invoke("sight_setup_status", { pack: "lite" })
+        .then((status) => { if (active) setSightSetup(status); })
+        .catch(() => {});
+    };
+    refreshSightProgress();
+    const timer = window.setInterval(refreshSightProgress, 500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [nativeRuntime, sightInstalling]);
 
   useEffect(() => {
     if (!nativeRuntime) return undefined;
@@ -729,16 +804,27 @@ export function App() {
 
   async function installSightPack() {
     if (!nativeRuntime || sightInstalling) return;
+    setSightInstallError("");
     setSightInstalling(true);
     try {
       const status = await invoke("install_sight_pack", { pack: "lite" });
       setSightSetup(status);
+      saveSightOnboardingDecision("complete");
+      setSightOnboardingOpen(false);
       showToast(t("toast.sightPackReady", { title: status.title }));
     } catch (error) {
-      showToast(t("toast.sightPackFailed", { error: String(error) }));
+      const detail = String(error);
+      setSightInstallError(detail);
+      showToast(t("toast.sightPackFailed", { error: detail }));
     } finally {
       setSightInstalling(false);
     }
+  }
+
+  function deferSightOnboarding() {
+    if (sightInstalling) return;
+    saveSightOnboardingDecision("later");
+    setSightOnboardingOpen(false);
   }
 
   async function checkForUpdates() {
@@ -840,7 +926,8 @@ export function App() {
         </div>
       </section>
       {minimized ? <button className="restore-window" type="button" onClick={() => setMinimized(false)}>{t("restore.window")}</button> : null}
-      {connectOpen ? <ConnectModal onClose={() => setConnectOpen(false)} onConnected={handleConnected} /> : null}
+      {sightOnboardingOpen ? <SightOnboardingModal status={sightSetup} installing={sightInstalling} error={sightInstallError} onInstall={installSightPack} onLater={deferSightOnboarding} /> : null}
+      {connectOpen && !sightOnboardingOpen ? <ConnectModal onClose={() => setConnectOpen(false)} onConnected={handleConnected} /> : null}
       {toast ? <div className="toast" role="status">{toast}</div> : null}
     </main>
   );

@@ -544,6 +544,32 @@ button.detail-card { width: 100%; color: inherit; font: inherit; text-align: lef
 .connect-modal .primary-button { width: 100%; }
 
 .modal-close { position: absolute; top: 20px; right: 20px; display: grid; width: 42px; height: 42px; padding: 0; place-items: center; border: 2px solid var(--ink); border-radius: 9999px; background: var(--cream); cursor: pointer; }
+.sight-onboarding-backdrop { background: rgb(26 26 26 / 72%); }
+.sight-onboarding {
+  position: relative;
+  width: min(650px, calc(100vw - 48px));
+  padding: 34px;
+  border: 2px solid var(--ink);
+  border-radius: 28px;
+  background: var(--cream);
+}
+.sight-onboarding__mark { position: absolute; top: 30px; right: 32px; display: grid; width: 58px; height: 58px; place-items: center; border: 2px solid var(--ink); border-radius: 16px; background: var(--lavender); }
+.sight-onboarding h2 { max-width: 500px; margin: 0; font-family: "EB Garamond", ui-serif, Georgia, serif; font-size: 48px; font-weight: 400; letter-spacing: -1px; line-height: 0.98; }
+.sight-onboarding__description { max-width: 555px; margin: 16px 0 18px; color: var(--charcoal); font-size: 15px; line-height: 1.45; }
+.sight-onboarding__core { display: grid; gap: 4px; padding: 15px 17px; border: 2px solid var(--ink); border-radius: 16px; background: var(--ink); color: var(--cream); }
+.sight-onboarding__core strong { font-size: 14px; }
+.sight-onboarding__core span { color: #d5d5c9; font-size: 12px; line-height: 1.4; }
+.sight-onboarding__facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+.sight-onboarding__facts span { display: grid; min-height: 48px; padding: 8px 10px; place-items: center; border: 2px solid var(--ink); border-radius: 12px; background: var(--lavender); font-size: 11px; font-weight: 600; line-height: 1.25; text-align: center; }
+.sight-onboarding__progress { display: grid; gap: 8px; margin-top: 16px; }
+.sight-onboarding__progress > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 16px; font-size: 12px; }
+.sight-progress-track { height: 12px; overflow: hidden; border: 2px solid var(--ink); border-radius: 999px; background: var(--stone); }
+.sight-progress-track span { display: block; min-width: 0; height: 100%; background: var(--forest); transition: width 240ms ease; }
+.sight-onboarding__error { display: grid; gap: 3px; margin: 14px 0 0; padding: 11px 13px; border: 2px solid var(--ink); border-radius: 12px; background: var(--ember); color: var(--ink); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.sight-onboarding__error strong, .sight-onboarding__error span { display: block; }
+.sight-onboarding__actions { display: grid; grid-template-columns: minmax(120px, 0.45fr) minmax(260px, 1fr); gap: 10px; margin-top: 18px; }
+.sight-onboarding__actions .primary-button, .sight-onboarding__actions .secondary-button { width: 100%; }
+.secondary-button:disabled { cursor: wait; opacity: 0.65; }
 .toast, .restore-window { position: fixed; z-index: 30; right: 30px; bottom: 30px; padding: 14px 18px; border: 2px solid var(--ink); border-radius: 12px; background: var(--forest); color: var(--cream); }
 .restore-window { cursor: pointer; }
 
