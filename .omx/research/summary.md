@@ -1,22 +1,58 @@
-# Sens 1.1 recommendation
+# Sens 1.3.5 Hearing recommendation
 
 ## Decision
 
-The missing Hearing feature is an orchestration bug, not an ASR rewrite. Speech already contains the required global hotkey, microphone recorder, overlay, model loading, clipboard/paste behavior, and a Sens-managed mode. Sens 1.0 never launched it.
+The current Hearing implementation needs both an ownership fix and an ASR
+rewrite. Sens launches one Speech process for Ctrl+Win dictation while the Rust
+broker launches another for MCP transcription. Both can hold mutable settings
+and model state, and both depend on an external `D:\Speech` checkout.
 
-## Planned slices
+Sens 1.3.5 will use one persistent Hearing worker owned by the broker. The
+desktop sends internal start/settings/status requests to that worker; MCP uses
+the same engine through side-effect-free operations.
 
-1. Lock Speech/Sens settings and runtime contracts with regression tests.
-2. Start managed Speech invisibly and expose clear runtime/hotkey state.
-3. Hide every broker and worker console on Windows.
-4. Make the frameless title area draggable and open the custom tray panel on right-click.
-5. Add signed in-app updater UI and release tooling; activate the network channel after the release host is selected.
-6. Run Rust, Speech, browser interaction, visual, and installer verification.
+## Local model stack
 
-## External decision still required
+1. **Qwen3-ASR 0.6B INT8**: balanced automatic local preset for Russian,
+   English, code-switching, and the model's other supported languages.
+2. **GigaAM v3 compact ONNX**: fastest Russian-specialist preset.
+3. **Whisper through faster-whisper INT8**: retained broad-language fallback.
+4. **Remote provider**: optional and user-selected; never required for local
+   dictation.
 
-Choose the permanent HTTPS release location. A public GitHub Releases repository is the lowest-maintenance option and lets the build publish `latest.json`, signed NSIS artifacts, and release notes. No Git remote is configured today, so inventing an endpoint would make the updater appear complete while remaining unusable.
+Parakeet is removed. The new local stack avoids NeMo, Torch, and a development
+Transformers checkout in the shipped runtime.
 
-## Sens 1.3 first-run vision recommendation
+## Audio pipeline
 
-Keep the Windows installer lightweight and require one visible confirmation before downloading Qwen3-VL 2B. Bundling the GGUF files would add roughly 1.45 GiB to every installer, while a silent first-launch download would consume material bandwidth without informed consent. The chosen path is a one-time native dialog with exact CPU, RAM, and download facts; **Install** starts the existing verified downloader, **Later** permanently dismisses the prompt while preserving the manual settings action, and active `.part` sizes provide honest progress.
+- Capture mono PCM at 16 kHz.
+- Run Silero VAD locally to reject empty recordings and form utterances.
+- Keep model input chunks below engine limits with speech-aware boundaries and
+  bounded overlap only where a hard cut is unavoidable.
+- Serialize access to one resident engine and expose measured duration,
+  processing time, real-time factor, selected model, detected language where
+  available, and timestamped segments.
+- Publish clipboard/paste/history only in the explicit hotkey dictation flow.
+
+## Packaging
+
+- Bundle Speech source under `sidecars/speech`.
+- Extend the verified embedded Python runtime with Tk and pinned CPU ASR/audio
+  dependencies.
+- Store mutable data and downloaded model packs under Sens local app data.
+- Install models with staged downloads, integrity checks, and atomic promotion.
+- Migrate compatible legacy settings once without printing secrets.
+
+## Quality and performance gate
+
+Use a checked-in manifest for representative Russian, English, code-switch,
+noise/silence, short, and >30-second fixtures. Report normalized WER/CER where
+reference text exists, real-time factor, peak RSS, cold load, and warm latency.
+Do not declare a default winner from model reputation alone.
+
+## Release gate
+
+The release is complete only after Python and Rust tests, protocol/side-effect
+tests, real Ctrl+Win interaction, model install/load/transcribe smoke tests,
+Windows package installation, updater metadata validation, commit/push, and
+published version 1.3.5 all succeed.

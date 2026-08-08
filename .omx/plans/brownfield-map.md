@@ -1,81 +1,119 @@
-# Sens 1.1 brownfield map
+# Sens 1.3.5 brownfield map
 
 ## Scope
 
-Repair the installed Windows experience reported after Sens 1.0: interactive Speech dictation, hidden background processes, draggable frameless window, custom right-click tray panel, and an in-app update path.
+Fold the working `D:\Speech` dictation product into Sens, preserve the accepted
+Ctrl+Win push-to-talk flow, and replace the heavyweight/duplicated ASR runtime
+with one CPU-only Hearing worker owned by the Rust broker.
 
-## Boundaries
+## Repository truth
+
+- The Sens desktop currently starts `D:\Speech\.venv\Scripts\pythonw.exe`
+  directly through `speech_runtime.rs`.
+- The broker separately starts `sidecars/hearing-worker.py`, which imports the
+  same Speech source and can load a second ASR model.
+- Settings also default to `D:\Speech\data\settings.json`.
+- `D:\Speech` local `main` and its configured `origin/main` have no merge base;
+  the tested local checkout is migration input, not a Git branch to merge.
+- The bundled Sight Python is an embeddable Python 3.11 runtime without Tk.
+
+## Target boundaries
+
+### Rust broker (`crates/sens-broker`)
+
+- Is the only owner and supervisor of the persistent Hearing worker.
+- Serves both side-effect-free file transcription and internal desktop
+  dictation control over the existing broker envelope.
+- Starts the worker lazily, keeps one process/model resident, and kills the
+  complete process tree on timeout, shutdown, or update.
+- Supplies code, data, model, artifact, and Python runtime paths explicitly.
+
+### Hearing worker (`sidecars/speech`, `sidecars/hearing-worker.py`)
+
+- Owns one shared engine manager used by Ctrl+Win dictation and MCP file
+  transcription.
+- Preserves hotkey, microphone, overlay, clipboard/paste, and history behavior
+  only for the explicit user-facing dictation flow.
+- Never writes clipboard, pastes, or stores history for model-originated
+  `hear` requests unless the request explicitly opts into history.
+- Uses local CPU inference only for local presets and emits protocol JSON on
+  stdout; diagnostics go to stderr.
 
 ### Sens desktop (`apps/desktop-ui`)
 
-- Owns the only product window and tray icon.
-- Reads and saves capability settings.
-- Must start and supervise Speech in managed mode.
-- Owns update UI and update installation feedback.
+- Starts/configures dictation by sending internal Hearing operations to the
+  broker; it no longer owns a Speech child process.
+- Reads/writes Hearing settings under the Sens local data directory.
+- Shows model installation/runtime state and keeps one Sens tray/window.
 
-### Speech (`D:\Speech\speech_app`)
+### Mutable files
 
-- Remains the source of truth for the global hotkey, microphone recording, overlay, local ASR, clipboard, paste, and history behavior.
-- Already exposes `speech run --managed`, which suppresses the legacy Speech tray/window while preserving dictation.
-- Already exposes a localhost control API and settings model.
+- Code is bundled under the Sens installation (`sidecars/speech`).
+- Settings, history, lock/runtime files live under the Sens local data root.
+- Downloaded ASR packs live outside the installation under the Sens model root
+  and survive app updates.
+- A one-time migration imports compatible settings from `D:\Speech\data` only
+  when the new Sens settings do not exist. Secrets are never logged.
 
-### Sens broker and workers (`crates/sens-broker`, `sidecars`)
+## Model decision
 
-- Remain the only owner of model-facing capability workers.
-- Hearing file transcription stays separate from user-owned interactive dictation.
-- All spawned broker/Node/Python processes must use hidden Windows process creation.
+- Remove Parakeet and all NeMo/Transformers development dependencies.
+- Add Qwen3-ASR 0.6B INT8 through sherpa-onnx as the balanced multilingual
+  local preset (30 languages, including Russian).
+- Keep GigaAM v3 through a compact sherpa-onnx export as the Russian specialist.
+- Keep optimized faster-whisper as the broad-language fallback.
+- Keep the existing remote provider as an optional user-selected mode.
+- Use Silero VAD for utterance boundaries and long-form chunking.
 
-### Release/update channel
+## CPU policy
 
-- Use the official Tauri v2 updater with signed artifacts.
-- The installed 1.0.0 build has no updater, so 1.1.0 is the one unavoidable bootstrap installer. Later versions update in-app.
-- A real update check requires a stable HTTPS `latest.json` endpoint and a release-signing key. The repository currently has no Git remote or release host.
+- Detect available logical and physical CPUs at runtime.
+- Reserve interactive headroom and choose a bounded worker count instead of
+  the existing fixed four threads.
+- Allow an advanced override, but keep the automatic policy as the default.
+- Validate the policy with mocked CPU counts and benchmark candidate thread
+  counts on the current machine.
 
 ## Must-preserve behavior
 
-- A model never activates the microphone. Dictation begins only while the user holds the configured hotkey.
-- API keys and updater private keys never enter source control, command-line arguments, logs, or diagnostics.
-- Speech standalone mode and its existing tests remain valid.
-- Sens keeps one tray icon and one main window.
-- MCP stdout remains protocol-only.
-- Existing Eye and Speech configuration fields not owned by Sens are preserved.
+- A model cannot activate the microphone. Only the visible Sens desktop flow
+  arms Ctrl+Win dictation.
+- Holding the configured shortcut records; releasing it transcribes and applies
+  the configured clipboard/paste behavior once.
+- MCP transcription remains side-effect-free by default.
+- API keys and IPC secrets never appear in command-line arguments, stdout,
+  logs, activity records, or diagnostics.
+- `sens-mcp` stdout remains protocol-only.
+- Existing Eye behavior and unrelated dirty workspace files remain untouched.
 
-## Lifecycle
+## Migration/deletion gate
 
-1. Sens starts.
-2. Sens launches `pythonw.exe -m speech_app run --managed` without a console window.
-3. Speech registers the configured global hotkey and exposes runtime state locally.
-4. Holding the hotkey records; releasing it transcribes and applies the configured clipboard/paste behavior.
-5. Sens settings show the hotkey and runtime status and synchronize changes to the managed Speech process.
-6. Exiting Sens stops the managed Speech process; hiding the main window does not.
+`D:\Speech` may be removed only after all of the following are true:
 
-## Risks
+1. No tracked Sens source, config, test, or generated release file refers to it.
+2. Compatible settings and user data have an autonomous migration path.
+3. Dev runtime and an installed 1.3.5 build both pass Ctrl+Win dictation.
+4. MCP `sens_hear` passes without clipboard/paste/history side effects.
+5. Local model install/status/load/transcribe flows pass from Sens-owned paths.
+6. The release artifact is built, signed, published, and update metadata is
+   reachable.
 
-- A separately running legacy Speech instance owns the single-instance lock. Sens must report that state rather than launch a duplicate.
-- Saving the settings file alone does not refresh a running Speech instance; settings must also be sent through its local API or the managed process restarted.
-- Tauri updates cannot be made secure without a durable private signing key and a public key embedded in the bootstrap build.
-- Windows installers terminate the app while applying an update; progress and restart copy must state this clearly.
+## Principal risks
+
+- Tk and native audio/hotkey dependencies are absent from the current embedded
+  runtime and must be packaged and smoke-tested on Windows.
+- Qwen3-ASR support requires a sufficiently new pinned sherpa-onnx build.
+- Long recordings can monopolize a single resident engine; file requests and
+  dictation need explicit serialization and honest busy state.
+- Model archives are large; downloads need checksums, resumable staging, and no
+  partially-installed success state.
+- Existing GigaAM and Whisper caches use different layouts and cannot be
+  assumed compatible with new compact packs.
 
 ## Recommended path
 
-Reuse Speech managed mode and its API; do not reimplement recording or hotkeys in Rust. Add a small Rust supervisor/control layer in the desktop app, expose runtime status to React, and keep broker Hearing for model-invoked audio-file transcription. Use the official signed Tauri updater once a release endpoint is selected.
-
-## Sens 1.3 first-run Sight onboarding
-
-### Boundary
-
-- The desktop UI owns the one-time offer, its persisted `complete` / `later` decision, and visible download progress.
-- The existing `install_sight_pack` command remains the only installation entry point; no model is downloaded silently.
-- `sight_setup_status` reports bytes from an active `.part` file so the UI can poll progress without introducing a second downloader or moving mutable worker state out of Rust.
-- The broker, MCP envelopes, capability settings, and model file location do not change.
-
-### Must-preserve behavior
-
-- Deterministic OCR, geometry, color, structure, capture, and comparison remain ready without Qwen.
-- The offer appears only in the main native window for the local provider and only until the user installs or defers it.
-- Deferring never disables vision; the manual Vision-settings download remains available.
-- Completed model files remain outside the installation directory and survive normal app updates.
-
-### Recommended path
-
-Add a focused first-run dialog over the existing UI, keep explicit consent for the 1.45 GiB network transfer, persist the UI-only decision in WebView local storage, and poll the existing setup status while the verified Python downloader runs.
+Migrate the tested Speech package into Sens first, convert the worker into the
+single process for both internal dictation control and MCP transcription, then
+replace engines behind the preserved public behavior. Package one Python
+runtime with Tk and the CPU inference dependencies. Delete `D:\Speech` only
+after the installed-build gate, immediately before the final 1.3.5 release.
