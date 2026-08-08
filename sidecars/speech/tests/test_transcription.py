@@ -66,7 +66,11 @@ class FileTranscriptionTests(unittest.TestCase):
 
             result = transcribe_audio_file(
                 path,
-                settings=AppSettings(postprocess_text=False),
+                # This test exercises the ASR/result envelope, not Silero's
+                # speech classification. A synthetic 440 Hz tone is not
+                # speech and must not make the assertion depend on whether
+                # onnxruntime happens to be installed in the test runtime.
+                settings=AppSettings(postprocess_text=False, vad_filter=False),
                 engine=engine,
             )
 

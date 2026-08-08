@@ -127,7 +127,7 @@ if ($LASTEXITCODE -ne 0) {
 
 $tclLibrary = Join-Path $stagingRoot 'tcl\tcl8.6'
 $tkLibrary = Join-Path $stagingRoot 'tcl\tk8.6'
-$smoke = "import os, sys; os.environ.pop('CUDA_PATH', None); os.environ.pop('HIP_PATH', None); os.environ['TCL_LIBRARY'] = sys.argv[1]; os.environ['TK_LIBRARY'] = sys.argv[2]; import cv2, faster_whisper, llama_cpp, numpy, onnxruntime, playwright, psutil, pynput, pyperclip, rapidocr, sherpa_onnx, sounddevice, tkinter, yt_dlp; tkinter.Tcl(); print('Sens Sight + Hearing runtime OK')"
+$smoke = "import os, sys; os.environ.pop('CUDA_PATH', None); os.environ.pop('HIP_PATH', None); os.environ['TCL_LIBRARY'] = sys.argv[1]; os.environ['TK_LIBRARY'] = sys.argv[2]; import cv2, faster_whisper, llama_cpp, numpy, onnxruntime, playwright, psutil, pynput, pyperclip, pystray, rapidocr, sherpa_onnx, sounddevice, tkinter, yt_dlp; tkinter.Tcl(); print('Sens Sight + Hearing runtime OK')"
 & (Join-Path $stagingRoot 'python.exe') -I -c $smoke $tclLibrary $tkLibrary
 if ($LASTEXITCODE -ne 0) {
     throw "Packaged Sens runtime failed its isolated import smoke test"
