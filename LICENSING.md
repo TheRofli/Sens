@@ -6,9 +6,9 @@ in [LICENSE](LICENSE).
 
 ## Current source
 
-Repository commits made after the `v1.3.7` release are offered under the
-[PolyForm Noncommercial License 1.0.0](LICENSE), SPDX identifier
-`PolyForm-Noncommercial-1.0.0`.
+The current development line, beginning with version `1.3.8`, is offered under
+the [PolyForm Noncommercial License 1.0.0](LICENSE), SPDX identifier
+`PolyForm-Noncommercial-1.0.0`. Version `1.3.7` is the final MIT release.
 
 Under that public license, a recipient may download, inspect, run, modify, and
 redistribute Sens only for purposes permitted by the license. Commercial use,

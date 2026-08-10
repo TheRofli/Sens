@@ -284,11 +284,12 @@ licenses. The exact official text remains unmodified apart from Sens's
 `Required Notice` copyright line.
 
 The boundary is prospective: releases through and including `v1.3.7` were
-already published under MIT and retain those permissions. Commits after that
-tag use `PolyForm-Noncommercial-1.0.0`. External code is not merged without a
-separate contribution-rights agreement so future commercial use is not
-silently encumbered. Future Windows packages include both `LICENSE` and
-`LICENSING.md` as bundle resources.
+published under MIT and retain those permissions. The current development line
+and releases beginning with `v1.3.8` use
+`PolyForm-Noncommercial-1.0.0`. External code is not merged without a separate
+contribution-rights agreement so future commercial use is not silently
+encumbered. Future Windows packages include both `LICENSE` and `LICENSING.md`
+as bundle resources.
 
 Primary references:
 

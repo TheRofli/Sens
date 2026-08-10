@@ -10,7 +10,7 @@
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078d4?style=flat-square)](#requirements)
 [![CPU only](https://img.shields.io/badge/inference-CPU%20only-111827?style=flat-square)](#local-by-default)
 [![MCP](https://img.shields.io/badge/protocol-MCP-4f46e5?style=flat-square)](#capabilities)
-[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-f59e0b?style=flat-square)](#license)
+[![Current source license](https://img.shields.io/badge/source%20license-PolyForm%20Noncommercial-f59e0b?style=flat-square)](#license)
 
 [Download](https://github.com/TheRofli/Sens/releases/latest) · [Quick start](#quick-start) · [How it works](#how-vision-reconstruction-works) · [Build](#build-from-source) · [License](#license)
 
@@ -270,14 +270,12 @@ vulnerabilities using [SECURITY.md](SECURITY.md), not a public bug report.
 
 ## License
 
-Current Sens source is **source-available**, not OSI open source. Repository
-work after the `v1.3.7` release is licensed under the
+Current Sens source is **source-available**, not OSI open source. `v1.3.7` is
+the final MIT release. Sens `v1.3.8` and later are licensed under the
 [PolyForm Noncommercial License 1.0.0](LICENSE): noncommercial use is allowed;
 commercial use requires a separate written license from TheRofli. The copyright
 holder remains free to use Sens commercially and to offer separate licenses.
 
-Releases through and including `v1.3.7` were already published under MIT and
-remain available under those historical terms. Dependencies, model packs,
-fonts, runtimes, and third-party reference material retain their own licenses.
-See [LICENSING.md](LICENSING.md) for the exact boundary and commercial-license
-contact route.
+Dependencies, model packs, fonts, runtimes, and third-party reference material
+retain their own licenses. See [LICENSING.md](LICENSING.md) for the exact
+version boundary and commercial-license contact route.
