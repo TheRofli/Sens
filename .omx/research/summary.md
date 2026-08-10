@@ -267,3 +267,32 @@ This design preserves the broker ownership invariant and keeps all perception
 local/CPU-only. It does not infer destinations or business actions from a
 screenshot: a measured button-like outline requires semantic control structure,
 while its behavior remains explicitly unresolved without external evidence.
+
+# Licensing and GitHub surface decision (2026-08-10)
+
+Sens needs public download, inspection, modification, and noncommercial use,
+while TheRofli retains the right to use the code in proprietary commercial
+products and to license it commercially to others. An OSI open-source license
+cannot satisfy that restriction because open-source licenses must allow
+commercial use.
+Creative Commons also recommends against using CC licenses for software.
+
+The selected public license is PolyForm Noncommercial 1.0.0. It is a
+software-specific, SPDX-listed source-available license that permits
+noncommercial purposes and does not prevent the licensor from granting other
+licenses. The exact official text remains unmodified apart from Sens's
+`Required Notice` copyright line.
+
+The boundary is prospective: releases through and including `v1.3.7` were
+already published under MIT and retain those permissions. Commits after that
+tag use `PolyForm-Noncommercial-1.0.0`. External code is not merged without a
+separate contribution-rights agreement so future commercial use is not
+silently encumbered. Future Windows packages include both `LICENSE` and
+`LICENSING.md` as bundle resources.
+
+Primary references:
+
+- https://polyformproject.org/licenses/noncommercial/1.0.0
+- https://spdx.org/licenses/PolyForm-Noncommercial-1.0.0.html
+- https://opensource.org/faq
+- https://creativecommons.org/faq/index.html

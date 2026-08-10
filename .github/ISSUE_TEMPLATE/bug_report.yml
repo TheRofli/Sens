@@ -1,0 +1,83 @@
+name: Bug report
+description: Report a reproducible Sens problem
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Sens. Remove secrets, private media, cookies, and personal data before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Sens version
+      placeholder: "1.3.7"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: true
+  - type: textarea
+    id: hardware
+    attributes:
+      label: Hardware and selected model
+      description: Include CPU, installed RAM, and the Vision or Hearing model in use.
+      placeholder: "Ryzen 7, 32 GiB RAM, Qwen3-VL 2B"
+    validations:
+      required: true
+  - type: dropdown
+    id: capability
+    attributes:
+      label: Area
+      options:
+        - Vision / screenshot analysis
+        - Web reconstruction / review
+        - URL capture
+        - Hearing / dictation
+        - MCP connection
+        - Installer / updater
+        - Desktop interface
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Give the shortest reliable sequence. Attach safe reference/candidate files when relevant.
+      placeholder: |
+        1. Open ...
+        2. Select ...
+        3. Run ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Safe diagnostics or review evidence
+      description: Paste redacted stderr/diagnostics or the final sens_review result. Never include API keys or IPC secrets.
+      render: shell
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed secrets, cookies, confidential screenshots/audio, and unnecessary personal data.
+          required: true

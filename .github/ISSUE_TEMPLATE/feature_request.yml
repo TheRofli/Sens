@@ -1,0 +1,44 @@
+name: Feature request
+description: Propose a focused Sens capability or workflow improvement
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Describe the real user task that is difficult today.
+      placeholder: "When I ask a text-only model to ..., it cannot ..."
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Explain what success looks like without prescribing every implementation detail.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Example or evidence
+      description: Add a safe screenshot, audio sample, trace, benchmark, or comparable product if useful.
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Frequency
+      options:
+        - Every day
+        - Several times a week
+        - Occasionally
+        - One specific project
+    validations:
+      required: true
+  - type: checkboxes
+    id: local
+    attributes:
+      label: Constraints
+      options:
+        - label: The proposed core path can remain local and CPU-only.
+        - label: I understand live model-controlled microphone or screen capture is out of scope.

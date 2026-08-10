@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Commercial licensing
+    url: https://github.com/TheRofli
+    about: Contact the copyright holder through GitHub without posting confidential details publicly.
+  - name: Security policy
+    url: https://github.com/TheRofli/Sens/security/policy
+    about: Read the private reporting instructions instead of opening a public issue.

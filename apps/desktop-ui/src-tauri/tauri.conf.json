@@ -47,6 +47,8 @@
     "createUpdaterArtifacts": true,
     "targets": ["nsis", "msi"],
     "resources": {
+      "../../../LICENSE": "LICENSE",
+      "../../../LICENSING.md": "LICENSING.md",
       "../../../sidecars/eye-worker.mjs": "sidecars/eye-worker.mjs",
       "../../../sidecars/hearing-worker.py": "sidecars/hearing-worker.py",
       "../../../sidecars/sight-worker.py": "sidecars/sight-worker.py",
