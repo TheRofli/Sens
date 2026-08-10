@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "release": "1.3.7",
+  "capturedAt": "2026-08-09",
+  "cases": [
+    {
+      "id": "summer-drive",
+      "kind": "image",
+      "reference": "references/summer-drive.png",
+      "width": 2557,
+      "height": 1273,
+      "sha256": "24e86fa10cc54d3cc8bb60d5e9758605b0423bb64f2ebf1a0f6e4d140aba961d",
+      "stress": ["display-typography", "thin-divider", "semantic-buttons", "single-illustration"]
+    },
+    {
+      "id": "dub-dashboard",
+      "kind": "image",
+      "reference": "references/dub-dashboard.png",
+      "width": 1092,
+      "height": 553,
+      "sha256": "7e35bc491f55f393992b3eeb34d826681eb09de9da802bf616c91167ef369155",
+      "stress": ["dense-dashboard", "small-text", "icons", "chart", "cards"]
+    },
+    {
+      "id": "beyond-human-wear",
+      "kind": "image",
+      "reference": "references/beyond-human-wear.png",
+      "width": 2557,
+      "height": 1273,
+      "sha256": "2fd0d4dd0001b1017521f61ae57af1fb4a45f94e1ca0c6db42befd7b3543a42c",
+      "stress": ["photographic-hero", "soft-mask", "minimal-navigation", "pill-controls"]
+    },
+    {
+      "id": "hyperstudio-ascii-hands",
+      "kind": "image",
+      "reference": "references/hyperstudio-ascii-hands.png",
+      "width": 2555,
+      "height": 1273,
+      "sha256": "508ba0d3ee90d310715f8af8319b4465d41205afc250dbfa051db0b4eae7ab26",
+      "stress": ["exact-symbol-art", "preformatted-text", "dark-theme", "semantic-ctas"]
+    },
+    {
+      "id": "hungry-tiger",
+      "kind": "url",
+      "url": "https://www.eathungrytiger.com/",
+      "frozenBaseline": {
+        "reference": "references/hungry-tiger-933530df9ce689c8.png",
+        "sha256": "933530df9ce689c8c1177b6aa52fde0f119d90667aa185eb27948e42601745d1",
+        "observedAt": "2026-08-09T06:06:17.575566Z",
+        "viewport": {"width": 1440, "height": 900, "dpr": 1.0}
+      }
+    },
+    {
+      "id": "dope-security",
+      "kind": "url",
+      "url": "https://dope.security/",
+      "frozenBaseline": {
+        "reference": "references/dope-security-29b0c7897d361444.png",
+        "sha256": "29b0c7897d3614447b52d1ea2e95aa1258e223c8b5b5b23b2df4f2826d664d29",
+        "observedAt": "2026-08-09T06:06:32.149585Z",
+        "viewport": {"width": 1440, "height": 900, "dpr": 1.0}
+      }
+    },
+    {
+      "id": "caldera",
+      "kind": "url",
+      "url": "https://caldera.xyz/",
+      "frozenBaseline": {
+        "reference": "references/caldera-3b581b8f2b4632fd.png",
+        "sha256": "3b581b8f2b4632fdf3c5518235e5f7a0754f1c9919fd30bad27edeb48a13eab4",
+        "observedAt": "2026-08-09T06:08:12.027760Z",
+        "viewport": {"width": 1440, "height": 900, "dpr": 1.0}
+      }
+    }
+  ]
+}

@@ -515,6 +515,527 @@ def _corner_radius(image: Any, x0: int, y0: int, x1: int, y1: int) -> int:
     return round(float(np.median(radiuses))) if radiuses else 0
 
 
+def _exact_bgr_mode(pixels: Any) -> Any | None:
+    """Return the most common exact BGR triplet from a pixel collection."""
+    values = np.asarray(pixels, dtype=np.uint8).reshape(-1, 3)
+    if not len(values):
+        return None
+    unique, counts = np.unique(values, axis=0, return_counts=True)
+    return unique[int(np.argmax(counts))]
+
+
+def _bgr_hex(pixel: Any) -> str:
+    return "#{:02X}{:02X}{:02X}".format(
+        int(pixel[2]), int(pixel[1]), int(pixel[0])
+    )
+
+
+def _surface_border(image: Any, box: list[int], fill_bgr: Any) -> dict[str, Any] | None:
+    """Measure a card outline from the four exact edge modes.
+
+    This intentionally uses the reported rectangle itself instead of a loose
+    contour ring. It keeps quiet 1px dashboard borders while rejecting glyph
+    blocks whose four edges do not agree on one stroke colour.
+    """
+    x0, y0, x1, y1 = box
+    height, width = image.shape[:2]
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(width, x1), min(height, y1)
+    if x1 - x0 < 16 or y1 - y0 < 16:
+        return None
+    trim_x = max(2, (x1 - x0) // 12)
+    trim_y = max(2, (y1 - y0) // 12)
+    band = max(1, min(4, min(x1 - x0, y1 - y0) // 20))
+    edge_pixels = [
+        image[y0 : min(y1, y0 + band), x0 + trim_x : x1 - trim_x],
+        image[max(y0, y1 - band) : y1, x0 + trim_x : x1 - trim_x],
+        image[y0 + trim_y : y1 - trim_y, x0 : min(x1, x0 + band)],
+        image[y0 + trim_y : y1 - trim_y, max(x0, x1 - band) : x1],
+    ]
+    modes = [_exact_bgr_mode(edge) for edge in edge_pixels if edge.size]
+    if len(modes) != 4:
+        return None
+    stroke = _exact_bgr_mode(np.asarray(modes))
+    if stroke is None or _color_dist(stroke, fill_bgr) < 4:
+        return None
+    if sum(_color_dist(mode, stroke) <= 4 for mode in modes) < 3:
+        return None
+
+    center_x = (x0 + x1) // 2
+    thickness = 0
+    for offset in range(min(8, y1 - y0)):
+        if _color_dist(image[y0 + offset, center_x], stroke) <= 5:
+            thickness += 1
+        else:
+            break
+    return {"color": _bgr_hex(stroke), "width": max(1, thickness)}
+
+
+def outlined_surface_regions(
+    image: Any,
+    canvas_background: str,
+    *,
+    minimum_area_ratio: float = 0.025,
+    maximum_area_ratio: float = 0.9,
+    top: int = 24,
+) -> list[dict[str, Any]]:
+    """Recover quiet closed UI rectangles from low-contrast edge evidence.
+
+    White dashboard cards on an almost-white page have neither a distinctive
+    connected fill nor a high-contrast border. Canny still preserves their
+    closed 1px perimeter. Nested cards remain distinct from their containing
+    page while near-equal inner/outer contour pairs are deduplicated.
+    """
+    import cv2
+
+    height, width = image.shape[:2]
+    canvas_area = max(1, width * height)
+    canvas_bgr = np.asarray(
+        tuple(
+            int(canvas_background.lstrip("#")[index : index + 2], 16)
+            for index in (4, 2, 0)
+        ),
+        dtype=np.uint8,
+    )
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 4, 12)
+    edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    contours, _hierarchy = cv2.findContours(
+        edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
+    )
+    candidates: list[dict[str, Any]] = []
+    for contour in contours:
+        x, y, box_width, box_height = (
+            int(value) for value in cv2.boundingRect(contour)
+        )
+        box_area = box_width * box_height
+        area_ratio = box_area / canvas_area
+        if (
+            box_width < 40
+            or box_height < 24
+            or area_ratio < minimum_area_ratio
+            or area_ratio > maximum_area_ratio
+        ):
+            continue
+        contour_area = float(cv2.contourArea(contour))
+        rectangularity = contour_area / max(1.0, float(box_area))
+        minimum_rectangularity = 0.68 if area_ratio >= 0.25 else 0.82
+        if rectangularity < minimum_rectangularity:
+            continue
+        perimeter = cv2.arcLength(contour, True)
+        polygon = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+        if not 4 <= len(polygon) <= 12:
+            continue
+
+        x1, y1 = x + box_width, y + box_height
+        inset = max(3, min(10, min(box_width, box_height) // 12))
+        inner = image[y + inset : y1 - inset, x + inset : x1 - inset]
+        if not inner.size:
+            continue
+        fill = _exact_bgr_mode(inner)
+        if fill is None:
+            continue
+        if int(np.max(fill)) - int(np.min(fill)) > 36:
+            continue
+        points = contour[:, 0, :]
+        boundary_pixels = image[points[:, 1], points[:, 0]]
+        if not boundary_pixels.size:
+            continue
+        stroke = np.median(boundary_pixels.reshape(-1, 3), axis=0)
+        quiet_boundary = _color_dist(stroke, fill) < 2
+        if quiet_boundary and not (
+            area_ratio >= 0.25 and _color_dist(fill, canvas_bgr) >= 4
+        ):
+            continue
+
+        crop_edges = edges[y:y1, x:x1] > 0
+        band = max(2, min(4, min(box_width, box_height) // 12))
+        top_edge = np.where(crop_edges[:band, :].any(axis=0))[0]
+        bottom_edge = np.where(crop_edges[-band:, :].any(axis=0))[0]
+        left_edge = np.where(crop_edges[:, :band].any(axis=1))[0]
+        right_edge = np.where(crop_edges[:, -band:].any(axis=1))[0]
+        corner_radius = 0
+        if all(values.size for values in (top_edge, bottom_edge, left_edge, right_edge)):
+            insets = [
+                int(top_edge.min()),
+                box_width - 1 - int(top_edge.max()),
+                int(bottom_edge.min()),
+                box_width - 1 - int(bottom_edge.max()),
+                int(left_edge.min()),
+                box_height - 1 - int(left_edge.max()),
+                int(right_edge.min()),
+                box_height - 1 - int(right_edge.max()),
+            ]
+            corner_inset = float(np.median(insets))
+            if corner_inset > 2:
+                corner_radius = int(
+                    round(
+                        min(
+                            corner_inset
+                            + band
+                            + np.sqrt(2.0 * corner_inset * band),
+                            box_width / 2.0,
+                            box_height / 2.0,
+                        )
+                    )
+                )
+        flat = inner.reshape(-1, 3).astype(int)
+        uniform_ratio = float(
+            np.mean(np.max(np.abs(flat - fill.astype(int)), axis=1) <= 3)
+        )
+        # A closed contour can surround a halftone illustration or a large
+        # typographic composition. Its median color is not evidence that the
+        # interior is a CSS surface. Quiet dashboard cards retain a dominant
+        # flat fill even with labels/charts; complex artwork does not.
+        if uniform_ratio < 0.58:
+            continue
+        candidates.append(
+            {
+                "box": [x, y, x1, y1],
+                "background": _bgr_hex(fill),
+                "borderColor": None if quiet_boundary else _bgr_hex(stroke),
+                "borderWidth": None if quiet_boundary else 1,
+                "cornerRadius": corner_radius,
+                "fillRatio": round(uniform_ratio, 3),
+                "boundaryEvidence": {"closed": True},
+                "source": "measured",
+                "method": "low-contrast-closed-surface",
+            }
+        )
+
+    candidates.sort(
+        key=lambda item: -(
+            (item["box"][2] - item["box"][0])
+            * (item["box"][3] - item["box"][1])
+        )
+    )
+    output: list[dict[str, Any]] = []
+    for candidate in candidates:
+        candidate_area = max(
+            1,
+            (candidate["box"][2] - candidate["box"][0])
+            * (candidate["box"][3] - candidate["box"][1]),
+        )
+        near_duplicate = False
+        for current in output:
+            current_area = max(
+                1,
+                (current["box"][2] - current["box"][0])
+                * (current["box"][3] - current["box"][1]),
+            )
+            if (
+                _intersection_ratio(candidate["box"], current["box"]) > 0.92
+                and min(candidate_area, current_area)
+                / max(candidate_area, current_area)
+                >= 0.8
+            ):
+                near_duplicate = True
+                break
+        if not near_duplicate:
+            output.append(candidate)
+    output.sort(key=lambda item: (item["box"][1], item["box"][0]))
+    return output[:top]
+
+
+def surface_regions(
+    image: Any,
+    blocks: list[dict[str, Any]],
+    ocr_items: list[dict[str, Any]],
+    canvas_background: str,
+    top: int = 24,
+) -> list[dict[str, Any]]:
+    """Return measured layout surfaces that an agent must build as CSS.
+
+    Layout contours contain both real cards and fused glyph rectangles. A
+    surface therefore needs either a coherent four-sided border or a large,
+    mostly uniform fill distinct from the canvas. Small borderless colour
+    blocks are text/decoration and remain elements rather than containers.
+    """
+    height, width = image.shape[:2]
+    canvas_area = max(1, width * height)
+    canvas_bgr = np.asarray(
+        tuple(int(canvas_background.lstrip("#")[index : index + 2], 16) for index in (4, 2, 0)),
+        dtype=np.uint8,
+    )
+    candidates: list[dict[str, Any]] = []
+    for block in blocks:
+        if block.get("kind") == "texture":
+            continue
+        raw_box = block.get("box") or []
+        if len(raw_box) != 4:
+            continue
+        x0, y0, x1, y1 = (int(round(value)) for value in raw_box)
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(width, x1), min(height, y1)
+        box = [x0, y0, x1, y1]
+        box_width, box_height = x1 - x0, y1 - y0
+        area = box_width * box_height
+        if box_width < 40 or box_height < 32 or area < canvas_area * 0.004:
+            continue
+        inset = max(3, min(10, min(box_width, box_height) // 12))
+        inner = image[y0 + inset : y1 - inset, x0 + inset : x1 - inset]
+        if not inner.size:
+            continue
+        fill = _exact_bgr_mode(inner)
+        if fill is None:
+            continue
+        flat = inner.reshape(-1, 3)
+        uniform_ratio = float(np.mean(np.max(np.abs(flat.astype(int) - fill.astype(int)), axis=1) <= 3))
+        border = _surface_border(image, box, fill)
+        # Heavy display glyph groups can form a rectangular morphology block;
+        # the empty canvas around the strokes then looks like an implausibly
+        # thick 6-8px "border". Real thick-bordered pills/panels still have a
+        # coherent, predominantly flat interior.
+        if (
+            border is not None
+            and float(border.get("width") or 0) > 4
+            and uniform_ratio < 0.72
+        ):
+            border = None
+        fill_differs = _color_dist(fill, canvas_bgr) >= 4
+        is_large_fill = area >= canvas_area * 0.08 and uniform_ratio >= 0.35
+        if border is None and not (fill_differs and is_large_fill):
+            continue
+        # A tight OCR rectangle is content, not a layout surface.
+        if border is None and any(
+            item.get("box") == box for item in ocr_items
+        ):
+            continue
+        entry = {
+            "box": box,
+            "background": _bgr_hex(fill),
+            "borderColor": border["color"] if border else None,
+            "borderWidth": border["width"] if border else None,
+            "cornerRadius": _corner_radius(image, x0, y0, x1, y1),
+            "source": "measured",
+            "method": "uniform-layout-surface",
+        }
+        if any(
+            _intersection_ratio(box, current["box"]) > 0.92
+            for current in candidates
+        ):
+            continue
+        candidates.append(entry)
+    for entry in dominant_fill_surfaces(image, canvas_background):
+        if any(entry["box"] == current["box"] for current in candidates):
+            continue
+        entry_area = max(
+            1,
+            (entry["box"][2] - entry["box"][0])
+            * (entry["box"][3] - entry["box"][1]),
+        )
+        same_fill_overlaps = [
+            current
+            for current in candidates
+            if _intersection_ratio(entry["box"], current["box"]) > 0.92
+            and entry["background"] == current["background"]
+            and (
+                min(
+                    entry_area,
+                    max(
+                        1,
+                        (current["box"][2] - current["box"][0])
+                        * (current["box"][3] - current["box"][1]),
+                    ),
+                )
+                / max(
+                    entry_area,
+                    max(
+                        1,
+                        (current["box"][2] - current["box"][0])
+                        * (current["box"][3] - current["box"][1]),
+                    ),
+                )
+                >= 0.8
+                or sum(
+                    abs(entry["box"][index] - current["box"][index]) <= 2
+                    for index in range(4)
+                )
+                >= 3
+            )
+        ]
+        if any(
+            max(
+                1,
+                (current["box"][2] - current["box"][0])
+                * (current["box"][3] - current["box"][1]),
+            )
+            >= entry_area * 0.95
+            for current in same_fill_overlaps
+        ):
+            continue
+        candidates = [
+            current for current in candidates if current not in same_fill_overlaps
+        ]
+        candidates.append(entry)
+    for entry in outlined_surface_regions(image, canvas_background):
+        entry_area = max(
+            1,
+            (entry["box"][2] - entry["box"][0])
+            * (entry["box"][3] - entry["box"][1]),
+        )
+        duplicate = None
+        for current in candidates:
+            current_area = max(
+                1,
+                (current["box"][2] - current["box"][0])
+                * (current["box"][3] - current["box"][1]),
+            )
+            if (
+                _intersection_ratio(entry["box"], current["box"]) > 0.92
+                and min(entry_area, current_area) / max(entry_area, current_area)
+                >= 0.8
+            ):
+                duplicate = current
+                break
+        if duplicate is not None:
+            if not duplicate.get("borderColor"):
+                duplicate.update(
+                    {
+                        "borderColor": entry.get("borderColor"),
+                        "borderWidth": entry.get("borderWidth"),
+                        "cornerRadius": max(
+                            int(duplicate.get("cornerRadius") or 0),
+                            int(entry.get("cornerRadius") or 0),
+                        ),
+                        "boundaryEvidence": entry.get("boundaryEvidence"),
+                    }
+                )
+            continue
+        candidates.append(entry)
+    candidates.sort(
+        key=lambda item: (
+            item["box"][1],
+            item["box"][0],
+            -((item["box"][2] - item["box"][0]) * (item["box"][3] - item["box"][1])),
+        )
+    )
+    return candidates[:top]
+
+
+def dominant_fill_surfaces(
+    image: Any,
+    canvas_background: str,
+    *,
+    top_colors: int = 8,
+) -> list[dict[str, Any]]:
+    """Recover large uniform UI panels even when contour blocks miss them."""
+    import cv2
+
+    height, width = image.shape[:2]
+    canvas_area = max(1, width * height)
+    canvas_bgr = np.asarray(
+        tuple(
+            int(canvas_background.lstrip("#")[index : index + 2], 16)
+            for index in (4, 2, 0)
+        ),
+        dtype=np.uint8,
+    )
+    output: list[dict[str, Any]] = []
+    # The fine pass preserves exact card fills.  The coarser neutral pass
+    # reconnects large UI panels whose screenshots contain compression,
+    # antialiasing, or a subtle background gradient.
+    for quantization_step, kernel_size, minimum_area, minimum_fill in (
+        (4, 5, 0.005, 0.60),
+        (8, 3, 0.08, 0.68),
+    ):
+        quantized = (
+            image // quantization_step * quantization_step
+        ).astype(np.uint8)
+        colors, counts = np.unique(
+            quantized.reshape(-1, 3), axis=0, return_counts=True
+        )
+        ranked = np.argsort(counts)[::-1][:top_colors]
+        kernel = np.ones((kernel_size, kernel_size), np.uint8)
+        for color_index in ranked:
+            quantized_bgr = colors[color_index]
+            neutrality_limit = 48 if quantization_step == 4 else 24
+            if (
+                int(np.max(quantized_bgr)) - int(np.min(quantized_bgr))
+                > neutrality_limit
+            ):
+                continue
+            if _color_dist(quantized_bgr, canvas_bgr) < 3:
+                continue
+            mask = (
+                np.all(quantized == quantized_bgr, axis=2).astype(np.uint8)
+                * 255
+            )
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            count, _labels, stats, _centroids = (
+                cv2.connectedComponentsWithStats(mask, 8)
+            )
+            for component in range(1, count):
+                x, y, box_width, box_height, area = (
+                    int(value) for value in stats[component]
+                )
+                if (
+                    box_width < 40
+                    or box_height < 24
+                    or area < canvas_area * minimum_area
+                ):
+                    continue
+                box_area = box_width * box_height
+                fill_ratio = area / max(1, box_area)
+                if fill_ratio < minimum_fill:
+                    continue
+                box = [x, y, x + box_width, y + box_height]
+                component_pixels = image[
+                    y : y + box_height, x : x + box_width
+                ][mask[y : y + box_height, x : x + box_width] > 0]
+                if component_pixels.size == 0:
+                    continue
+                measured_fill = np.median(
+                    component_pixels.reshape(-1, 3), axis=0
+                )
+                entry = {
+                    "box": box,
+                    "background": _bgr_hex(measured_fill),
+                    "borderColor": None,
+                    "borderWidth": None,
+                    "cornerRadius": _corner_radius(
+                        image, x, y, x + box_width, y + box_height
+                    ),
+                    "fillRatio": round(fill_ratio, 3),
+                    "quantizationStep": quantization_step,
+                    "source": "measured",
+                    "method": "dominant-color-connected-surface",
+                }
+                if any(box == current["box"] for current in output):
+                    continue
+                entry_area = max(1, box_width * box_height)
+                same_fill_overlaps = [
+                    current
+                    for current in output
+                    if _intersection_ratio(box, current["box"]) > 0.92
+                    and entry["background"] == current["background"]
+                ]
+                if any(
+                    max(
+                        1,
+                        (current["box"][2] - current["box"][0])
+                        * (current["box"][3] - current["box"][1]),
+                    )
+                    >= entry_area * 0.8
+                    for current in same_fill_overlaps
+                ):
+                    continue
+                output = [
+                    current
+                    for current in output
+                    if current not in same_fill_overlaps
+                ]
+                output.append(entry)
+    output.sort(
+        key=lambda item: (
+            item["box"][1],
+            item["box"][0],
+            -((item["box"][2] - item["box"][0]) * (item["box"][3] - item["box"][1])),
+        )
+    )
+    return output[:24]
+
+
 
 
 def _section_padding(box: list[int], ocr_items: list[dict[str, Any]]) -> dict[str, int] | None:

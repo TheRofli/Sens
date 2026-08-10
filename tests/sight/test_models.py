@@ -148,6 +148,137 @@ def test_vlm_tasks_use_bounded_generation_budgets(tmp_path, monkeypatch) -> None
     assert budgets == [96, 96, 128, 192]
 
 
+def test_vlm_text_inspection_parses_bounded_typography_candidate(tmp_path, monkeypatch) -> None:
+    image = tmp_path / "fixture.png"
+    cv2.imwrite(str(image), np.zeros((16, 16, 3), np.uint8))
+
+    class FakeModel:
+        def create_chat_completion(self, **kwargs):
+            assert kwargs["max_tokens"] == 512
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"text":"STANDARD HALL","runs":[{'
+                                '"text":"STANDARD HALL","class":"serif",'
+                                '"contrast":"high","width":"condensed",'
+                                '"weight":"regular","case":"uppercase",'
+                                '"confidence":1.4}]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    host = vlm.VlmHost("lite")
+    host._llm = FakeModel()
+    monkeypatch.setattr(host, "_touch", lambda: None)
+
+    result = host.inspect_text(str(image), [0, 0, 16, 16])
+
+    assert result == {
+        "text": "STANDARD HALL",
+        "typography": None,
+        "runs": [
+            {
+                "text": "STANDARD HALL",
+                "class": "serif",
+                "contrast": "high",
+                "width": "condensed",
+                "weight": "regular",
+                "case": "uppercase",
+                "confidence": 0.9,
+            }
+        ],
+    }
+
+
+def test_vlm_text_inspection_preserves_explicit_slant_for_mixed_inline_runs(
+    tmp_path, monkeypatch
+) -> None:
+    image = tmp_path / "fixture.png"
+    cv2.imwrite(str(image), np.zeros((32, 128, 3), np.uint8))
+
+    class FakeModel:
+        def create_chat_completion(self, **kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            assert "adjacent words" in str(prompt)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"text":"Your new","runs":['
+                                '{"text":"Your","class":"sans-serif",'
+                                '"contrast":"low","width":"normal",'
+                                '"weight":"light","slant":"normal",'
+                                '"case":"mixed","confidence":0.9},'
+                                '{"text":"new","class":"serif",'
+                                '"contrast":"high","width":"expanded",'
+                                '"weight":"light","slant":"italic",'
+                                '"case":"lowercase","confidence":0.9}]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    host = vlm.VlmHost("lite")
+    host._llm = FakeModel()
+    monkeypatch.setattr(host, "_touch", lambda: None)
+
+    result = host.inspect_text(str(image), [0, 0, 128, 32])
+
+    assert [run["text"] for run in result["runs"]] == ["Your", "new"]
+    assert result["runs"][0]["slant"] == "normal"
+    assert result["runs"][1]["slant"] == "italic"
+
+
+def test_vlm_text_inspection_repairs_unclosed_json_and_multi_choice_class(
+    tmp_path, monkeypatch
+) -> None:
+    image = tmp_path / "fixture.png"
+    cv2.imwrite(str(image), np.zeros((16, 64, 3), np.uint8))
+
+    class FakeModel:
+        def create_chat_completion(self, **_kwargs):
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"text":"THE SUMMER","runs":[{'
+                                '"text":"THE SUMMER","class":"sans-serif|monospace",'
+                                '"contrast":"high","width":"expanded",'
+                                '"weight":"bold","case":"uppercase",'
+                                '"confidence":1.0}]》'
+                            )
+                        }
+                    }
+                ]
+            }
+
+    host = vlm.VlmHost("lite")
+    host._llm = FakeModel()
+    monkeypatch.setattr(host, "_touch", lambda: None)
+
+    result = host.inspect_text(str(image), [0, 0, 64, 16])
+
+    assert result["text"] == "THE SUMMER"
+    assert result["runs"] == [
+        {
+            "text": "THE SUMMER",
+            "class": "sans-serif",
+            "contrast": "high",
+            "width": "expanded",
+            "weight": "bold",
+            "case": "uppercase",
+            "confidence": 0.9,
+        }
+    ]
+
+
 def test_benchmark_required_groups_score_independent_visual_facts() -> None:
     benchmark = _benchmark_module()
     case = {
@@ -170,5 +301,27 @@ def test_vlm_preview_bounds_large_images_before_inference(tmp_path) -> None:
         assert temporary is True
         assert image.shape[0] * image.shape[1] <= 400_000
         assert image.shape[1] / image.shape[0] == pytest.approx(2.0, rel=0.01)
+    finally:
+        Path(prepared).unlink(missing_ok=True)
+
+
+def test_vlm_reflows_ultrawide_text_crop_into_readable_rows(tmp_path) -> None:
+    source = tmp_path / "wide-line.png"
+    image = np.full((120, 1800, 3), 248, np.uint8)
+    for index, x in enumerate(range(0, 1800, 450)):
+        image[:, x : x + 30] = (index * 40, 20, 220)
+    cv2.imwrite(str(source), image)
+    host = vlm.VlmHost("lite", max_pixels=512_000)
+
+    prepared, temporary = host._prepare_image(
+        str(source), None, reflow_wide_text=True
+    )
+    try:
+        reflowed = cv2.imread(prepared)
+        assert temporary is True
+        assert reflowed.shape[0] > 400
+        assert reflowed.shape[1] < 700
+        assert reflowed.shape[1] / reflowed.shape[0] < 1.5
+        assert reflowed.shape[0] * reflowed.shape[1] <= 512_000
     finally:
         Path(prepared).unlink(missing_ok=True)

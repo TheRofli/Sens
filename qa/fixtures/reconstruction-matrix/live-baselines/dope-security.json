@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "dope-security",
+  "requestedUrl": "https://dope.security/",
+  "observedAt": "2026-08-09T06:06:32.149585Z",
+  "reference": "qa/fixtures/reconstruction-matrix/references/dope-security-29b0c7897d361444.png",
+  "sha256": "29b0c7897d3614447b52d1ea2e95aa1258e223c8b5b5b23b2df4f2826d664d29",
+  "settings": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "dpr": 1.0,
+    "theme": "light",
+    "locale": "en-US",
+    "waitUntil": "load",
+    "fullPage": false,
+    "timeoutMs": 60000,
+    "settleMs": 2500,
+    "scrollSteps": 0
+  },
+  "captureId": "f4a26842605097371ee9",
+  "observed": {
+    "domElementCount": 85,
+    "textNodeCount": 500,
+    "semanticControlCount": 86,
+    "rasterElementCount": 100,
+    "motionEventCount": 0
+  }
+}

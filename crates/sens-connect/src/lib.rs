@@ -88,7 +88,7 @@ pub fn install(
             "SENS_SIDECARS_ROOT": sens_root.join("sidecars")
         },
         "enabled": true,
-        "timeoutMs": 180000
+        "timeoutMs": 900000
     });
     let already_current = servers.get("sens") == Some(&desired)
         && servers
@@ -255,6 +255,7 @@ mod tests {
         assert_eq!(document["keep"], 7);
         assert_eq!(document["mcp"]["servers"]["eye"]["enabled"], false);
         assert_eq!(document["mcp"]["servers"]["sens"]["enabled"], true);
+        assert_eq!(document["mcp"]["servers"]["sens"]["timeoutMs"], 900_000);
 
         let removed = uninstall(&config).expect("uninstall");
         assert!(removed.changed);

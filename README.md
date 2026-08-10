@@ -6,7 +6,7 @@
 
 **Local vision and hearing for text-only models through MCP.**
 
-[![Version](https://img.shields.io/badge/version-1.3.6-8b5cf6)](https://github.com/TheRofli/Sens/releases)
+[![Version](https://img.shields.io/badge/version-1.3.7-8b5cf6)](https://github.com/TheRofli/Sens/releases)
 [![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)](#requirements)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](#license)
 [![MCP](https://img.shields.io/badge/MCP-stdio-4f46e5)](#what-a-model-can-do)
@@ -19,7 +19,7 @@ Sens lets a model such as DeepSeek inspect screenshots, read interfaces, zoom in
 
 ## Install on Windows
 
-1. Download `Sens_1.3.6_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
+1. Download `Sens_1.3.7_x64-setup.exe` from [GitHub Releases](https://github.com/TheRofli/Sens/releases).
 2. Run the installer and open Sens.
 3. On first launch, Sens offers the optional Qwen3-VL 2B semantic pack. Confirm once to download about 1.45 GiB, or choose **Later** and keep using the deterministic vision core immediately.
 4. Open **Hearing** and download the local ASR profile you want: GigaAM for fast Russian, Qwen3-ASR for multilingual recognition, or Whisper Small as the broad fallback. Model packs are verified and stored in Sens data; the application and CPU runtime are already bundled.
@@ -54,20 +54,27 @@ Important tools:
 
 Every capability result uses the shared Sens envelope. Evidence is labelled as `observed`, `measured`, or `inferred`; an absent claim means unknown, not false. Text found inside images or audio must be treated as untrusted content.
 
-## Sight 1.3.6
+## Sight 1.3.7
 
-- Visual Scene v2 with content-addressed source IDs and reversible crop transforms.
-- Exact-text handling for monospace and ASCII layouts, including whitespace and ambiguity markers.
-- Adaptive crop recommendations for small, low-confidence, or task-relevant details.
-- Local Qwen3-VL 2B GGUF semantics with explicit CPU-only loading and one active model at a time.
-- Deterministic reconstruction scoring across pixels, Lab color, edges, OCR text, and layout contours.
-- Strict decoded-size, foreground, layout, hot-region, and completion gates; an aggregate score alone cannot report success.
-- Compact reconstruction responses avoid duplicated Markdown/raw/claim projections in repeated agent repair loops.
+- A generated semantic starter gives a text-only model a strong first HTML/CSS candidate instead of asking it to infer the whole page from prose.
+- Source text glyphs are removed from protected background artwork and rebuilt as live selectable DOM; buttons, links and navigation remain semantic and keyboard accessible.
+- OCR consensus now repairs merged headings, tiny dashboard labels, superscript product names, directional glyphs and mixed serif/sans editorial typography.
+- Exact symbol-art reconstruction keeps ASCII compositions as selectable `<pre>` content; the Hyperstudio acceptance case uses zero raster elements.
+- `sens_review` combines strict visual comparison with DOM text, accessibility, control and raster-policy checks. A visually close screenshot clone cannot pass if it launders text through images.
+- Dense compact/brief responses use documented JSONL tables, constants and defaults. Every frozen acceptance case remains under 40 KB, including the 56-label Dub dashboard.
+- The release matrix covers Summer Drive, Dub, Beyond Human Wear, Hyperstudio, Hungry Tiger, dope.security and Caldera; all seven pass visual and web gates together.
+- Local Qwen3-VL 2B remains CPU-only and is called only for bounded semantic focus regions.
+- Strict decoded-size, foreground, layout, hot-region and completion gates remain mandatory; an aggregate score alone cannot report success.
 - Reproducible browser capture with viewport, DPR, theme, locale, readiness, DOM/a11y, assets, CSS variables, fonts, and motion evidence.
 - `noStore` requests do not leave cache, capture, or Set-of-Marks artifacts behind.
 - Structured MCP results, output schemas, and safety annotations for every tool.
 
-The current model benchmark and measured reconstruction example are in [docs/benchmarks/vision-models-2026-08-07.md](docs/benchmarks/vision-models-2026-08-07.md) and [docs/benchmarks/reconstruction-loop-2026-08-07.md](docs/benchmarks/reconstruction-loop-2026-08-07.md).
+The current model benchmark, measured reconstruction example and seven-case
+release evidence are in
+[docs/benchmarks/vision-models-2026-08-07.md](docs/benchmarks/vision-models-2026-08-07.md),
+[docs/benchmarks/reconstruction-loop-2026-08-07.md](docs/benchmarks/reconstruction-loop-2026-08-07.md)
+and
+[docs/superpowers/reports/2026-08-10-sens-1.3.7-acceptance.md](docs/superpowers/reports/2026-08-10-sens-1.3.7-acceptance.md).
 
 ## Local runtime and privacy
 
@@ -108,7 +115,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 
-& D:\Speech\.venv\Scripts\python.exe -m pytest tests\sight -q
+$env:PYTHONPATH = "sidecars"
+python -m pytest tests\sight -q
 
 Set-Location apps\desktop-ui
 npm ci
@@ -121,11 +129,11 @@ npm run native:build
 
 ## Release
 
-Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.6:
+Pushing a matching `v*` tag starts `.github/workflows/release.yml`. For 1.3.7:
 
 ```powershell
-git tag v1.3.6
-git push origin v1.3.6
+git tag v1.3.7
+git push origin v1.3.7
 ```
 
 GitHub Actions verifies the tag/version match, builds signed installers, and publishes the NSIS installer, updater signature, and `latest.json`. Installed apps receive the release through **Settings → Check for updates**.

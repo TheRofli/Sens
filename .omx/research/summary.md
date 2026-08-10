@@ -238,3 +238,32 @@ reconstruction ran in roughly 6.6-10.6 seconds, a Qwen date crop in roughly
 19.5 seconds, and the compact response in roughly 25-28k JSON characters. The
 strict compare rejected both a `318x628` candidate against `2557x1273` and the
 same-size poor browser render; neither can set `canComplete=true`.
+
+# Web reconstruction integrity decision (2026-08-09)
+
+The follow-up Z-Code trace invalidated image-only completion as the final gate
+for screenshot-to-web work. The winning candidate contained ten images, nine
+with reference text, zero semantic controls, six unselectable live text nodes,
+and roughly 69% raster coverage. A genuine `0.9625` pixel score therefore
+optimized the wrong product objective. The user-visible capture later scored
+`0.8926` and failed strict visual gates as well, showing exact-raster overfit.
+
+The recommended path is an additive web representation contract plus a
+browser-backed completion tool, not a higher compare threshold and not a larger
+VLM. Deterministic geometry/OCR continues to describe the reference;
+`targetKind=web` makes live/selectable text, semantic controls, structural CSS,
+and bounded raster regions explicit. `sens_review` captures the candidate at
+the immutable source viewport and combines the existing visual metrics with
+DOM, accessibility, selection, control, raster, and source-slice evidence.
+
+Image-only `sens_compare` remains compatible and reports a visual scope. It
+cannot alone authorize completion of a web reconstruction. Z-Code is instructed
+to keep a champion checkpoint, reject semantic regressions, and stop after the
+first combined web pass. This directly addresses the 164-call trace, including
+the 74 calls and 23.76M aggregate cached-input tokens spent after its first
+image-only pass.
+
+This design preserves the broker ownership invariant and keeps all perception
+local/CPU-only. It does not infer destinations or business actions from a
+screenshot: a measured button-like outline requires semantic control structure,
+while its behavior remains explicitly unresolved without external evidence.

@@ -75,6 +75,66 @@ def recommend_focus(
                 )
             )
 
+    # Attention regions encode measured text/contrast density even when OCR
+    # misses a very large display line. If recognized glyph boxes explain only
+    # a minority of such a bounded region, spend one high-resolution semantic
+    # call on discovery instead of assuming the missing ink is decoration.
+    for attention in dump.get("attention", []):
+        why = str(attention.get("why") or "").casefold()
+        raw_box = attention.get("box") or []
+        if "text" not in why or len(raw_box) != 4:
+            continue
+        box = [int(round(value)) for value in raw_box]
+        box = [
+            max(0, min(width, box[0])),
+            max(0, min(height, box[1])),
+            max(0, min(width, box[2])),
+            max(0, min(height, box[3])),
+        ]
+        pad_x = max(16, round((box[2] - box[0]) * 0.10))
+        pad_y = max(16, round((box[3] - box[1]) * 0.08))
+        box = [
+            max(0, box[0] - pad_x),
+            max(0, box[1] - pad_y),
+            min(width, box[2] + pad_x),
+            min(height, box[3] + pad_y),
+        ]
+        # Attention tiles often stop midway through a thin navigation bar.
+        # Extend that bounded crop to the right edge so an unread CTA at the
+        # opposite end of the same row is not silently left in raster artwork.
+        if box[1] <= 2 and box[3] - box[1] <= height * 0.16:
+            box[2] = width
+        area = max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+        area_ratio = area / max(1, width * height)
+        if area <= 0 or not 0.02 <= area_ratio <= 0.50:
+            continue
+        covered = 0
+        recognized_regions = 0
+        for item in dump.get("ocr", []):
+            other = item.get("box") or []
+            if len(other) != 4:
+                continue
+            x0, y0 = max(box[0], other[0]), max(box[1], other[1])
+            x1, y1 = min(box[2], other[2]), min(box[3], other[3])
+            if x1 > x0 and y1 > y0:
+                covered += (x1 - x0) * (y1 - y0)
+                recognized_regions += 1
+        coverage = min(1.0, covered / area)
+        attention_score = float(attention.get("score") or 0.0)
+        if attention_score < 0.32 or coverage >= 0.45:
+            continue
+        candidates.append(
+            (
+                1.25
+                + attention_score
+                + (0.45 - coverage)
+                - 0.15 * min(4, recognized_regions),
+                box,
+                ["unresolved_text_density"],
+                "unresolved visible text",
+            )
+        )
+
     selected: list[dict[str, Any]] = []
     selected_analysis_boxes: list[list[int]] = []
     for score, analysis_box, reasons, text in sorted(

@@ -28,7 +28,13 @@ _last_cache_cleanup: float = 0.0
 # qa9: see returns a visual context document (Task 7, Vision 2.0).
 # scene1: content-addressed artifacts and no-store-safe analysis (Sens 1.3).
 # scene5: reconstruction-safe controls and OCR-counted font metrics (Sens 1.3.6).
-CACHE_SCHEMA_VERSION = "scene5"
+# scene10: compact numeric badges use a local multi-font digit atlas.
+# scene15: measured inline typography, protected control chrome, and inpainted
+# live-text backgrounds must not reuse pre-1.3.7 visual dumps.
+CACHE_SCHEMA_VERSION = "scene18"
+# document19: textured canvases use a protected alpha-masked artwork layer.
+# document29: reconstruction contracts carry the 1.3.7 DOM/raster policy.
+DOCUMENT_CACHE_SCHEMA_VERSION = "document44"
 
 
 
@@ -53,6 +59,25 @@ def cache_key(image_path: str, region: dict[str, int] | None) -> str:
     if region is not None:
         region_key = "{x}x{y}x{w}x{h}".format(**region)
     return f"{CACHE_SCHEMA_VERSION}-{digest.hexdigest()[:32]}-{region_key}.json"
+
+
+def document_cache_key(image_path: str, options: dict[str, Any]) -> str:
+    """Return a content-addressed key for a completed visual document.
+
+    Scene dumps and completed reconstruction contracts have different
+    invalidation boundaries. Keeping a separate schema lets document-only
+    changes avoid throwing away the expensive deterministic image analysis.
+    """
+    source_key = cache_key(image_path, None)
+    source_digest = source_key.split("-", 2)[1]
+    encoded = json.dumps(
+        options,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    options_digest = hashlib.sha256(encoded).hexdigest()[:20]
+    return f"{DOCUMENT_CACHE_SCHEMA_VERSION}-{source_digest}-{options_digest}.json"
 
 
 

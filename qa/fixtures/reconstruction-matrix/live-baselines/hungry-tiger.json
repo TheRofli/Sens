@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "hungry-tiger",
+  "requestedUrl": "https://www.eathungrytiger.com/",
+  "observedAt": "2026-08-09T06:06:17.575566Z",
+  "reference": "qa/fixtures/reconstruction-matrix/references/hungry-tiger-933530df9ce689c8.png",
+  "sha256": "933530df9ce689c8c1177b6aa52fde0f119d90667aa185eb27948e42601745d1",
+  "settings": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "dpr": 1.0,
+    "theme": "light",
+    "locale": "en-US",
+    "waitUntil": "load",
+    "fullPage": false,
+    "timeoutMs": 60000,
+    "settleMs": 2500,
+    "scrollSteps": 0
+  },
+  "captureId": "574839fcbec95f71d16a",
+  "observed": {
+    "domElementCount": 88,
+    "textNodeCount": 500,
+    "semanticControlCount": 50,
+    "rasterElementCount": 63,
+    "motionEventCount": 0
+  }
+}

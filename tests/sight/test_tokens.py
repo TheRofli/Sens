@@ -22,8 +22,30 @@ DUMP = {
 def test_color_roles() -> None:
     tokens = build_design_tokens(DUMP)
     assert tokens["color"]["background"]["$value"] == "#FDFDFD"
+    assert tokens["color"]["canvas"]["$value"] == "#FDFDFD"
     assert tokens["color"]["ink"]["$value"] == "#262525"
     assert tokens["color"]["accent"]["$value"] == "#29519E"  # самый насыщенный
+
+
+def test_low_coverage_border_color_is_canvas_not_page_background() -> None:
+    dump = {
+        **DUMP,
+        "colors": [
+            {
+                "hex": "#E5E5E5",
+                "ratio": 0.17,
+                "role": "canvas-background",
+            },
+            {"hex": "#F5F6F7", "ratio": 0.44},
+            {"hex": "#FEFEFE", "ratio": 0.41},
+            {"hex": "#1A1A1A", "ratio": 0.05},
+        ],
+    }
+
+    tokens = build_design_tokens(dump)
+
+    assert tokens["color"]["canvas"]["$value"] == "#E5E5E5"
+    assert tokens["color"]["background"]["$value"] == "#F5F6F7"
 
 
 def test_typography_scale_sorted() -> None:

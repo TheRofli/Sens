@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import traceback
 
 from sight.compare import compare_images
 from sight.ops import (
@@ -15,6 +16,7 @@ from sight.ops import (
     inspect_target,
     locate_text,
     motion_op,
+    review_op,
     see_document,
     vision_prompt,
     warm,
@@ -36,7 +38,11 @@ def handle(message: dict[str, object]) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("Sight input must be an object")
     if operation == "see":
-        max_semantic_calls = max(0, min(4, int(message.get("maxCalls") or 2)))
+        resolve_focus = bool(payload.get("resolveFocus", False))
+        default_calls = 7 if resolve_focus else 2
+        max_semantic_calls = max(
+            0, min(7, int(message.get("maxCalls") or default_calls))
+        )
         return see_document(
             str(payload["imagePath"]),
             payload.get("region"),
@@ -48,6 +54,9 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             max_semantic_calls,
             profile=payload.get("profile"),
             response=str(payload.get("response") or "compact"),
+            target_kind=payload.get("targetKind"),
+            resolve_focus=resolve_focus,
+            asset_output_dir=payload.get("assetOutputDir"),
         )
     if operation == "read":
         dump = analyze(str(payload["imagePath"]), payload.get("region"), no_store)
@@ -65,6 +74,7 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             payload.get("pack"),
             profile=payload.get("profile"),
             response=str(payload.get("response") or "compact"),
+            target_kind=payload.get("targetKind"),
         )
     if operation == "ask":
         return ask(
@@ -84,6 +94,13 @@ def handle(message: dict[str, object]) -> dict[str, object]:
         return capture_op(str(payload["url"]), payload, no_store)
     if operation == "motion":
         return motion_op(str(payload["url"]), payload, no_store)
+    if operation == "review":
+        return review_op(
+            str(payload["referencePath"]),
+            str(payload["url"]),
+            payload,
+            no_store,
+        )
     if operation == "inspect":
         region = payload.get("region")
         target = payload.get("target")
@@ -145,6 +162,8 @@ def main() -> None:
             result = handle(message)
             response = {"ok": True, "requestId": request_id, "result": result}
         except Exception as error:  # noqa: BLE001 - protocol boundary
+            traceback.print_exc(file=sys.stderr)
+            sys.stderr.flush()
             response = {
                 "ok": False,
                 "requestId": request_id,

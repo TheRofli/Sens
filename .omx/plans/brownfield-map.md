@@ -295,3 +295,98 @@ JSON characters after this projection.
 5. The Summer Drive reference is rendered and compared at exactly
    `2557x1273`, DPR 1, after fonts settle; a result below the gate remains a
    hard failure with an actionable largest region.
+
+# Web reconstruction integrity (Sens 1.3.7, 2026-08-09)
+
+## Failure being corrected
+
+The second Summer Drive Z-Code run reached an image-only compare pass by
+cutting the immutable reference into ten raster assets. Nine assets contained
+text, the remaining live text was explicitly unselectable, both visible
+`TICKETS` controls were images, and the continuous divider survived only as
+three crop fragments. The generated DOM had no buttons, links, handlers, or
+keyboard focus. Pixel convergence therefore improved while the requested web
+implementation became less real.
+
+This is a completion-contract failure, not merely a weak OCR/model result.
+`sens_compare` can prove visual convergence between two bitmaps, but cannot
+prove representation, interaction, selection, accessibility, or asset origin.
+
+## Entry points and ownership
+
+- `sidecars/sight/perception.py` owns measured structural-line segments and
+  outlined-control candidates around OCR text.
+- `sidecars/sight/document.py` owns the additive `targetKind=web`
+  ReconstructionSpec, live-text/raster/control rules, reconciled element roles,
+  and bounded completion plan.
+- `sidecars/sight/capture.py` owns browser-observed DOM text, selection styles,
+  semantic controls, raster elements, accessibility, and content-addressed
+  screenshots.
+- New `sidecars/sight/web_review.py` owns deterministic reference-to-DOM
+  coverage, raster-text/source-slice detection, semantic-control coverage, and
+  the combined web completion verdict.
+- `sidecars/sight/compare.py` remains the image-only visual metric. Its public
+  result stays compatible and is explicitly labelled `completionScope=visual`.
+- `sidecars/sight/server.py` routes the additive `review` operation.
+- `crates/sens-broker/src/sight.rs` remains the only worker owner, validates the
+  new operation, and returns prompt backpressure instead of hiding concurrent
+  CPU requests in a mutex queue until clients time out.
+- `crates/sens-mcp/src/main.rs` exposes `sens_review`, publishes the web loop,
+  and avoids duplicating full structured JSON in textual tool content.
+
+## Must-preserve behavior
+
+- Existing Sight tool names, arguments, result envelopes, and full/compact
+  projections remain valid.
+- `sens_compare` remains usable for pure image/visual work and compatibility
+  callers; web completion moves to the additive `sens_review` tool.
+- General `profile=analyze` results are unchanged except for additive fields.
+- The broker remains the only owner of workers and mutable runtime state.
+- Sight stays local/CPU-only; no screen capture or microphone permission is
+  added; explicit URL capture remains the only browser input.
+- `noStore` removes all temporary capture/review artifacts.
+- Hearing, Media, Voice, desktop dictation, and unrelated user files remain
+  outside this release slice.
+
+## Core contract changes
+
+1. `sens_see(profile=reconstruct, targetKind=web)` returns a representation
+   contract: readable text must be live/selectable DOM text; raster text,
+   reference slices, and raster layout structure are forbidden; raster is
+   allowed only in measured illustration/photo/logo regions.
+2. Skeleton output includes source-pixel line segments with endpoints,
+   thickness, color, and orientation while retaining legacy center arrays.
+3. Same-background rounded outlines containing OCR text become measured visual
+   control candidates. Raw `sens_element` reports the reconciled reconstruction
+   role and warnings instead of contradicting the scene document.
+4. `sens_review(referencePath, url, exact viewport/DPR)` combines strict visual
+   compare with browser-observed live-text coverage, selectable-text checks,
+   semantic-control coverage, accessibility evidence, raster coverage, and
+   rasterized-reference-text detection. Only its combined pass can set web
+   `canComplete=true`.
+5. Reconstruction instructions require checkpoint/champion promotion: a trial
+   cannot replace the best candidate if visual metrics improve while web gates
+   regress. The host stops after the first combined pass.
+6. Compact MCP content is one canonical structured payload plus a bounded text
+   summary, not two serialized copies of the same document.
+7. Concurrent local VLM requests receive explicit `sight_busy` backpressure;
+   focus regions are executed serially or through a bounded batch path.
+
+## Side effects and risky branches
+
+- Web review launches a local headless browser only for the caller-supplied
+  explicit HTTP(S) URL and writes content-addressed review artifacts unless
+  `noStore=true`.
+- Candidate asset screenshots are derived from visible DOM raster elements;
+  they must not overwrite source files or shared basenames.
+- A visually button-like shape can justify semantic `<button>`/`<a>` structure,
+  but Sens must not invent a destination, external action, purchase flow, or
+  hidden interaction.
+- OCR/VLM disagreement remains explicit. World knowledge never resolves a
+  glyph conflict.
+
+## Recommended edit boundary
+
+Keep this release additive and bounded to Sight/MCP/broker plus tests, release
+metadata, benchmark fixtures, and documentation. Do not refactor model loading,
+Hearing, Media/Voice, or desktop UI while closing this failure class.

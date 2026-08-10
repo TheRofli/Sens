@@ -68,6 +68,9 @@ def test_see_forwards_reconstruction_profile_and_response_mode(monkeypatch) -> N
                 "imagePath": "reference.png",
                 "profile": "reconstruct",
                 "response": "full",
+                "targetKind": "web",
+                "resolveFocus": True,
+                "assetOutputDir": "D:/project/assets",
             },
         }
     )
@@ -76,6 +79,9 @@ def test_see_forwards_reconstruction_profile_and_response_mode(monkeypatch) -> N
     assert captured["kwargs"] == {
         "profile": "reconstruct",
         "response": "full",
+        "target_kind": "web",
+        "resolve_focus": True,
+        "asset_output_dir": "D:/project/assets",
     }
 
 
@@ -97,6 +103,7 @@ def test_zoom_keeps_reconstruction_profile_compact(monkeypatch) -> None:
                 "region": {"x": 1, "y": 2, "width": 3, "height": 4},
                 "profile": "reconstruct",
                 "response": "compact",
+                "targetKind": "web",
             },
         }
     )
@@ -105,4 +112,48 @@ def test_zoom_keeps_reconstruction_profile_compact(monkeypatch) -> None:
     assert captured["kwargs"] == {
         "profile": "reconstruct",
         "response": "compact",
+        "target_kind": "web",
+    }
+
+
+def test_review_forwards_reference_url_and_browser_settings(monkeypatch) -> None:
+    captured = {}
+
+    def fake_review(reference_path, url, options, no_store=False):
+        captured.update(
+            reference_path=reference_path,
+            url=url,
+            options=options,
+            no_store=no_store,
+        )
+        return {"visualPass": True, "webPass": False, "canComplete": False}
+
+    monkeypatch.setattr(server, "review_op", fake_review)
+
+    result = server.handle(
+        {
+            "operation": "review",
+            "noStore": True,
+            "input": {
+                "referencePath": "reference.png",
+                "url": "http://localhost:8123/index.html",
+                "viewport": {"width": 1000, "height": 500},
+                "dpr": 1,
+                "theme": "dark",
+            },
+        }
+    )
+
+    assert result == {"visualPass": True, "webPass": False, "canComplete": False}
+    assert captured == {
+        "reference_path": "reference.png",
+        "url": "http://localhost:8123/index.html",
+        "options": {
+            "referencePath": "reference.png",
+            "url": "http://localhost:8123/index.html",
+            "viewport": {"width": 1000, "height": 500},
+            "dpr": 1,
+            "theme": "dark",
+        },
+        "no_store": True,
     }

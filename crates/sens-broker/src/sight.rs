@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
     time::Duration,
@@ -11,7 +12,7 @@ use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines},
     process::{Child, ChildStdin, ChildStdout, Command},
-    sync::Mutex,
+    sync::{Mutex, MutexGuard},
     time::timeout,
 };
 use tracing::info;
@@ -155,6 +156,15 @@ pub struct SightExecutor {
     config: SightRuntimeConfig,
     local: Mutex<Option<WorkerProcess>>,
     cloud: Mutex<Option<WorkerProcess>>,
+    review_history: Mutex<HashMap<String, ReviewHistory>>,
+}
+
+#[derive(Debug, Clone)]
+struct ReviewHistory {
+    review_count: u32,
+    champion_score: f64,
+    champion_screenshot: Option<String>,
+    non_improving_reviews: u32,
 }
 
 impl SightExecutor {
@@ -163,6 +173,7 @@ impl SightExecutor {
             config,
             local: Mutex::new(None),
             cloud: Mutex::new(None),
+            review_history: Mutex::new(HashMap::new()),
         }
     }
 
@@ -321,11 +332,7 @@ impl SightExecutor {
             timeout_ms = ?request.timeout_ms,
             "{runtime} request received"
         );
-        let mut guard = if cloud {
-            self.cloud.lock().await
-        } else {
-            self.local.lock().await
-        };
+        let mut guard = self.acquire_worker(cloud).await?;
         if guard.is_none() {
             info!(request_id = %request.request_id, "starting {runtime} worker");
             *guard = Some(if cloud {
@@ -425,13 +432,34 @@ impl SightExecutor {
         }
         Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
+
+    async fn acquire_worker(
+        &self,
+        cloud: bool,
+    ) -> Result<MutexGuard<'_, Option<WorkerProcess>>, SensError> {
+        if cloud {
+            Ok(self.cloud.lock().await)
+        } else {
+            self.local.try_lock().map_err(|_| {
+                runtime_error(
+                    "sight_busy",
+                    "The local CPU Sight worker is already processing another request",
+                    "Run local CPU vision and focus calls serially, then retry after the current request completes.",
+                )
+            })
+        }
+    }
 }
 
 #[async_trait]
 impl CapabilityExecutor for SightExecutor {
     async fn invoke(&self, request: &InvokeRequest) -> Result<CapabilityOutput, SensError> {
         let cloud = is_cloud_operation(&request.operation);
-        let result = self.invoke_worker(request, cloud).await?;
+        let mut result = self.invoke_worker(request, cloud).await?;
+        if request.operation == "review" {
+            let mut history = self.review_history.lock().await;
+            apply_review_champion_policy(&mut history, request, &mut result);
+        }
         let (artifacts, provenance, warnings) = worker_metadata(&result, &request.operation);
         Ok(CapabilityOutput {
             data: result
@@ -443,6 +471,131 @@ impl CapabilityExecutor for SightExecutor {
             usage: result.get("usage").cloned().unwrap_or(Value::Null),
             warnings,
         })
+    }
+}
+
+fn apply_review_champion_policy(
+    histories: &mut HashMap<String, ReviewHistory>,
+    request: &InvokeRequest,
+    result: &mut Value,
+) {
+    let Some(score) = result
+        .pointer("/visual/similarityScore")
+        .and_then(Value::as_f64)
+    else {
+        return;
+    };
+    let reference = request
+        .input
+        .get("referencePath")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let url = request
+        .input
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if reference.is_empty() || url.is_empty() {
+        return;
+    }
+    let key = format!("{reference}\0{url}");
+    let screenshot = result
+        .pointer("/capture/screenshot")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let passed = result
+        .get("canComplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let history = histories.entry(key).or_insert_with(|| ReviewHistory {
+        review_count: 0,
+        champion_score: score,
+        champion_screenshot: screenshot.clone(),
+        non_improving_reviews: 0,
+    });
+    history.review_count += 1;
+
+    let delta = score - history.champion_score;
+    let decision;
+    if delta > 0.000_1 {
+        history.champion_score = score;
+        history.champion_screenshot = screenshot;
+        history.non_improving_reviews = 0;
+        decision = "new-champion";
+    } else if delta < -0.000_1 {
+        history.non_improving_reviews += 1;
+        decision = "regressed-rollback-required";
+    } else {
+        if history.review_count > 1 && !passed {
+            history.non_improving_reviews += 1;
+        }
+        decision = if history.review_count == 1 {
+            "initial-champion"
+        } else {
+            "unchanged"
+        };
+    }
+
+    let exhausted = history.non_improving_reviews >= 3 && !passed;
+    let regression = score + 0.000_1 < history.champion_score;
+    let may_continue = !regression && !exhausted;
+    let required_action = if passed {
+        "complete"
+    } else if regression {
+        "rollback-to-champion"
+    } else if exhausted {
+        "stop-and-return-champion"
+    } else {
+        "repair-only-returned-hints"
+    };
+
+    result["iterationPolicy"] = json!({
+        "source": "broker-owned-runtime-state",
+        "reviewCount": history.review_count,
+        "decision": decision,
+        "currentScore": score,
+        "championScore": history.champion_score,
+        "scoreDeltaFromChampion": (score - history.champion_score),
+        "championScreenshot": history.champion_screenshot,
+        "nonImprovingReviews": history.non_improving_reviews,
+        "maxNonImprovingReviews": 3,
+        "mayContinue": may_continue,
+        "requiredAction": required_action,
+        "instruction": "Keep a source-code snapshot for every champion. Apply only measured repairHints, never manual pixel scans. If score regresses, restore the champion code before any further repair; the champion screenshot is evidence and must never become a web asset."
+    });
+
+    if regression || exhausted {
+        result["canComplete"] = Value::Bool(false);
+        result["verdict"] = Value::String("fail".to_owned());
+        result["requiredAction"] = Value::String(required_action.to_owned());
+        let reason = if regression {
+            json!({
+                "code": "regression-from-champion",
+                "detail": "The current candidate scores below the broker-owned champion. Restore the champion source before any new repair.",
+                "epistemic": "measured",
+                "evidence": {
+                    "currentScore": score,
+                    "championScore": history.champion_score,
+                    "scoreDelta": score - history.champion_score
+                }
+            })
+        } else {
+            json!({
+                "code": "repair-budget-exhausted",
+                "detail": "Three consecutive reviews failed to improve the champion. Stop the unbounded edit loop and return the champion for a new bounded run.",
+                "epistemic": "measured",
+                "evidence": {
+                    "championScore": history.champion_score,
+                    "nonImprovingReviews": history.non_improving_reviews
+                }
+            })
+        };
+        if let Some(reasons) = result
+            .get_mut("blockingReasons")
+            .and_then(Value::as_array_mut)
+        {
+            reasons.insert(0, reason);
+        }
     }
 }
 
@@ -587,6 +740,7 @@ fn default_operation_provenance(operation: &str) -> (&'static str, &'static str)
         "read" | "locate" => ("inferred", "rapidocr"),
         "ask" => ("inferred", "local-vlm"),
         "compare" => ("measured", "opencv-hsv-pixel-diff"),
+        "review" => ("measured", "playwright-dom-plus-opencv-web-review"),
         "capture" => ("observed", "playwright-dom-capture"),
         "motion" => ("measured", "playwright-css-frame-diff"),
         "see" | "zoom" | "inspect" | "element" => ("measured", "sight-deterministic-pipeline"),
@@ -612,6 +766,13 @@ fn validate_sight_input(request: &InvokeRequest, cloud: bool) -> Result<(), Sens
         "compare" => {
             require_existing_file(input, "referencePath")?;
             require_existing_file(input, "candidatePath")
+        }
+        "review" => {
+            require_existing_file(input, "referencePath")?;
+            if input.get("contractPath").is_some() {
+                require_existing_file(input, "contractPath")?;
+            }
+            require_string(input, "url")
         }
         "locate" => {
             require_source(input)?;
@@ -840,6 +1001,158 @@ mod tests {
         let request = InvokeRequest::new("sight", "motion", json!({}));
         let error = validate_sight_input(&request, false).expect_err("missing url");
         assert_eq!(error.code, "invalid_input");
+    }
+
+    #[test]
+    fn review_requires_reference_and_url() {
+        let path = existing_image();
+        let valid = InvokeRequest::new(
+            "sight",
+            "review",
+            json!({
+                "referencePath": path.to_string_lossy(),
+                "url": "http://localhost:8123/index.html"
+            }),
+        );
+        assert!(validate_sight_input(&valid, false).is_ok());
+
+        let missing_url = InvokeRequest::new(
+            "sight",
+            "review",
+            json!({ "referencePath": path.to_string_lossy() }),
+        );
+        assert_eq!(
+            validate_sight_input(&missing_url, false)
+                .expect_err("missing review url")
+                .code,
+            "invalid_input"
+        );
+    }
+
+    fn review_result(score: f64) -> Value {
+        json!({
+            "visual": {"similarityScore": score},
+            "capture": {"screenshot": format!("C:/cache/{score}.png")},
+            "canComplete": false,
+            "verdict": "fail",
+            "requiredAction": "repair-visual",
+            "blockingReasons": []
+        })
+    }
+
+    #[test]
+    fn review_policy_preserves_champion_and_blocks_regressions() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "review",
+            json!({
+                "referencePath": path.to_string_lossy(),
+                "url": "http://localhost:8123/index.html"
+            }),
+        );
+        let mut histories = HashMap::new();
+        let mut initial = review_result(0.70);
+        apply_review_champion_policy(&mut histories, &request, &mut initial);
+        assert_eq!(
+            initial
+                .pointer("/iterationPolicy/decision")
+                .and_then(Value::as_str),
+            Some("initial-champion")
+        );
+
+        let mut improved = review_result(0.78);
+        apply_review_champion_policy(&mut histories, &request, &mut improved);
+        assert_eq!(
+            improved
+                .pointer("/iterationPolicy/decision")
+                .and_then(Value::as_str),
+            Some("new-champion")
+        );
+
+        let mut regressed = review_result(0.74);
+        apply_review_champion_policy(&mut histories, &request, &mut regressed);
+        assert_eq!(
+            regressed
+                .pointer("/iterationPolicy/championScore")
+                .and_then(Value::as_f64),
+            Some(0.78)
+        );
+        assert_eq!(
+            regressed.get("requiredAction").and_then(Value::as_str),
+            Some("rollback-to-champion")
+        );
+        assert_eq!(
+            regressed
+                .pointer("/blockingReasons/0/code")
+                .and_then(Value::as_str),
+            Some("regression-from-champion")
+        );
+    }
+
+    #[test]
+    fn review_policy_stops_three_non_improving_reviews() {
+        let path = existing_image();
+        let request = InvokeRequest::new(
+            "sight",
+            "review",
+            json!({
+                "referencePath": path.to_string_lossy(),
+                "url": "http://localhost:8124/index.html"
+            }),
+        );
+        let mut histories = HashMap::new();
+        for _ in 0..3 {
+            let mut result = review_result(0.75);
+            apply_review_champion_policy(&mut histories, &request, &mut result);
+        }
+        let mut exhausted = review_result(0.75);
+        apply_review_champion_policy(&mut histories, &request, &mut exhausted);
+
+        assert_eq!(
+            exhausted.get("requiredAction").and_then(Value::as_str),
+            Some("stop-and-return-champion")
+        );
+        assert_eq!(
+            exhausted
+                .pointer("/blockingReasons/0/code")
+                .and_then(Value::as_str),
+            Some("repair-budget-exhausted")
+        );
+        assert_eq!(
+            exhausted
+                .pointer("/iterationPolicy/mayContinue")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_local_request_receives_recoverable_busy_error() {
+        let executor = SightExecutor::new(SightRuntimeConfig {
+            python_executable: PathBuf::new(),
+            local_worker: PathBuf::new(),
+            models_root: PathBuf::new(),
+            node_executable: PathBuf::new(),
+            eye_root: PathBuf::new(),
+            cloud_worker: PathBuf::new(),
+            vision_pack: None,
+        });
+        let _held = executor.local.lock().await;
+
+        match executor.acquire_worker(false).await {
+            Err(error) => {
+                assert_eq!(error.code, "sight_busy");
+                assert!(error.recoverable);
+                assert!(
+                    error
+                        .action
+                        .as_deref()
+                        .is_some_and(|action| action.contains("serial"))
+                );
+            }
+            Ok(_) => panic!("a concurrent local request must not enter a hidden queue"),
+        }
     }
 
     #[test]

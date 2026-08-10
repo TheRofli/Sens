@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "caldera",
+  "requestedUrl": "https://caldera.xyz/",
+  "observedAt": "2026-08-09T06:08:12.027760Z",
+  "reference": "qa/fixtures/reconstruction-matrix/references/caldera-3b581b8f2b4632fd.png",
+  "sha256": "3b581b8f2b4632fdf3c5518235e5f7a0754f1c9919fd30bad27edeb48a13eab4",
+  "settings": {
+    "viewport": {
+      "width": 1440,
+      "height": 900
+    },
+    "dpr": 1.0,
+    "theme": "light",
+    "locale": "en-US",
+    "waitUntil": "load",
+    "fullPage": false,
+    "timeoutMs": 60000,
+    "settleMs": 2500,
+    "scrollSteps": 0
+  },
+  "captureId": "82d09513d7bd497dca80",
+  "observed": {
+    "domElementCount": 271,
+    "textNodeCount": 250,
+    "semanticControlCount": 69,
+    "rasterElementCount": 100,
+    "motionEventCount": 0
+  }
+}

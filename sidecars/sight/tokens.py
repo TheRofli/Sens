@@ -24,7 +24,24 @@ def _contrast(hex_color: str, background: str) -> float:
 
 def build_design_tokens(dump: dict[str, Any]) -> dict[str, Any]:
     colors = dump.get("colors", [])
-    background = colors[0]["hex"] if colors else "#FFFFFF"
+    canvas_entry = next(
+        (entry for entry in colors if entry.get("role") == "canvas-background"),
+        colors[0] if colors else None,
+    )
+    canvas = canvas_entry["hex"] if canvas_entry else "#FFFFFF"
+    background_entry = canvas_entry
+    if canvas_entry and float(canvas_entry.get("ratio") or 0.0) < 0.35:
+        alternatives = [entry for entry in colors if entry is not canvas_entry]
+        candidate = max(
+            alternatives,
+            key=lambda entry: float(entry.get("ratio") or 0.0),
+            default=None,
+        )
+        if candidate and float(candidate.get("ratio") or 0.0) > max(
+            0.20, float(canvas_entry.get("ratio") or 0.0) * 1.5
+        ):
+            background_entry = candidate
+    background = background_entry["hex"] if background_entry else canvas
     rest = [c for c in colors[1:] if c["hex"] != background]
     ink = max(rest, key=lambda c: _contrast(c["hex"], background))["hex"] if rest else "#000000"
     saturated = [c for c in rest if _saturation(c["hex"]) > 0.35]
@@ -49,6 +66,7 @@ def build_design_tokens(dump: dict[str, Any]) -> dict[str, Any]:
     tokens: dict[str, Any] = {
         "$schema": "https://tr.designtokens.org/format/",
         "color": {
+            "canvas": {"$type": "color", "$value": canvas},
             "background": {"$type": "color", "$value": background},
             "ink": {"$type": "color", "$value": ink},
             "accent": {"$type": "color", "$value": accent},
