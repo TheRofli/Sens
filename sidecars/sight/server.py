@@ -57,6 +57,10 @@ def handle(message: dict[str, object]) -> dict[str, object]:
             target_kind=payload.get("targetKind"),
             resolve_focus=resolve_focus,
             asset_output_dir=payload.get("assetOutputDir"),
+            source_raster_assets=payload.get("sourceRasterAssets"),
+            source_vector_assets=payload.get("sourceVectorAssets"),
+            source_text_nodes=payload.get("sourceTextNodes"),
+            source_font_assets=payload.get("sourceFontAssets"),
         )
     if operation == "read":
         dump = analyze(str(payload["imagePath"]), payload.get("region"), no_store)

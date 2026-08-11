@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import cv2
@@ -12,6 +13,7 @@ from sight.ops import (
     _infer_contextual_ui_structure,
     _plausible_controls,
     _refine_overlapping_raster_candidates,
+    _refine_large_text_box,
     _sanitize_web_structure,
 )
 from sight.perception import _controls_around_text, outlined_controls_around_text
@@ -20,6 +22,94 @@ from sight.qa import control_style
 
 CREAM_BGR = np.array((239, 247, 252), dtype=np.uint8)
 BLUE_BGR = (255, 120, 0)
+
+
+def test_background_artwork_prefers_verified_browser_source_behind_live_text(
+    tmp_path,
+) -> None:
+    screenshot = np.full((400, 700, 3), (255, 210, 150), np.uint8)
+    screenshot_path = tmp_path / "reference.png"
+    cv2.imwrite(str(screenshot_path), screenshot)
+    hero_bytes = b"browser-loaded-avif"
+    hero_path = tmp_path / "hero.avif"
+    hero_path.write_bytes(hero_bytes)
+    document = {
+        "header": {"size": [700, 400], "background": "#96D2FF"},
+        "tokens": {"color": {"canvas": {"$value": "#96D2FF"}}},
+        "reconstruction": {
+            "targetKind": "web",
+            "text": [{"boxSource": [140, 90, 560, 220]}],
+            "symbolArt": [],
+            "allowedRasterRegions": [],
+            "surfaces": [],
+            "visualControlCandidates": [],
+            "vectorPaths": [],
+        },
+    }
+    source_assets = [
+        {
+            "rasterIndex": 7,
+            "domIndex": 158,
+            "kind": "img",
+            "path": str(hero_path),
+            "sha256": hashlib.sha256(hero_bytes).hexdigest(),
+            "sizeBytes": len(hero_bytes),
+            "mediaType": "image/avif",
+            "box": [-95, -274, 1542, 1464],
+            "visible": True,
+            "objectFit": "fill",
+            "backdropColor": "rgb(220, 238, 255)",
+            "overlappingLiveTextCount": 1,
+            "source": "observed",
+            "method": "playwright-response-body",
+        }
+    ]
+
+    _hydrate_background_artwork_layer(
+        document,
+        str(screenshot_path),
+        source_assets,
+    )
+
+    layer, overlay = document["reconstruction"]["allowedRasterRegions"]
+    assert layer["kind"] == "browser-source-background-artwork"
+    assert layer["boxSource"] == [-95, -274, 1542, 1464]
+    assert layer["sourceAssetPath"] == str(hero_path)
+    assert layer["contentSha256"] == hashlib.sha256(hero_bytes).hexdigest()
+    assert layer["semanticContentRemoved"] is True
+    assert layer["protectionPolicy"]["liveText"] == "separate-observed-live-dom"
+    assert layer["backgroundColor"] == "#DCEEFF"
+    assert document["tokens"]["color"]["canvas"]["$value"] == "#DCEEFF"
+    assert document["header"]["background"] == "#DCEEFF"
+    assert overlay["kind"] == "alpha-masked-background-artwork"
+    assert overlay["boxSource"] == [0, 0, 700, 400]
+    assert overlay["compositeUnderlay"] == "browser-source-background"
+    assert overlay["protectionPolicy"]["liveText"] == (
+        "transparent-holes-reveal-verified-browser-source-under-live-dom"
+    )
+
+
+def test_downscaled_display_box_excludes_artwork_attached_to_first_glyph() -> None:
+    image = np.full((300, 800, 3), 240, np.uint8)
+    # Five display glyph silhouettes. The first is joined to a decorative
+    # shape on its left, matching the Slush rocket-over-wordmark failure.
+    for left in (200, 310, 420, 530, 640):
+        cv2.rectangle(image, (left, 70), (left + 80, 250), (0, 0, 0), -1)
+    cv2.rectangle(image, (80, 120), (205, 190), (0, 0, 0), -1)
+    entry = {
+        "boxSource": [70, 0, 735, 300],
+        "value": "SLUSH",
+        "preferredValue": "SLUSH",
+        "color": "#000000",
+        "method": "rapidocr-downscaled-display-latin-preferred",
+        "fontFeatures": {"fontSize": 230},
+    }
+
+    refined = _refine_large_text_box(image, entry)
+
+    assert refined is not None
+    assert refined[0] >= 185
+    assert refined[2] >= 720
 
 
 def test_navigation_rail_recovers_isolated_icons_and_selected_surface(
@@ -1017,10 +1107,13 @@ def test_textured_canvas_gets_an_alpha_masked_background_artwork_layer(
     assert layer["kind"] == "alpha-masked-background-artwork"
     assert layer["boxSource"] == [0, 0, 700, 400]
     assert layer["method"] == "protected-pixel-alpha-mask"
+    assert layer["semanticContentRemoved"] is True
+    assert layer["protectionVersion"] == 2
     assert (
         layer["protectionPolicy"]["liveText"]
-        == "source-glyphs-inpainted-under-live-dom"
+        == "full-box-inpainted-under-live-dom"
     )
+    assert layer["protectionPolicy"]["backgroundOnly"] is True
 
 
 def test_soft_photographic_canvas_gets_a_protected_background_layer(
@@ -1063,9 +1156,10 @@ def test_soft_photographic_canvas_gets_a_protected_background_layer(
     [layer] = document["reconstruction"]["allowedRasterRegions"]
     assert layer["kind"] == "alpha-masked-background-artwork"
     assert layer["evidence"]["softPhotographicArtwork"] is True
+    assert layer["semanticContentRemoved"] is True
     assert (
         layer["protectionPolicy"]["liveText"]
-        == "source-glyphs-inpainted-under-live-dom"
+        == "full-box-inpainted-under-live-dom"
     )
 
 
@@ -1097,7 +1191,7 @@ def test_flat_canvas_does_not_get_a_background_raster_layer(tmp_path) -> None:
     assert document["reconstruction"]["allowedRasterRegions"] == []
 
 
-def test_dense_interface_gets_protected_non_text_chrome_layer(tmp_path) -> None:
+def test_dense_interface_does_not_flatten_ui_chrome_into_a_raster(tmp_path) -> None:
     image = np.full((400, 700, 3), (248, 248, 248), np.uint8)
     for index in range(10):
         x = 20 + (index % 5) * 130
@@ -1137,9 +1231,7 @@ def test_dense_interface_gets_protected_non_text_chrome_layer(tmp_path) -> None:
 
     _hydrate_background_artwork_layer(document, str(image_path))
 
-    [layer] = document["reconstruction"]["allowedRasterRegions"]
-    assert layer["kind"] == "alpha-masked-background-artwork"
-    assert layer["evidence"]["complexInterface"] is True
+    assert document["reconstruction"]["allowedRasterRegions"] == []
 
 
 def test_short_label_inside_tall_filled_button_stays_a_semantic_control(

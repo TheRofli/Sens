@@ -234,7 +234,7 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
     vec![
         CapabilityManifest {
             id: "sight".into(),
-            version: "1.3.0".into(),
+            version: "1.4.0".into(),
             title: "Sight".into(),
             description:
                 "Local CPU vision: OCR, geometry, design tokens, Visual Scene v2, URL capture, and deterministic comparison. Optional Eye is used only for legacy artifacts and video.".into(),
@@ -245,6 +245,8 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
                 "inspect",
                 "compare",
                 "review",
+                "web_start",
+                "web_review",
                 "artifact_get",
                 "zoom",
                 "ask",
@@ -348,6 +350,18 @@ mod tests {
                 .operations
                 .iter()
                 .any(|operation| operation == "review")
+        );
+        assert!(
+            sight
+                .operations
+                .iter()
+                .any(|operation| operation == "web_start")
+        );
+        assert!(
+            sight
+                .operations
+                .iter()
+                .any(|operation| operation == "web_review")
         );
     }
 }

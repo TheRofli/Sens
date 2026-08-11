@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -5,6 +6,425 @@ import cv2
 import numpy as np
 
 from sight import ops
+
+
+def test_source_dom_typography_overrides_inferred_font_with_loaded_observation(
+    tmp_path,
+) -> None:
+    content = b"whyte-medium-woff2"
+    font_path = tmp_path / "whyte-medium.woff2"
+    font_path.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    document = {
+        "profile": "reconstruct",
+        "reconstruction": {
+            "text": [
+                {
+                    "elementId": 16,
+                    "value": "Gateway",
+                    "preferredValue": "Gateway",
+                    "boxSource": [62, 327, 448, 426],
+                    "fontFeatures": {"fontSize": 136, "renderFamily": "inter-tight"},
+                }
+            ]
+        }
+    }
+    source_nodes = [
+        {
+            "text": "Gateway",
+            "box": [62, 327, 448, 426],
+            "visible": True,
+            "style": {
+                "fontFamily": '"Whyte Inktrap", sans-serif',
+                "fontWeight": "500",
+                "fontStyle": "normal",
+                "fontSize": "136px",
+                "letterSpacing": "0px",
+            },
+        }
+    ]
+    source_fonts = [
+        {
+            "family": "Whyte Inktrap",
+            "weight": "500",
+            "style": "normal",
+            "stretch": "normal",
+            "path": str(font_path),
+            "sha256": digest,
+            "sizeBytes": len(content),
+            "mediaType": "font/woff2",
+            "format": "woff2",
+            "source": "observed",
+            "method": "playwright-loaded-font-response",
+        }
+    ]
+
+    ops._hydrate_source_dom_typography(document, source_nodes, source_fonts)
+
+    entry = document["reconstruction"]["text"][0]
+    font = entry["fontFeatures"]
+    assert font["sourceDomFamily"] == "Whyte Inktrap"
+    assert font["sourceDomFontWeight"] == 500
+    assert font["sourceDomFontStyle"] == "normal"
+    assert font["sourceFontFamily"].startswith("Sens Source ")
+    assert font["sourceFontAssetSha256"] == digest
+    assert font["sourceDomTypographySource"] == "observed-live-dom-computed-style"
+    [asset] = document["reconstruction"]["sourceFontAssets"]
+    assert asset["sha256"] == digest
+    assert asset["family"] == "Whyte Inktrap"
+    authority = document["reconstruction"]["typographyAuthority"]
+    assert authority["priority"][0] == "observed-live-dom-computed-style"
+    assert "must not override" in authority["rule"]
+
+
+def test_source_dom_typography_preserves_mixed_word_styles_from_live_dom(
+    tmp_path,
+) -> None:
+    normal_content = b"grandslang-normal-woff2"
+    italic_content = b"grandslang-italic-woff2"
+    normal_path = tmp_path / "grandslang-normal.woff2"
+    italic_path = tmp_path / "grandslang-italic.woff2"
+    normal_path.write_bytes(normal_content)
+    italic_path.write_bytes(italic_content)
+    normal_digest = hashlib.sha256(normal_content).hexdigest()
+    italic_digest = hashlib.sha256(italic_content).hexdigest()
+    document = {
+        "profile": "reconstruct",
+        "reconstruction": {
+            "text": [
+                {
+                    "elementId": 10,
+                    "value": "Yournew",
+                    "preferredValue": "Your new",
+                    "boxSource": [60, 185, 463, 274],
+                    "fontFeatures": {
+                        "fontSize": 105,
+                        "wordBoxesSource": [
+                            {"text": "Your", "box": [68, 197, 258, 274]},
+                            {"text": "new", "box": [268, 212, 455, 274]},
+                        ],
+                    },
+                }
+            ]
+        },
+    }
+    source_nodes = [
+        {
+            "text": "Your",
+            "box": [72, 179, 269, 284],
+            "visible": True,
+            "style": {
+                "fontFamily": '"GrandSlang", serif',
+                "fontWeight": "400",
+                "fontStyle": "normal",
+                "fontSize": "88px",
+                "lineHeight": "70.4px",
+                "letterSpacing": "-2.64px",
+            },
+        },
+        {
+            "text": "new",
+            "box": [269, 179, 456, 284],
+            "visible": True,
+            "style": {
+                "fontFamily": '"GrandSlang", serif',
+                "fontWeight": "400",
+                "fontStyle": "italic",
+                "fontSize": "88px",
+                "lineHeight": "70.4px",
+                "letterSpacing": "-2.64px",
+            },
+        },
+    ]
+    source_fonts = [
+        {
+            "family": "GrandSlang",
+            "weight": "400",
+            "style": "normal",
+            "path": str(normal_path),
+            "sha256": normal_digest,
+            "mediaType": "font/woff2",
+        },
+        {
+            "family": "GrandSlang",
+            "weight": "400",
+            "style": "italic",
+            "path": str(italic_path),
+            "sha256": italic_digest,
+            "mediaType": "font/woff2",
+        },
+    ]
+
+    ops._hydrate_source_dom_typography(document, source_nodes, source_fonts)
+
+    font = document["reconstruction"]["text"][0]["fontFeatures"]
+    words = font["sourceDomWordStyles"]
+    assert [word["text"] for word in words] == ["Your", "new"]
+    assert [word["sourceDomFontStyle"] for word in words] == [
+        "normal",
+        "italic",
+    ]
+    assert [word["sourceDomLetterSpacing"] for word in words] == [
+        "-2.64px",
+        "-2.64px",
+    ]
+    assert words[0]["sourceFontAssetSha256"] == normal_digest
+    assert words[1]["sourceFontAssetSha256"] == italic_digest
+    assert words[0]["sourceFontFamily"] != words[1]["sourceFontFamily"]
+    assert font["sourceDomRunAuthority"] == "observed-live-dom-computed-style"
+
+
+def test_web_brief_makes_observed_dom_typography_authoritative_over_inference() -> None:
+    document = {
+        "profile": "reconstruct",
+        "reconstruction": {
+            "targetKind": "web",
+            "canvas": {"width": 1440, "height": 900},
+            "typographyAuthority": {
+                "priority": [
+                    "observed-live-dom-computed-style",
+                    "measured-screenshot-geometry",
+                    "inferred-typography-fallback",
+                ],
+                "rule": "Observed source DOM typography must not be overridden by screenshot inference.",
+            },
+            "sourceFontAssets": [
+                {
+                    "family": "Whyte Inktrap",
+                    "alias": "Sens Source abcdef123456",
+                    "weight": "500",
+                    "style": "normal",
+                    "format": "woff2",
+                }
+            ],
+            "text": [
+                {
+                    "elementId": 17,
+                    "value": "Gateway",
+                    "preferredValue": "Gateway",
+                    "boxSource": [61, 327, 449, 426],
+                    "typographyCandidate": {
+                        "class": "serif",
+                        "weight": "light",
+                        "method": "semantic-inference",
+                    },
+                    "inlineRuns": [
+                        {
+                            "text": "Gateway",
+                            "typographyCandidate": {
+                                "class": "serif",
+                                "slant": "italic",
+                            },
+                        }
+                    ],
+                    "fontFeatures": {
+                        "fontSize": 136,
+                        "family": "newsreader",
+                        "weightCandidate": "light",
+                        "sourceDomFamily": "Whyte Inktrap",
+                        "sourceFontFamily": "Sens Source abcdef123456",
+                        "sourceFontAssetSha256": "a" * 64,
+                        "sourceDomFontWeight": 500,
+                        "sourceDomFontStyle": "normal",
+                        "sourceDomFontSize": "88px",
+                        "sourceDomWordStyles": [
+                            {
+                                "text": "Gateway",
+                                "sourceFontFamily": "Sens Source abcdef123456",
+                                "sourceDomFontWeight": 500,
+                                "sourceDomFontStyle": "normal",
+                                "sourceDomLetterSpacing": "-2.64px",
+                                "sourceDomBox": [72, 327, 449, 426],
+                            }
+                        ],
+                        "sourceDomTypographySource": "observed-live-dom-computed-style",
+                    },
+                }
+            ],
+        }
+    }
+
+    brief = ops._implementation_brief(document, "contract.json")
+
+    table = brief["text"]
+    row = json.loads(table["rows"])
+    values = {**table.get("constants", {}), **table.get("defaults", {})}
+    values.update(
+        {
+            column: value
+            for column, value in zip(table["columns"], row, strict=True)
+            if value is not None
+        }
+    )
+    assert brief["typographyAuthority"]["priority"][0] == (
+        "observed-live-dom-computed-style"
+    )
+    assert values["familyHint"] == "Whyte Inktrap"
+    assert values["fontWeight"] == 500
+    assert values["fontWeightSource"] == "observed-live-dom-computed-style"
+    assert values["sourceFontFamily"] == "Sens Source abcdef123456"
+    assert values["sourceDomFontStyle"] == "normal"
+    assert values["sourceDomFontSize"] == "88px"
+    assert values[
+        "sourceDomWords(text,font,weight,style,letterSpacing,box)"
+    ][0][3] == "normal"
+    assert values.get("inlineRuns(text,class,contrast,width,weight,slant)") is None
+    assert brief["sourceFonts"][0]["alias"] == "Sens Source abcdef123456"
+    assert any(
+        "observed DOM typography" in rule
+        for rule in brief["implementationRules"]
+    )
+
+    compact = ops._compact_document(document)
+    assert compact["reconstruction"]["typographyAuthority"]["priority"][0] == (
+        "observed-live-dom-computed-style"
+    )
+    compact_table = compact["reconstruction"]["text"]
+    compact_row = json.loads(compact_table["rows"])
+    compact_values = {
+        **compact_table.get("constants", {}),
+        **compact_table.get("defaults", {}),
+    }
+    compact_values.update(
+        {
+            column: value
+            for column, value in zip(
+                compact_table["columns"], compact_row, strict=True
+            )
+            if value is not None
+        }
+    )
+    assert compact_values["sourceDomFamily"] == "Whyte Inktrap"
+    assert compact_values["fontFamily"] == "Whyte Inktrap"
+    assert compact_values["fontWeight"] == 500
+    assert compact_values["sourceDomWords"][0][3] == "normal"
+    assert compact_values.get("inlineRuns") is None
+    assert any(
+        "observed DOM typography" in rule
+        for rule in compact["reconstruction"]["implementationRules"]
+    )
+
+
+def test_materializer_copies_browser_source_background_without_clipping_or_inpaint(
+    tmp_path,
+) -> None:
+    reference = np.full((120, 200, 3), (180, 120, 40), np.uint8)
+    reference_path = tmp_path / "reference.png"
+    cv2.imwrite(str(reference_path), reference)
+    source_bytes = b"original-browser-avif"
+    source_path = tmp_path / "hero.avif"
+    source_path.write_bytes(source_bytes)
+    digest = hashlib.sha256(source_bytes).hexdigest()
+    document = {
+        "artifacts": [],
+        "reconstruction": {
+            "allowedRasterRegions": [
+                {
+                    "elementId": "browser-source-background",
+                    "kind": "browser-source-background-artwork",
+                    "boxSource": [-20, -30, 240, 180],
+                    "sourceAssetPath": str(source_path),
+                    "contentSha256": digest,
+                    "mediaType": "image/avif",
+                }
+            ],
+            "rasterAssetRule": {},
+        },
+    }
+
+    ops._materialize_raster_assets(
+        document,
+        str(reference_path),
+        str(tmp_path / "assets"),
+        no_store=False,
+    )
+
+    [layer] = document["reconstruction"]["allowedRasterRegions"]
+    assert layer["boxSource"] == [-20, -30, 240, 180]
+    assert Path(layer["assetPath"]).suffix == ".avif"
+    assert Path(layer["assetPath"]).read_bytes() == source_bytes
+    assert layer["mediaType"] == "image/avif"
+    assert layer["contentSha256"] == digest
+    assert document["artifacts"][0]["kind"] == (
+        "reconstruction-browser-source-background"
+    )
+
+
+def test_materializer_layers_semantic_holes_over_browser_source_background(
+    tmp_path,
+) -> None:
+    reference = np.full((80, 120, 3), (220, 238, 255), np.uint8)
+    reference[25:50, 35:85] = (0, 0, 0)
+    reference_path = tmp_path / "reference.png"
+    assert cv2.imwrite(str(reference_path), reference)
+    source_bytes = b"original-transparent-browser-source"
+    source_path = tmp_path / "hero.avif"
+    source_path.write_bytes(source_bytes)
+    source_digest = hashlib.sha256(source_bytes).hexdigest()
+    document = {
+        "artifacts": [],
+        "reconstruction": {
+            "text": [
+                {
+                    "elementId": 1,
+                    "value": "SLUSH",
+                    "boxSource": [35, 25, 85, 50],
+                    "method": "rapidocr-multiscale-consensus",
+                }
+            ],
+            "visualControlCandidates": [],
+            "surfaces": [],
+            "decorativeShapes": [],
+            "icons": [],
+            "badges": [],
+            "symbolArt": [],
+            "structuralLines": [],
+            "vectorPaths": [],
+            "displayTextDiscovery": {
+                "status": "complete",
+                "candidateCount": 0,
+                "method": "rapidocr-downscaled-display-scan",
+            },
+            "allowedRasterRegions": [
+                {
+                    "elementId": "browser-source-background",
+                    "kind": "browser-source-background-artwork",
+                    "boxSource": [-10, -10, 130, 90],
+                    "sourceAssetPath": str(source_path),
+                    "contentSha256": source_digest,
+                    "mediaType": "image/avif",
+                },
+                {
+                    "elementId": "browser-source-composite-overlay",
+                    "kind": "alpha-masked-background-artwork",
+                    "boxSource": [0, 0, 120, 80],
+                    "compositeUnderlay": "browser-source-background",
+                },
+            ],
+            "rasterAssetRule": {},
+        },
+    }
+
+    ops._materialize_raster_assets(
+        document,
+        str(reference_path),
+        str(tmp_path / "assets"),
+        no_store=False,
+    )
+
+    source_layer, overlay = document["reconstruction"]["allowedRasterRegions"]
+    assert Path(source_layer["assetPath"]).read_bytes() == source_bytes
+    rgba = cv2.imread(overlay["assetPath"], cv2.IMREAD_UNCHANGED)
+    assert rgba.shape == (80, 120, 4)
+    assert rgba[5, 5, 3] == 255
+    assert rgba[35, 60, 3] == 0
+    assert np.array_equal(rgba[5, 5, :3], reference[5, 5])
+    assert overlay["semanticContentRemoved"] is True
+    assert overlay["semanticRemovalMaskCoverage"] > 0
+    assert overlay["semanticResidualProtection"][
+        "displayTextDiscoveryComplete"
+    ] is True
+    assert document["reconstruction"]["rasterAssetRule"]["assetCount"] == 2
 
 
 def _stub_document(profile: str) -> dict:
@@ -89,7 +509,7 @@ def test_materialize_raster_assets_writes_exact_allowed_crop(tmp_path) -> None:
     assert document["artifacts"][0]["kind"] == "reconstruction-raster-asset"
 
 
-def test_materialized_background_artwork_preserves_control_chrome_behind_live_dom(
+def test_materialized_background_artwork_removes_semantic_chrome_and_keeps_live_dom(
     tmp_path,
 ) -> None:
     source = np.full((120, 200, 3), (25, 55, 130), np.uint8)
@@ -115,6 +535,12 @@ def test_materialized_background_artwork_preserves_control_chrome_behind_live_do
         "artifacts": [],
         "reconstruction": {
             "targetKind": "web",
+            "displayTextDiscovery": {
+                "status": "complete",
+                "scale": 0.5,
+                "candidateCount": 0,
+                "method": "rapidocr-downscaled-display-scan",
+            },
             "text": [
                 {
                     "elementId": 1,
@@ -171,22 +597,38 @@ def test_materialized_background_artwork_preserves_control_chrome_behind_live_do
     assert np.count_nonzero(
         np.linalg.norm(text_patch - original_text_bgr, axis=2) < 8
     ) < 20
+    control_patch = rgba[76:115, 16:95, :3].astype(np.int16)
+    icon_patch = rgba[85:106, 95:116, :3].astype(np.int16)
+    assert np.count_nonzero(
+        np.linalg.norm(control_patch - original_text_bgr, axis=2) < 8
+    ) < 20
+    assert np.count_nonzero(
+        np.linalg.norm(icon_patch - original_text_bgr, axis=2) < 8
+    ) < 12
     control = document["reconstruction"]["visualControlCandidates"][0]
-    assert control["decorationPreservedInBackgroundArtwork"] is True
-    assert control["preservedDecoration"]["borderColor"] == "#FAB428"
-    assert control["background"] == "#00000000"
-    assert control["borderColor"] == "#00000000"
-    assert control["borderWidth"] == 0
-    assert document["reconstruction"]["icons"][0][
-        "preservedInBackgroundArtwork"
-    ] is True
+    assert "decorationPreservedInBackgroundArtwork" not in control
+    assert control["background"] == "#823719"
+    assert control["borderColor"] == "#FAB428"
+    assert control["borderWidth"] == 2
+    assert "preservedInBackgroundArtwork" not in document["reconstruction"][
+        "icons"
+    ][0]
     assert layer["protectionPolicy"]["controlDecoration"] == (
-        "preserved-in-background-behind-semantic-dom"
+        "removed-from-raster-recreated-as-semantic-css"
     )
     assert layer["protectionPolicy"]["liveText"] == (
-        "source-glyphs-inpainted-under-live-dom"
+        "full-box-inpainted-under-live-dom"
     )
     assert layer["alphaProtected"] is True
+    assert layer["semanticContentRemoved"] is True
+    assert layer["protectionVersion"] == 3
+    assert layer["semanticRemovalMaskCoverage"] > 0
+    assert layer["semanticResidualProtection"] == {
+        "displayTextDiscoveryComplete": True,
+        "displayTextCandidateCount": 0,
+        "method": "rapidocr-downscaled-display-scan",
+        "displayGlyphMaskElementIds": [],
+    }
     assert document["artifacts"][0]["kind"] == (
         "reconstruction-alpha-masked-background"
     )
@@ -519,8 +961,11 @@ def test_compact_reconstruction_is_bounded_without_losing_agent_contract() -> No
     assert reconstruction["badges"]["count"] == 12
     assert "blockingUncertainties" not in reconstruction
     assert "textVerificationPlan" not in reconstruction
-    assert len(reconstruction["implementationRules"]) == 6
-    assert "selectable DOM text" in reconstruction["implementationRules"][2]
+    assert len(reconstruction["implementationRules"]) == 7
+    assert any(
+        "selectable DOM text" in rule
+        for rule in reconstruction["implementationRules"]
+    )
     assert reconstruction["rasterAssetRule"]["strategy"] == (
         "extract-source-crop-verbatim"
     )
@@ -595,7 +1040,7 @@ def test_brief_exposes_flat_control_style_palette_and_starter() -> None:
 
     brief = ops._implementation_brief(doc, "D:/assets/contract.json")
 
-    assert brief["schemaVersion"] == "sens-web-brief-2"
+    assert brief["schemaVersion"] == "sens-web-brief-3"
     assert brief["palette"]["background"]["$value"] == "#FCF7EF"
     controls = brief["controls"]
     control = dict(zip(controls["columns"], json.loads(controls["rows"])))
@@ -2627,6 +3072,29 @@ def test_large_text_box_refinement_preserves_already_tight_glyph_box() -> None:
     assert ops._refine_large_text_box(image, entry) is None
 
 
+def test_downscaled_display_box_excludes_attached_edge_artwork_when_ocr_is_tight() -> None:
+    image = np.full((300, 800, 3), (235, 235, 235), np.uint8)
+    for left in (160, 260, 360, 460, 560):
+        cv2.rectangle(image, (left, 60), (left + 59, 239), (0, 0, 0), -1)
+    cv2.rectangle(image, (90, 20), (170, 164), (0, 0, 0), -1)
+    cv2.rectangle(image, (610, 135), (690, 280), (0, 0, 0), -1)
+    entry = {
+        "value": "SLUSH",
+        "preferredValue": "SLUSH",
+        "boxSource": [100, 50, 680, 240],
+        "color": "#000000",
+        "method": "rapidocr-downscaled-display-latin-preferred",
+        "fontFeatures": {"fontSize": 240},
+    }
+
+    refined = ops._refine_large_text_box(image, entry)
+
+    assert refined is not None
+    assert 155 <= refined[0] <= 165
+    assert 615 <= refined[2] <= 625
+    assert refined[1:4:2] == [59, 241]
+
+
 def test_small_text_box_separates_unrecognized_leading_brand_mark() -> None:
     image = np.full((44, 190, 3), (226, 226, 223), np.uint8)
     cv2.fillConvexPoly(
@@ -3350,7 +3818,136 @@ def test_full_web_document_cache_skips_rebuilding_the_same_contract(
     assert brief["brief"]["workflow"]["nextAction"] == (
         "copy-or-serve-starter-then-sens-review"
     )
+    geometry_authority = brief["brief"]["geometryAuthority"]
+    assert geometry_authority["textDomBox"] == "reconstruction.text[].boxSource"
+    assert geometry_authority["textInkBox"] == (
+        "reconstruction.text[].fontFeatures.inkBox"
+    )
+    assert geometry_authority["controls"] == (
+        "reconstruction.visualControlCandidates[].boxSource"
+    )
+    assert "elements[].box_norm" in geometry_authority["nonAuthoritative"]
+    assert "claims[].regionNorm" in geometry_authority["nonAuthoritative"]
+    assert "never" in geometry_authority["rule"].lower()
+    contract = json.loads(Path(brief["contractPath"]).read_text(encoding="utf-8"))
+    assert contract["reconstruction"]["geometryAuthority"] == geometry_authority
     assert Path(brief["contractPath"]).is_file()
+
+
+def test_web_brief_exposes_measured_display_glyph_geometry() -> None:
+    document = {
+        "reconstruction": {
+            "targetKind": "web",
+            "canvas": {"width": 1440, "height": 900},
+            "text": [
+                {
+                    "elementId": 32,
+                    "value": "SLUSH",
+                    "preferredValue": "SLUSH",
+                    "boxSource": [345, 184, 1094, 593],
+                    "fontFeatures": {
+                        "fontSize": 549,
+                        "inkBox": [345, 185, 1094, 592],
+                        "glyphBoxes": [
+                            {"text": "S", "box": [345, 185, 497, 592]},
+                            {"text": "L", "box": [506, 189, 619, 588]},
+                        ],
+                        "measuredCharacterCount": 5,
+                        "inkCoverage": 0.6995,
+                        "strokeWidthPx": 30.0,
+                    },
+                }
+            ],
+        }
+    }
+
+    brief = ops._implementation_brief(document, "contract.json")
+
+    assert brief["geometryAuthority"]["textGlyphBoxes"] == (
+        "reconstruction.text[].fontFeatures.glyphBoxes"
+    )
+    table = brief["text"]
+    row = json.loads(table["rows"])
+    values = dict(zip(table["columns"], row, strict=True))
+    assert values["inkBox"] == [345, 185, 1094, 592]
+    assert values["glyphBoxes(text,box)"][0] == [
+        "S",
+        [345, 185, 497, 592],
+    ]
+    assert values["measuredCharacterCount"] == 5
+    assert values["inkCoverage"] == 0.6995
+    assert values["strokeWidthPx"] == 30.0
+    assert any(
+        "glyphBoxes" in rule and "connected slab" in rule
+        for rule in brief["implementationRules"]
+    )
+
+
+def test_verified_source_vectors_replace_custom_display_font_with_live_wordmark(
+    monkeypatch, tmp_path,
+) -> None:
+    monkeypatch.setenv("SENS_CACHE_DIR", str(tmp_path / "cache"))
+    text = {
+        "elementId": 32,
+        "value": "SLUSH",
+        "preferredValue": None,
+        "method": "rapidocr-downscaled-display-latin-preferred",
+        "confidence": 0.935,
+        "boxSource": [345, 184, 1116, 593],
+        "fontFeatures": {"fontSize": 549, "capHeight": 401},
+    }
+    document = {
+        "artifacts": [],
+        "reconstruction": {
+            "targetKind": "web",
+            "canvas": {"width": 1440, "height": 900},
+            "text": [text],
+        },
+    }
+    boxes = [
+        [349.125, 141.25, 498.875, 636.5],
+        [506, 141, 620, 636],
+        [629, 141, 776, 637],
+        [785, 141, 933, 636],
+        [942, 141, 1091, 636],
+    ]
+    assets = []
+    for index, box in enumerate(boxes):
+        source = tmp_path / f"letter-{index}.svg"
+        source.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            f'<path d="M{index} 0H10V10Z"/></svg>',
+            encoding="utf-8",
+        )
+        content = source.read_bytes()
+        assets.append(
+            {
+                "vectorIndex": index,
+                "domIndex": 100 + index,
+                "path": str(source),
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "sizeBytes": len(content),
+                "mediaType": "image/svg+xml",
+                "box": box,
+                "visible": True,
+                "source": "observed",
+                "method": "sanitized-live-dom-svg",
+            }
+        )
+
+    ops._hydrate_source_vector_regions(document, assets)
+
+    regions = document["reconstruction"]["sourceVectorRegions"]
+    assert len(regions) == 5
+    assert regions[0]["boxSource"] == [349.125, 141.25, 498.875, 636.5]
+    assert text["visualRepresentation"] == (
+        "source-vector-wordmark-with-selectable-live-label"
+    )
+    assert text["sourceVectorAssetIds"] == [
+        region["elementId"] for region in regions
+    ]
+    assert all(region["wordmarkText"] == "SLUSH" for region in regions)
+    assert all(region["ariaHidden"] is True for region in regions)
 
 
 def test_dense_screenshot_auto_selects_reconstruction_when_client_omits_prompt(
@@ -3461,3 +4058,97 @@ def test_element_exposes_reconstruction_role_instead_of_raw_kind_alone(
     )
     assert raster["rawKind"] == "image"
     assert raster["reconstructionRole"] == "raster-forbidden-overlaps-text"
+
+
+def test_display_text_background_removal_preserves_artwork_between_glyphs(
+    tmp_path,
+) -> None:
+    source = np.zeros((200, 420, 3), np.uint8)
+    for column in range(source.shape[1]):
+        source[:, column] = (180 + column % 40, 120, 35)
+    cv2.putText(
+        source,
+        "SLUSH",
+        (18, 148),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        2.6,
+        (0, 0, 0),
+        12,
+        cv2.LINE_AA,
+    )
+    edge_artwork = np.zeros(source.shape[:2], np.uint8)
+    cv2.rectangle(edge_artwork, (351, 80), (354, 150), 255, -1)
+    source[edge_artwork > 0] = (0, 0, 0)
+    internal_artwork = np.zeros(source.shape[:2], np.uint8)
+    cv2.rectangle(internal_artwork, (12, 65), (15, 145), 255, -1)
+    source[internal_artwork > 0] = (0, 0, 0)
+    reference = tmp_path / "display-reference.png"
+    assert cv2.imwrite(str(reference), source)
+    document = {
+        "source": {"id": "sha256:display"},
+        "artifacts": [],
+        "reconstruction": {
+            "targetKind": "web",
+            "displayTextDiscovery": {
+                "status": "complete",
+                "scale": 0.5,
+                "candidateCount": 1,
+                "method": "rapidocr-downscaled-display-scan",
+            },
+            "text": [
+                {
+                    "elementId": 9,
+                    "value": "SLUSH",
+                    "boxSource": [12, 62, 350, 160],
+                    "color": "#000000",
+                    "method": "rapidocr-downscaled-display-latin-preferred",
+                    "fontFeatures": {"fontSize": 132, "capHeight": 98},
+                }
+            ],
+            "visualControlCandidates": [],
+            "surfaces": [],
+            "decorativeShapes": [],
+            "icons": [],
+            "badges": [],
+            "symbolArt": [],
+            "structuralLines": [],
+            "vectorPaths": [],
+            "allowedRasterRegions": [
+                {
+                    "elementId": "background-artwork",
+                    "kind": "alpha-masked-background-artwork",
+                    "boxSource": [0, 0, 420, 200],
+                }
+            ],
+            "rasterAssetRule": {},
+        },
+    }
+
+    ops._materialize_raster_assets(
+        document,
+        str(reference),
+        str(tmp_path / "display-assets"),
+        no_store=False,
+    )
+
+    layer = document["reconstruction"]["allowedRasterRegions"][0]
+    output = cv2.imread(layer["assetPath"], cv2.IMREAD_COLOR)
+    original_glyphs = cv2.inRange(source, (0, 0, 0), (20, 20, 20)) > 0
+    protected = cv2.dilate(
+        original_glyphs.astype(np.uint8), np.ones((7, 7), np.uint8)
+    ).astype(bool)
+    artwork = ~protected
+    unchanged = np.linalg.norm(
+        output.astype(np.int16) - source.astype(np.int16), axis=2
+    ) <= 3
+
+    assert unchanged[artwork].mean() > 0.98
+    assert unchanged[edge_artwork > 0].mean() > 0.95
+    assert unchanged[internal_artwork > 0].mean() > 0.95
+    assert np.count_nonzero(
+        np.linalg.norm(output.astype(np.int16), axis=2)[original_glyphs] < 20
+    ) < np.count_nonzero(original_glyphs) * 0.15
+    assert document["reconstruction"]["text"][0]["backgroundRemovalMode"] == (
+        "measured-display-glyph-mask-inpaint"
+    )
+    assert layer["semanticResidualProtection"]["displayGlyphMaskElementIds"] == [9]

@@ -1329,9 +1329,9 @@ def _glyph_metrics(
     # the local VLM remains useful in the ambiguous middle band and on tiny type.
     weight_candidate = None
     if cap >= 40:
-        if stroke_ratio <= 0.03 and ink_coverage <= 0.06:
+        if stroke_ratio <= 0.09 and ink_coverage <= 0.22:
             weight_candidate = "light"
-        elif stroke_ratio >= 0.045 or ink_coverage >= 0.085:
+        elif stroke_ratio >= 0.12 or ink_coverage >= 0.28:
             weight_candidate = "bold"
     glyph_patch = image[y0:y1, x0:x1]
     glyph_distances = np.abs(patch - measured_background)
@@ -1354,6 +1354,179 @@ def _glyph_metrics(
         glyph_color = "#{:02X}{:02X}{:02X}".format(
             int(bgr[2]), int(bgr[1]), int(bgr[0])
         )
+    glyph_boxes: list[dict[str, Any]] = []
+    measured_character_count_method = "foreground-column-run-splitting"
+    compact_text = str(text or "").strip()
+    expected_characters = len(compact_text)
+    if (
+        cap >= 64
+        and re.fullmatch(r"[A-Z0-9]{3,12}", compact_text)
+        and (
+            measured_character_count < expected_characters
+            or ink_coverage >= 0.80
+        )
+    ):
+        minimum_height = max(24, int(round(cap * 0.55)))
+        minimum_width = max(8, int(round(cap * 0.08)))
+        minimum_area = max(64, int(round(cap * cap * 0.025)))
+
+        # A display OCR crop can begin on a section border.  In that case the
+        # border median is not the canvas background: the contrast mask turns
+        # most of the artwork into "ink" and its modal colour is wrong.  Search
+        # the compact measured palette as well as that first colour, then keep
+        # only a horizontally ordered, cap-height-consistent run whose component
+        # count agrees with the recognized token.
+        color_candidates: list[np.ndarray] = []
+
+        def add_color_candidate(value: Any) -> None:
+            candidate = np.asarray(value, dtype=np.float32)
+            if candidate.shape != (3,):
+                return
+            if any(
+                float(np.linalg.norm(candidate - existing)) <= 8.0
+                for existing in color_candidates
+            ):
+                return
+            color_candidates.append(candidate)
+
+        if glyph_color:
+            add_color_candidate(_hex_to_bgr(glyph_color))
+        flat_pixels = glyph_patch.reshape(-1, 3)
+        quantized = flat_pixels.astype(np.uint16) // 16
+        color_codes = (
+            quantized[:, 0] * 256
+            + quantized[:, 1] * 16
+            + quantized[:, 2]
+        ).astype(np.int32)
+        palette_counts = np.bincount(color_codes, minlength=4096)
+        for color_code in np.argsort(palette_counts)[::-1][:32]:
+            if int(palette_counts[color_code]) < minimum_area:
+                break
+            palette_pixels = flat_pixels[color_codes == color_code]
+            if palette_pixels.size:
+                add_color_candidate(np.median(palette_pixels, axis=0))
+
+        recovered: tuple[
+            tuple[float, float, float],
+            np.ndarray,
+            list[tuple[int, int, int, int, int, int]],
+            np.ndarray,
+            np.ndarray,
+        ] | None = None
+        for target_bgr in color_candidates:
+            color_distance = np.linalg.norm(
+                glyph_patch.astype(np.float32) - target_bgr,
+                axis=2,
+            )
+            component_seed = (color_distance <= 44.0).astype(np.uint8)
+            count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+                component_seed,
+                8,
+            )
+            components: list[tuple[int, int, int, int, int, int]] = []
+            for label in range(1, count):
+                local_x, local_y, component_width, component_height, area = (
+                    int(value) for value in stats[label]
+                )
+                if (
+                    component_height >= minimum_height
+                    and component_width >= minimum_width
+                    and area >= minimum_area
+                ):
+                    components.append(
+                        (
+                            local_x,
+                            local_y,
+                            component_width,
+                            component_height,
+                            area,
+                            label,
+                        )
+                    )
+            components.sort(key=lambda item: item[0])
+            if len(components) != expected_characters:
+                continue
+            heights = np.asarray(
+                [component[3] for component in components], dtype=np.float32
+            )
+            bottoms = np.asarray(
+                [component[1] + component[3] for component in components],
+                dtype=np.float32,
+            )
+            median_height = max(1.0, float(np.median(heights)))
+            height_spread = float(np.ptp(heights)) / median_height
+            baseline_spread = float(np.ptp(bottoms)) / median_height
+            if height_spread > 0.35 or baseline_spread > 0.35:
+                continue
+            quality = (
+                height_spread,
+                baseline_spread,
+                -float(sum(component[4] for component in components)),
+            )
+            candidate = (quality, target_bgr, components, labels, component_seed)
+            if recovered is None or quality < recovered[0]:
+                recovered = candidate
+
+        if recovered is not None:
+            _quality, target_bgr, components, labels, _component_seed = recovered
+            selected_labels = np.asarray(
+                [component[5] for component in components], dtype=np.int32
+            )
+            glyph_mask = np.isin(labels, selected_labels)
+            glyph_color = "#{:02X}{:02X}{:02X}".format(
+                int(round(target_bgr[2])),
+                int(round(target_bgr[1])),
+                int(round(target_bgr[0])),
+            )
+            heights = [component[3] for component in components]
+            widths = [component[2] for component in components]
+            cap = int(round(float(np.median(heights))))
+            avg_glyph = float(np.mean(widths))
+            font_size = cap / 0.73
+            width_em = avg_glyph / font_size if font_size > 0 else 0.0
+            measured_character_count = expected_characters
+            measured_character_count_method = (
+                "glyph-color-connected-components"
+            )
+            mask_u8 = glyph_mask.astype(np.uint8)
+            stroke_distances = cv2.distanceTransform(
+                mask_u8, cv2.DIST_L2, 5
+            )[glyph_mask]
+            stroke_width = (
+                float(np.median(stroke_distances)) * 2.0
+                if stroke_distances.size
+                else 0.0
+            )
+            stroke_width_p75 = (
+                float(np.percentile(stroke_distances, 75)) * 2.0
+                if stroke_distances.size
+                else 0.0
+            )
+            stroke_ratio = stroke_width / max(1.0, float(cap))
+            ink_coverage = float(glyph_mask.mean())
+            weight_candidate = None
+            # OpenCV 5's antialiased Hershey masks occupy more of the crop than
+            # older builds. Keep the classes separated by both measured stroke
+            # width and coverage instead of treating every portable thin glyph
+            # as bold.
+            if stroke_ratio <= 0.09 and ink_coverage <= 0.22:
+                weight_candidate = "light"
+            elif stroke_ratio >= 0.12 or ink_coverage >= 0.28:
+                weight_candidate = "bold"
+            glyph_boxes = [
+                {
+                    "text": character,
+                    "box": [
+                        x0 + component[0],
+                        y0 + component[1],
+                        x0 + component[0] + component[2],
+                        y0 + component[1] + component[3],
+                    ],
+                }
+                for character, component in zip(
+                    compact_text, components, strict=True
+                )
+            ]
     ink_rows, ink_columns = np.where(glyph_mask)
     ink_box = (
         [
@@ -1544,7 +1717,7 @@ def _glyph_metrics(
         else round(max(0.0, 0.6 * (1.0 - best["distance"] / 0.07)), 3),
         "characterCount": sum(not char.isspace() for char in (text or "")) or None,
         "measuredCharacterCount": measured_character_count,
-        "measuredCharacterCountMethod": "foreground-column-run-splitting",
+        "measuredCharacterCountMethod": measured_character_count_method,
         "strokeWidthPx": round(stroke_width, 2),
         "strokeWidthP75Px": round(stroke_width_p75, 2),
         "strokeWidthRatio": round(stroke_ratio, 4),
@@ -1561,6 +1734,10 @@ def _glyph_metrics(
         "colorSource": "measured-glyph-pixels" if glyph_color else None,
         "inkBox": ink_box,
         "inkBoxSource": "measured-local-background-contrast" if ink_box else None,
+        "glyphBoxes": glyph_boxes or None,
+        "glyphBoxMethod": (
+            measured_character_count_method if glyph_boxes else None
+        ),
         "wordBoxes": word_boxes or None,
         "wordBoxMethod": word_box_method,
         "method": "glyph-width-silhouette+ocr-character-count+stroke-geometry",

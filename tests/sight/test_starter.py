@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 from sight.starter import (
@@ -5,6 +6,8 @@ from sight.starter import (
     _font_style,
     _font_weight,
     _icon_svg_markup,
+    _measured_word_markup,
+    _text_markup,
     materialize_starter_project,
 )
 
@@ -105,6 +108,98 @@ def _document(asset_path: Path) -> dict:
     }
 
 
+def test_starter_renders_browser_source_artwork_as_noninteractive_background(
+    tmp_path,
+) -> None:
+    source = tmp_path / "hero.avif"
+    source.write_bytes(b"browser-source-avif")
+    document = _document(source)
+    document["reconstruction"]["allowedRasterRegions"] = [
+        {
+            "elementId": "browser-source-background",
+            "artifactId": "raster:browser-source",
+            "kind": "browser-source-background-artwork",
+            "boxSource": [-30, -80, 900, 620],
+            "assetPath": str(source),
+        }
+    ]
+
+    result = materialize_starter_project(
+        document,
+        str(tmp_path / "starter"),
+        no_store=False,
+    )
+
+    assert result is not None
+    index = Path(result["entryPath"]).read_text(encoding="utf-8")
+    assert 'class="sens-background-artwork"' in index
+    assert 'data-sens-raster-role="browser-source-background-artwork"' in index
+    assert "left:-30px;top:-80px;width:930px;height:700px" in index
+
+
+def test_starter_renders_source_vector_wordmark_with_selectable_live_label(
+    tmp_path,
+) -> None:
+    crop = tmp_path / "asset.png"
+    crop.write_bytes(b"asset")
+    document = _document(crop)
+    document["reconstruction"]["text"][0].update(
+        {
+            "value": "SLUSH",
+            "preferredValue": "SLUSH",
+            "boxSource": [100, 100, 600, 400],
+            "visualRepresentation": (
+                "source-vector-wordmark-with-selectable-live-label"
+            ),
+            "sourceVectorAssetIds": [f"source-vector-{index}" for index in range(5)],
+        }
+    )
+    vector_regions = []
+    for index in range(5):
+        source = tmp_path / f"letter-{index}.svg"
+        source.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+            f'<path d="M{index} 0H10V10Z" fill="#111"/></svg>',
+            encoding="utf-8",
+        )
+        vector_box = (
+            [100.125, 80.25, 195.875, 420.5]
+            if index == 0
+            else [100 + index * 100, 80, 195 + index * 100, 420]
+        )
+        vector_regions.append(
+            {
+                "elementId": f"source-vector-{index}",
+                "boxSource": vector_box,
+                "assetPath": str(source),
+                "contentSha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "mediaType": "image/svg+xml",
+                "source": "observed",
+                "method": "verified-sanitized-live-dom-svg",
+                "ariaHidden": True,
+            }
+        )
+    document["reconstruction"]["sourceVectorRegions"] = vector_regions
+
+    result = materialize_starter_project(
+        document,
+        str(tmp_path / "source-vector-starter"),
+        no_store=False,
+    )
+
+    assert result is not None
+    index = Path(result["entryPath"]).read_text(encoding="utf-8")
+    assert index.count('class="sens-source-vector"') == 5
+    assert index.count('data-sens-vector-role="source-vector-artwork"') == 5
+    assert "left:100.125px;top:80.25px;width:95.75px;height:340.25px" in index
+    assert "<svg" in index
+    assert '.svg"' not in index
+    assert 'class="sens-text-slot sens-vector-wordmark-label"' in index
+    assert ">SLUSH<" in index
+    styles = Path(result["stylesheetPath"]).read_text(encoding="utf-8")
+    assert ".sens-vector-wordmark-label{color:transparent!important" in styles
+
+
 def test_starter_is_semantic_content_addressed_and_raster_bounded(tmp_path) -> None:
     crop = tmp_path / "car.png"
     crop.write_bytes(b"exact-allowed-crop")
@@ -188,6 +283,45 @@ def test_starter_fits_measured_words_into_their_individual_source_boxes(
     assert 'left:125px;top:0px;width:255px;height:70px' in index
     assert '<span class="sens-text">THE</span></span> <span' in index
     assert "querySelectorAll('.sens-fit-slot')" in script
+
+
+def test_starter_fits_large_display_characters_into_measured_glyph_boxes(
+    tmp_path,
+) -> None:
+    crop = tmp_path / "asset.png"
+    crop.write_bytes(b"asset")
+    document = _document(crop)
+    title = document["reconstruction"]["text"][0]
+    title.update(
+        {
+            "value": "SLUSH",
+            "boxSource": [20, 20, 400, 120],
+            "fontFeatures": {
+                "fontSize": 132,
+                "capHeight": 98,
+                "glyphBoxes": [
+                    {"text": "S", "box": [20, 22, 90, 118]},
+                    {"text": "L", "box": [96, 24, 155, 116]},
+                    {"text": "U", "box": [163, 23, 235, 117]},
+                    {"text": "S", "box": [242, 22, 314, 118]},
+                    {"text": "H", "box": [322, 24, 400, 116]},
+                ],
+            },
+        }
+    )
+
+    result = materialize_starter_project(
+        document, str(tmp_path / "glyph-layout"), no_store=False
+    )
+
+    assert result is not None
+    index = Path(result["entryPath"]).read_text(encoding="utf-8")
+    assert 'class="sens-text-slot sens-measured-glyphs"' in index
+    assert index.count('class="sens-glyph-slot sens-fit-slot"') == 5
+    assert 'data-sens-glyph-index="0"' in index
+    assert 'left:0px;top:2px;width:70px;height:96px' in index
+    assert 'left:302px;top:4px;width:78px;height:92px' in index
+    assert '<span class="sens-text">S</span></span><span' in index
 
 
 def test_measured_words_can_select_different_bundled_render_families(
@@ -916,3 +1050,392 @@ def test_starter_renders_measured_symbol_glyphs_as_selectable_text_and_css(
     assert "left:11.66px;top:5px;width:13px;height:14px" in index
     assert ".sens-symbol-diamond{clip-path:polygon" in css
     assert '<img class="sens-raster"' in index
+
+
+def test_starter_bundles_observed_source_font_and_uses_it_for_live_text(
+    tmp_path,
+) -> None:
+    crop = tmp_path / "asset.png"
+    crop.write_bytes(b"asset")
+    source_font = tmp_path / "whyte-medium.woff2"
+    content = b"observed-whyte-medium-woff2"
+    source_font.write_bytes(content)
+    digest = hashlib.sha256(content).hexdigest()
+    alias = f"Sens Source {digest[:12]}"
+    document = _document(crop)
+    document["reconstruction"]["sourceFontAssets"] = [
+        {
+            "family": "Whyte Inktrap",
+            "alias": alias,
+            "weight": "500",
+            "style": "normal",
+            "stretch": "normal",
+            "path": str(source_font),
+            "sha256": digest,
+            "sizeBytes": len(content),
+            "mediaType": "font/woff2",
+            "format": "woff2",
+            "source": "observed",
+            "method": "playwright-loaded-font-response",
+        }
+    ]
+    title = document["reconstruction"]["text"][0]
+    title["fontFeatures"].update(
+        {
+            "sourceFontFamily": alias,
+            "sourceFontAssetSha256": digest,
+            "sourceDomFontWeight": 500,
+            "sourceDomFontStyle": "normal",
+        }
+    )
+
+    project = materialize_starter_project(
+        document, str(tmp_path / "output"), no_store=False
+    )
+
+    assert project is not None
+    assert project["fontAssetCount"] == 3
+    index = Path(project["entryPath"]).read_text(encoding="utf-8")
+    css = Path(project["stylesheetPath"]).read_text(encoding="utf-8")
+    bundled = Path(project["directory"]) / "assets" / f"sens-source-{digest[:12]}.woff2"
+    assert bundled.read_bytes() == content
+    assert f"font-family:'{alias}'" in index
+    assert "font-weight:500" in index
+    assert f"font-family:'{alias}'" in css
+    assert "format('woff2')" in css
+
+
+def test_starter_renders_observed_mixed_word_styles_and_tracking(tmp_path) -> None:
+    crop = tmp_path / "asset.png"
+    crop.write_bytes(b"asset")
+    normal_content = b"grandslang-normal-woff2"
+    italic_content = b"grandslang-italic-woff2"
+    normal_path = tmp_path / "grandslang-normal.woff2"
+    italic_path = tmp_path / "grandslang-italic.woff2"
+    normal_path.write_bytes(normal_content)
+    italic_path.write_bytes(italic_content)
+    normal_digest = hashlib.sha256(normal_content).hexdigest()
+    italic_digest = hashlib.sha256(italic_content).hexdigest()
+    normal_alias = f"Sens Source {normal_digest[:12]}"
+    italic_alias = f"Sens Source {italic_digest[:12]}"
+    document = _document(crop)
+    document["reconstruction"]["sourceFontAssets"] = [
+        {
+            "family": "GrandSlang",
+            "alias": normal_alias,
+            "weight": "400",
+            "style": "normal",
+            "path": str(normal_path),
+            "sha256": normal_digest,
+            "mediaType": "font/woff2",
+            "format": "woff2",
+        },
+        {
+            "family": "GrandSlang",
+            "alias": italic_alias,
+            "weight": "400",
+            "style": "italic",
+            "path": str(italic_path),
+            "sha256": italic_digest,
+            "mediaType": "font/woff2",
+            "format": "woff2",
+        },
+    ]
+    title = document["reconstruction"]["text"][0]
+    title.update(
+        {
+            "value": "Yournew",
+            "preferredValue": "Your new",
+            "boxSource": [60, 185, 463, 274],
+        }
+    )
+    title["fontFeatures"].update(
+        {
+            "fontSize": 105,
+            "capHeight": 77,
+            "sourceFontFamily": normal_alias,
+            "sourceDomFontWeight": 400,
+            "sourceDomFontStyle": "normal",
+            "sourceDomLetterSpacing": "-2.64px",
+            "wordBoxesSource": [
+                {"text": "Your", "box": [68, 197, 258, 274]},
+                {"text": "new", "box": [268, 212, 455, 274]},
+            ],
+            "sourceDomWordStyles": [
+                {
+                    "text": "Your",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomLetterSpacing": "-2.64px",
+                },
+                {
+                    "text": "new",
+                    "sourceFontFamily": italic_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "italic",
+                    "sourceDomLetterSpacing": "-2.64px",
+                },
+            ],
+        }
+    )
+
+    project = materialize_starter_project(
+        document, str(tmp_path / "output"), no_store=False
+    )
+
+    assert project is not None
+    index = Path(project["entryPath"]).read_text(encoding="utf-8")
+    script = Path(project["directory"], "script.js").read_text(encoding="utf-8")
+    assert f"font-family:'{normal_alias}'" in index
+    assert f"font-family:'{italic_alias}'" in index
+    assert "font-style:italic" in index
+    assert index.count("letter-spacing:-2.64px") >= 3
+    assert "const slotLetterSpacing = Number.parseFloat(style.letterSpacing) || 0" in script
+    assert "slotLetterSpacing * Math.max(0, text.textContent.length - 1)" in script
+
+
+def test_starter_uses_observed_word_styles_when_word_geometry_is_unavailable() -> None:
+    normal_alias = "Sens Source 111111111111"
+    italic_alias = "Sens Source 222222222222"
+    entry = {
+        "value": "with AI DLP",
+        "fontFeatures": {
+            "fontSize": 88,
+            "sourceFontFamily": normal_alias,
+            "sourceDomFontWeight": 400,
+            "sourceDomFontStyle": "normal",
+            "sourceDomLetterSpacing": "-2.64px",
+            "sourceDomWordStyles": [
+                {
+                    "text": "with",
+                    "sourceFontFamily": italic_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "italic",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+                {
+                    "text": "AI",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+                {
+                    "text": "DLP",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+            ],
+        },
+    }
+
+    markup = _text_markup(entry, "with AI DLP")
+
+    assert 'data-sens-run-authority="observed-live-dom-computed-style"' in markup
+    assert f"font-family:'{italic_alias}'" in markup
+    assert f"font-family:'{normal_alias}'" in markup
+    assert "font-style:italic" in markup
+    assert markup.count("letter-spacing:-2.64px") == 3
+    assert ">with </span>" in markup
+    assert ">AI </span>" in markup
+    assert ">DLP</span>" in markup
+
+
+def test_starter_preserves_observed_dom_font_size_without_scaling(tmp_path) -> None:
+    crop = tmp_path / "asset.png"
+    crop.write_bytes(b"asset")
+    document = _document(crop)
+    title = document["reconstruction"]["text"][0]
+    title.update(
+        {
+            "value": "Gateway",
+            "preferredValue": "Gateway",
+            "boxSource": [61, 327, 449, 426],
+        }
+    )
+    title["fontFeatures"].update(
+        {
+            "fontSize": 136,
+            "capHeight": 99,
+            "inkBox": [76, 327, 439, 426],
+            "sourceFontFamily": "Sens Source a2076c73c28d",
+            "sourceDomFontWeight": 500,
+            "sourceDomFontStyle": "normal",
+            "sourceDomFontSize": "88px",
+            "sourceDomLetterSpacing": "-2.64px",
+            "sourceDomTypographySource": "observed-live-dom-computed-style",
+        }
+    )
+
+    project = materialize_starter_project(
+        document, str(tmp_path / "output"), no_store=False
+    )
+
+    assert project is not None
+    index = Path(project["entryPath"]).read_text(encoding="utf-8")
+    script = Path(project["directory"], "script.js").read_text(encoding="utf-8")
+    assert 'data-sens-natural-dom-fit="true"' in index
+    assert "font-size:88px" in index
+    assert "const naturalDomFit = slot.dataset.sensNaturalDomFit === 'true'" in script
+    assert "naturalDomFit ? 1 : desiredInkWidth / inkWidth" in script
+    assert "naturalDomFit ? 1 : desiredInkHeight / inkHeight" in script
+
+
+def test_starter_allows_touching_measured_words_with_observed_dom_styles() -> None:
+    normal_alias = "Sens Source 111111111111"
+    italic_alias = "Sens Source 222222222222"
+    entry = {
+        "value": "with AI DLP",
+        "preferredValue": "with AI DLP",
+        "boxSource": [58, 399, 532, 493],
+        "fontFeatures": {
+            "fontSize": 129,
+            "capHeight": 94,
+            "wordBoxesSource": [
+                {"text": "with", "box": [58, 399, 269, 493]},
+                {"text": "AI", "box": [269, 399, 374, 493]},
+                {"text": "DLP", "box": [374, 399, 532, 493]},
+            ],
+            "sourceDomWordStyles": [
+                {
+                    "text": "with",
+                    "sourceFontFamily": italic_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "italic",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+                {
+                    "text": "AI",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+                {
+                    "text": "DLP",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+            ],
+        },
+    }
+
+    markup = _measured_word_markup(entry, "with AI DLP")
+
+    assert markup is not None
+    assert markup.count("sens-word-slot") == 3
+    assert f"font-family:'{italic_alias}'" in markup
+    assert f"font-family:'{normal_alias}'" in markup
+    assert "font-style:italic" in markup
+    assert markup.count('data-sens-natural-dom-fit="true"') == 3
+
+
+def test_starter_prefers_valid_observed_dom_word_boxes() -> None:
+    normal_alias = "Sens Source 111111111111"
+    italic_alias = "Sens Source 222222222222"
+    entry = {
+        "value": "with AI DLP",
+        "preferredValue": "with AI DLP",
+        "boxSource": [58, 399, 532, 493],
+        "fontFeatures": {
+            "fontSize": 129,
+            "capHeight": 94,
+            "wordBoxesSource": [
+                {"text": "with", "box": [58, 399, 269, 493]},
+                {"text": "AI", "box": [269, 399, 374, 493]},
+                {"text": "DLP", "box": [374, 399, 532, 493]},
+            ],
+            "sourceDomWordStyles": [
+                {
+                    "text": "with",
+                    "sourceFontFamily": italic_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "italic",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomBox": [72, 382, 258, 505],
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+                {
+                    "text": "AI",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomBox": [258, 398, 374, 503],
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+                {
+                    "text": "DLP",
+                    "sourceFontFamily": normal_alias,
+                    "sourceDomFontWeight": 400,
+                    "sourceDomFontStyle": "normal",
+                    "sourceDomFontSize": "88px",
+                    "sourceDomLetterSpacing": "-2.64px",
+                    "sourceDomBox": [374, 398, 521, 503],
+                    "sourceDomTypographySource": "observed-live-dom-computed-style",
+                },
+            ],
+        },
+    }
+
+    markup = _measured_word_markup(entry, "with AI DLP")
+
+    assert markup is not None
+    assert markup.count('data-sens-word-geometry="observed-live-dom-range"') == 3
+    assert "left:14px;top:-17px;width:186px;height:123px" in markup
+    assert "left:200px;top:-1px;width:116px;height:105px" in markup
+    assert "left:316px;top:-1px;width:147px;height:105px" in markup
+
+
+def test_starter_fits_single_text_to_measured_ink_inset(tmp_path) -> None:
+    crop = tmp_path / "asset.png"
+    crop.write_bytes(b"asset")
+    document = _document(crop)
+    title = document["reconstruction"]["text"][0]
+    title.update(
+        {
+            "value": "Gateway",
+            "preferredValue": "Gateway",
+            "boxSource": [61, 327, 449, 426],
+        }
+    )
+    title["fontFeatures"].update(
+        {
+            "fontSize": 136,
+            "capHeight": 99,
+            "inkBox": [76, 327, 439, 426],
+        }
+    )
+
+    project = materialize_starter_project(
+        document, str(tmp_path / "output"), no_store=False
+    )
+
+    assert project is not None
+    index = Path(project["entryPath"]).read_text(encoding="utf-8")
+    script = Path(project["directory"], "script.js").read_text(encoding="utf-8")
+    assert 'data-sens-ink-x="15"' in index
+    assert 'data-sens-ink-y="0"' in index
+    assert 'data-sens-ink-width="363"' in index
+    assert 'data-sens-ink-height="99"' in index
+    assert "slot.dataset.sensInkWidth" in script
+    assert "slot.dataset.sensInkX" in script

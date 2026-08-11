@@ -297,3 +297,161 @@ Primary references:
 - https://spdx.org/licenses/PolyForm-Noncommercial-1.0.0.html
 - https://opensource.org/faq
 - https://creativecommons.org/faq/index.html
+
+# URL reconstruction capture decision (2026-08-11)
+
+Continuous source polling is counterproductive for pixel reconstruction:
+animation, advertisements, personalization, and A/B variants can move the
+target while the candidate is being repaired. Sens 1.3.8 therefore freezes one
+source capture and keeps its screenshot hash, contract, viewport, DPR, theme,
+locale, and navigation policy in broker-owned state.
+
+Candidate observation is event-driven. The first preview and every subsequent
+bounded repair receive a fresh Playwright capture through `sens_web_review`.
+The previous capture is already the correct `before` state, so taking a second
+pre-repair screenshot would add browser load without new evidence. A requested
+final review always captures again and issues a completion receipt only when
+the new screenshot passes visual and live-web checks with no blockers.
+
+This design adds bounded memory rather than a permanent browser: at most eight
+small session records with a two-hour idle TTL. Heavy screenshot and contract
+files remain content-addressed artifacts on disk. CPU and RAM cost per review is
+approximately the existing one-shot review cost; there is no polling process.
+
+The first headless Slush session also proved that compactness must apply to the
+combined review, not only to the initial reconstruction document. The raw
+review was 62,621 bytes and the Z-Code tool bridge truncated it at 50,000 bytes,
+after which the agent searched redundant match tables and improvised pixel
+scripts instead of following the bounded repair hint. Sens therefore keeps the
+full result internally for champion and receipt decisions, then returns a
+lossless-for-action projection: pass flags, blockers, repair hints, metrics,
+six hottest regions, live-web coverage, provenance, iteration state, and
+before/after captures. Duplicate match arrays, visual zones, raster-element
+records, and artifact inventories are not model-facing review content.
+
+A subsequent automatic Z-Code compaction retained the champion score and
+rollback decision but dropped the exact repair-hint geometry. Because prior
+reviews existed only in conversational context, the model began scanning the
+contract and cache. The corrective boundary is broker-owned durable review
+evidence: every compact review is written to a numbered JSON report, its path
+is returned in both structured content and the bounded text summary, and MCP
+instructions tell the host to reread it after compaction.
+
+# Browser-loaded source raster decision (2026-08-11)
+
+The corrected Slush contract reached `0.8985` similarity with all live-web gates
+passing, but failed one material hot-region bound. Inspection showed that the
+page had already loaded a clean `Slush_Logo_3D_Blue.avif` hero layer. Sens kept
+only a composited element screenshot, discarded the original response body, and
+filled the removed wordmark with Telea-generated blue blobs. More model turns
+cannot recover pixels that the pipeline intentionally threw away.
+
+Sens should preserve selected browser-loaded image responses as evidence. The
+recommended implementation listens to responses during the existing guarded
+capture, persists only image bodies referenced by visible raster elements under
+strict count/byte limits, and returns their hashes and measured geometry. It
+does not refetch URLs. The broker forwards those capture-owned records to the
+internal `see` call; they are not a public arbitrary-file parameter.
+
+Sight may replace a synthetic full-canvas background only with a hash-verified,
+viewport-dominant source raster that overlaps separately observed live DOM
+text. The original asset is copied into the generated starter at its measured
+box, while text and controls stay semantic. Unsupported or ambiguous evidence
+keeps the existing protected-background fallback. This resolves the information
+loss without a larger VLM, a resident browser, a new SSRF surface, or relaxed
+completion gates.
+
+# Browser-observed SVG wordmark decision (2026-08-11)
+
+The remaining Slush display mismatch was not a font-selection problem. The
+visible wordmark consists of five separate SVG letter outlines; the page's
+`h1` is only a hidden accessible label. Injecting those five live vector roots
+raised the deterministic starter substantially, while substituting the page's
+declared Lateral font made the result worse.
+
+The bounded solution is to treat large visible top-level SVG roots as guarded
+DOM evidence rather than rasters. Capture sanitizes an allowlisted XML subset,
+removes executable and external content, namespaces fragment IDs, and stores
+content-addressed bytes. Sight verifies and sanitizes again. A vector sequence
+is materialized only when high-confidence display OCR proves that its ordered
+count and union geometry match one live word. The visible outline is
+`aria-hidden`; a transparent selectable text label preserves semantics.
+
+Unmatched decorative SVGs are not added on top of the protected screenshot
+overlay because that duplicates pixels. With only the five proven wordmark
+letters materialized, the direct Slush starter measures `0.8924`, passes the
+pixel, foreground, layout, hot-region, and live-web gates, and misses only the
+small-text OCR gate (`0.6879` against `0.7`). A real agent run must still repair
+that bounded remainder and obtain a fresh completion receipt.
+
+# Slush capture-state and OCR diagnosis (2026-08-12)
+
+The clean headless reference/candidate audit isolated two independent sources
+of noise. First, screenshot and DOM observation were not frozen as one atomic
+visual state. Capture now pauses Web Animations, disables CSS motion and caret
+painting, waits two frames, and records `visualFreeze` provenance before both
+observations.
+
+Second, the only failed review gate was page-wide OCR similarity. Its mismatch
+was dominated by the repeated `CARD / SLUSH / WAITLIST` ticker, while all five
+source SVG wordmark letters were already verified. The prior generic largest
+hot-region hint sent the agent toward the correct wordmark and caused a
+measured regression; champion rollback prevented it from landing. Text-only
+failures now return the actual OCR strings and repeated-element geometry first,
+and explicitly protect verified vector wordmarks from speculative replacement.
+
+Finally, the source captured fractional SVG bounds but three later boundaries
+rounded them to integers. Frozen browser evidence showed corresponding one-pixel
+fringes around several giant letters. Vector bounds now retain three-decimal
+precision from Playwright through the broker-owned reconstruction contract into
+generated CSS. Targeted red/green tests cover capture persistence, hydration,
+and starter rendering.
+
+# Caldera pass-state diagnosis (2026-08-12)
+
+The clean Caldera run passed on its first review at `0.9562`, with OCR `0.9842`
+and every live-web gate green. However, the compact pass still exposed
+nonblocking 1-2 px text hints. DeepSeek treated them as work despite
+`requiredAction=request-fresh-final-review`, spending another review for a
+small improvement to `0.9570`. A pass now suppresses repair hints and publishes
+an explicit no-modification workflow before the fresh final capture.
+
+The same run spent several post-receipt turns searching the Sens cache because
+the benchmark requested ordered review IDs but persisted compact reports did
+not include their own request IDs. The broker already owned those identifiers;
+it now includes `reviewRequestId` in the compact result, report metadata, MCP
+summary, and durable JSON. This is an observability fix with no extra model or
+vision work.
+
+# dope.security live-word geometry and materiality diagnosis (2026-08-12)
+
+The first clean dope.security run remained an honest failure after bounded
+repairs. Its best candidate passed the live-web contract but stopped at a
+`0.0839` material bounding ratio against the `0.08` limit. The visible defect
+was the `Secure Web` hero line: the Python capture had exact browser `Range`
+boxes for each word, but `sanitize_source_text_nodes` in the Rust broker
+discarded `wordBoxes` while forwarding capture evidence to Sight. The
+downstream starter therefore centered full-size source-font words inside
+unreliable OCR slots and made the words overlap.
+
+The broker now forwards at most 128 validated word boxes per source text node,
+with bounded text and finite coordinates. The runtime contract consequently
+changed from one shared `[72,239,548,436]` box for both words to observed boxes
+`Secure=[72,239,349,366]` and `Web=[366,239,548,366]`. The generated page keeps
+both as selectable text using the packaged `Whyte Inktrap` source font.
+
+That correction raised the next clean candidate to `0.9247` similarity with
+pixel mismatch `0.0828`, foreground mismatch `0.0230`, text similarity
+`0.8629`, and all live-web checks green. It also exposed a false-negative in
+the hot-region gate: sparse glyph-edge differences across a multi-line heading
+occupied `0.0324` of the canvas but their mostly empty bounding rectangle
+occupied `0.1174`. Material-bounding density now requires `0.30` rather than
+`0.25`. A regression test proves the accurate multi-line case is ignored while
+the older overlapping-word case (`0.0291 / 0.0839`, density above `0.30`) still
+blocks.
+
+The final clean v9 run passed its first non-final review and an independent
+fresh final review with score `0.9074`, pixel mismatch `0.1066`, foreground
+mismatch `0.0447`, text similarity `0.8602`, and hot signal `0.0333`. It issued
+completion receipt
+`e714c595-4da6-4853-b6fe-61a319c53ece:8644c23c-4907-425d-9073-af25e804e89f`.

@@ -118,6 +118,71 @@ replace engines behind the preserved public behavior. Package one Python
 runtime with Tk and the CPU inference dependencies. Delete `D:\Speech` only
 after the installed-build gate, immediately before the final 1.3.5 release.
 
+## Browser source-raster boundary (Sens 1.3.8, 2026-08-11)
+
+### Observed failure
+
+The Slush URL run proved that capture already observes the clean hero image
+loaded by the browser, but the `web_start` composition discarded that evidence.
+Sight then reconstructed a background from the flattened screenshot and used
+Telea inpainting beneath measured live display text. The guessed pixels created
+the only remaining material hot region even after the text geometry was fixed.
+
+### Contract and ownership
+
+- Capture may persist a bounded image response only when that exact response was
+  already loaded through the guarded Playwright page. It must not issue a second
+  download or create a new redirect/SSRF path.
+- Capture returns observed `sourceRasterAssets` with content hash, media type,
+  DOM/raster identity, measured box, rendering hints, and overlap with live DOM
+  text. Per-asset and aggregate byte/count limits are mandatory.
+- The Rust broker selects this field from its own capture result and forwards it
+  only to the internal reconstruction request. No new public MCP argument or
+  mutable worker state is introduced.
+- Sight validates the persisted file and hash, includes stable evidence in the
+  document-cache identity, and may promote only a dominant viewport-covering
+  source layer that is demonstrably behind live DOM text.
+- The starter copies that original asset into its project and positions it at
+  the observed box. Live text and semantic controls remain independent DOM; a
+  full screenshot is never accepted as a source layer.
+
+### Must preserve
+
+- Candidate reviews still capture fresh screenshots; the source remains frozen.
+- `sens_capture`, `sens_see`, and existing result envelopes remain compatible.
+- Browser network policy covers navigation, redirects, and every source asset.
+- Missing, oversized, unsupported, hash-mismatched, or non-dominant assets fall
+  back to the current protected-background path without failing reconstruction.
+- Rust remains the sole owner of capability lifecycle and session state; Sight
+  workers remain stateless and stdout remains protocol-only.
+
+### Recommended path
+
+Persist already-approved response bodies during capture, propagate a sanitized
+internal evidence list through the broker, and prefer one verified dominant
+source background over screenshot inpainting. This is narrower and safer than
+adding a downloader, keeping a resident browser, or weakening visual thresholds.
+
+## Browser source-vector boundary (Sens 1.3.8, 2026-08-11)
+
+- `sidecars/sight/capture.py` may observe top-level live SVG roots, but persists
+  only large mostly-visible roots under strict count and byte budgets.
+- SVG is XML-sanitized before persistence: executable/foreign nodes, event
+  handlers, external references, and unsafe URL expressions are removed;
+  internal IDs and fragment references are namespaced.
+- `crates/sens-broker/src/sight.rs` forwards a selected `sourceVectorAssets`
+  field only inside the broker-created reconstruction request. It does not add
+  a caller-controlled public download path or mutable worker state.
+- `sidecars/sight/ops.py` verifies hash, size, type, geometry, and provenance,
+  then sanitizes again into the Sight cache. Only an exact display-OCR/geometry
+  match can promote SVGs into `sourceVectorRegions`.
+- `sidecars/sight/starter.py` embeds the sanitized vector DOM as
+  `aria-hidden` artwork and retains a transparent selectable live-text label.
+  Unmatched SVG decoration stays represented by the protected background layer
+  so it is not painted twice.
+- Candidate review remains browser-observed and checks selectable text and
+  semantic controls independently from visual similarity.
+
 # Media and Voice brownfield extension (2026-08-08)
 
 ## Existing contracts to preserve
@@ -390,3 +455,14 @@ prove representation, interaction, selection, accessibility, or asset origin.
 Keep this release additive and bounded to Sight/MCP/broker plus tests, release
 metadata, benchmark fixtures, and documentation. Do not refactor model loading,
 Hearing, Media/Voice, or desktop UI while closing this failure class.
+
+## Sens 1.3.8 URL reconstruction boundary
+
+URL reconstruction is an additive broker-owned orchestration layer over the
+existing Sight `capture`, `see`, and `review` worker operations. Public MCP
+entry points are `sens_web_start` and `sens_web_review`; legacy entry points stay
+unchanged. The source screenshot and reconstruction contract are frozen once per
+session. Candidate captures are event-driven after bounded repairs, retained as
+before/after evidence, and a fresh final pass is required for a completion
+receipt. Browser request filtering covers navigation, redirects, and HTTP(S)
+subresources. No mutable session or browser lifetime moves into Python.

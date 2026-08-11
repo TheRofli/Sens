@@ -30,7 +30,10 @@ def _material_hot_region_bounding_ratio(region: dict[str, Any]) -> float:
     )
     bounding = float(region.get("boundingAreaRatio") or 0.0)
     density = signal / max(1e-9, bounding)
-    if signal < 0.025 or density < 0.25:
+    # Multiline live text produces small glyph-edge differences spread over a
+    # tall, mostly empty rectangle. Keep the bounding gate for genuinely dense
+    # defects (including overlapping words), not for whitespace between rows.
+    if signal < 0.025 or density < 0.30:
         return 0.0
     return bounding
 

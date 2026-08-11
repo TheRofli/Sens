@@ -103,6 +103,146 @@ def test_reconstruction_ocr_runs_one_bounded_scaled_pass(tmp_path, monkeypatch) 
     assert result["verified"] is False
 
 
+def test_downscaled_display_ocr_discovers_hero_word_missed_at_native_scale(
+    tmp_path, monkeypatch
+) -> None:
+    image_path = tmp_path / "hero.png"
+    cv2.imwrite(str(image_path), np.full((900, 1440, 3), 255, np.uint8))
+
+    monkeypatch.setattr(
+        ocr,
+        "run_ocr_image",
+        lambda _image: [
+            {
+                "text": "Slsн",
+                "box": [103, 42, 537, 330],
+                "confidence": 0.664,
+                "method": "rapidocr",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ocr,
+        "run_latin_ocr_image",
+        lambda _image: [
+            {
+                "text": "SLUSH",
+                "box": [103, 42, 537, 330],
+                "confidence": 0.99,
+                "method": "rapidocr",
+            },
+            {
+                "text": "Your money. Unstuck.",
+                "box": [202, 306, 517, 344],
+                "confidence": 0.99,
+                "method": "rapidocr",
+            },
+        ],
+    )
+
+    [display] = ocr.discover_display_ocr(str(image_path), [], scale=0.5)
+
+    assert display["text"] == "SLUSH"
+    assert display["box"] == [206, 84, 1074, 660]
+    assert display["confidence"] == 0.99
+    assert display["verified"] is True
+    assert display["method"] == "rapidocr-downscaled-display-latin-preferred"
+    assert display["displayScale"] == 0.5
+
+
+def test_downscaled_display_prefers_complete_high_confidence_latin_word(
+    tmp_path, monkeypatch
+) -> None:
+    image_path = tmp_path / "hero-with-overlays.png"
+    cv2.imwrite(str(image_path), np.full((900, 1440, 3), 255, np.uint8))
+    monkeypatch.setattr(
+        ocr,
+        "run_ocr_image",
+        lambda _image: [
+            {
+                "text": "Ss",
+                "box": [69, 19, 650, 355],
+                "confidence": 0.852,
+                "method": "rapidocr",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        ocr,
+        "run_latin_ocr_image",
+        lambda _image: [
+            {
+                "text": "SLUSH",
+                "box": [69, 19, 650, 355],
+                "confidence": 0.947,
+                "method": "rapidocr",
+            }
+        ],
+    )
+
+    [display] = ocr.discover_display_ocr(str(image_path), [], scale=0.5)
+
+    assert display["text"] == "SLUSH"
+    assert display["confidence"] == 0.947
+    assert display["verified"] is True
+    assert display["method"] == "rapidocr-downscaled-display-latin-preferred"
+    assert {item["text"] for item in display["alternatives"]} == {"Ss", "SLUSH"}
+
+
+def test_downscaled_display_ocr_does_not_duplicate_existing_live_text(
+    tmp_path, monkeypatch
+) -> None:
+    image_path = tmp_path / "hero.png"
+    cv2.imwrite(str(image_path), np.full((900, 1440, 3), 255, np.uint8))
+    candidate = {
+        "text": "THE SUMMER DRIVE",
+        "box": [50, 40, 650, 260],
+        "confidence": 0.99,
+        "method": "rapidocr",
+    }
+    monkeypatch.setattr(ocr, "run_ocr_image", lambda _image: [candidate])
+    monkeypatch.setattr(ocr, "run_latin_ocr_image", lambda _image: [candidate])
+    existing = [
+        {
+            "text": "THE SUMMER DRIVE",
+            "box": [100, 80, 1300, 520],
+            "confidence": 0.99,
+            "method": "rapidocr",
+        }
+    ]
+
+    assert ocr.discover_display_ocr(str(image_path), existing, scale=0.5) == []
+
+
+def test_downscaled_display_ocr_falls_back_when_primary_scale_misses_hero(
+    tmp_path, monkeypatch
+) -> None:
+    image_path = tmp_path / "hero.png"
+    cv2.imwrite(str(image_path), np.full((900, 1440, 3), 255, np.uint8))
+
+    monkeypatch.setattr(ocr, "run_ocr_image", lambda _image: [])
+
+    def latin_candidates(image):
+        if image.shape[1] != 432:
+            return []
+        return [
+            {
+                "text": "SLUSH",
+                "box": [50, 13, 389, 213],
+                "confidence": 0.98,
+                "method": "rapidocr",
+            }
+        ]
+
+    monkeypatch.setattr(ocr, "run_latin_ocr_image", latin_candidates)
+
+    [display] = ocr.discover_display_ocr(str(image_path), [], scale=0.5)
+
+    assert display["text"] == "SLUSH"
+    assert display["displayScale"] == 0.3
+    assert display["box"] == [167, 43, 1297, 710]
+
+
 def test_dual_script_ocr_preserves_visible_currency_sigil() -> None:
     base = [
         {

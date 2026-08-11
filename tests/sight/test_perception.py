@@ -262,6 +262,73 @@ def test_glyph_metrics_distinguish_thin_and_heavy_strokes() -> None:
     assert heavy["weightCandidate"] == "bold"
 
 
+def test_glyph_metrics_recover_display_glyphs_over_contaminated_artwork() -> None:
+    image = np.full((500, 900, 3), (235, 225, 205), np.uint8)
+    cv2.line(
+        image,
+        (0, 80),
+        (900, 430),
+        (215, 95, 10),
+        150,
+        cv2.LINE_AA,
+    )
+    box = [75, 45, 825, 455]
+    glyphs = [
+        ("S", 75, 140),
+        ("L", 230, 105),
+        ("U", 350, 140),
+        ("S", 505, 140),
+        ("H", 660, 165),
+    ]
+    stroke = 45
+    for character, left, width in glyphs:
+        right = left + width
+        if character == "S":
+            for top in (50, 228, 405):
+                cv2.rectangle(
+                    image,
+                    (left, top),
+                    (right - 1, min(449, top + stroke - 1)),
+                    (0, 0, 0),
+                    -1,
+                )
+            cv2.rectangle(image, (left, 50), (left + stroke - 1, 250), (0, 0, 0), -1)
+            cv2.rectangle(image, (right - stroke, 228), (right - 1, 449), (0, 0, 0), -1)
+        elif character == "L":
+            cv2.rectangle(image, (left, 50), (left + stroke - 1, 449), (0, 0, 0), -1)
+            cv2.rectangle(image, (left, 405), (right - 1, 449), (0, 0, 0), -1)
+        elif character == "U":
+            cv2.rectangle(image, (left, 50), (left + stroke - 1, 449), (0, 0, 0), -1)
+            cv2.rectangle(image, (right - stroke, 50), (right - 1, 449), (0, 0, 0), -1)
+            cv2.rectangle(image, (left, 405), (right - 1, 449), (0, 0, 0), -1)
+        else:
+            cv2.rectangle(image, (left, 50), (left + stroke - 1, 449), (0, 0, 0), -1)
+            cv2.rectangle(image, (right - stroke, 50), (right - 1, 449), (0, 0, 0), -1)
+            cv2.rectangle(image, (left, 228), (right - 1, 272), (0, 0, 0), -1)
+    cv2.circle(image, (575, 160), 35, (20, 200, 250), -1)
+    cv2.rectangle(image, (740, 250), (815, 320), (180, 80, 220), -1)
+    # A full-width section border can touch the OCR crop.  It must not become
+    # the assumed background and turn the pale canvas into the measured ink.
+    cv2.line(image, (box[0], box[1]), (box[2] - 1, box[1]), (0, 0, 0), 1)
+
+    metrics = _glyph_metrics(image, box, "SLUSH")
+
+    assert metrics is not None
+    assert metrics["measuredCharacterCount"] == 5
+    assert metrics["measuredCharacterCountMethod"] == (
+        "glyph-color-connected-components"
+    )
+    assert [item["text"] for item in metrics["glyphBoxes"]] == list("SLUSH")
+    assert [item["box"] for item in metrics["glyphBoxes"]] == [
+        [75, 50, 215, 450],
+        [230, 50, 335, 450],
+        [350, 50, 490, 450],
+        [505, 50, 645, 450],
+        [660, 50, 825, 450],
+    ]
+    assert 0.45 < metrics["inkCoverage"] < 0.80
+
+
 def test_surface_regions_keep_real_card_and_drop_plain_text_block() -> None:
     image = np.full((500, 800, 3), (241, 248, 255), np.uint8)
     cv2.rectangle(image, (100, 100), (699, 399), (220, 220, 220), 2)

@@ -20,14 +20,27 @@ _BUNDLED_FONT_SPECS = (
         "source": "InterTight.ttf",
         "filename": "sens-inter-tight.ttf",
         "weight": "100 900",
+        "style": "normal",
+        "format": "truetype",
     },
     {
         "family": "Sens Newsreader",
         "source": "Newsreader.ttf",
         "filename": "sens-newsreader.ttf",
         "weight": "200 800",
+        "style": "normal",
+        "format": "truetype",
     },
 )
+_SOURCE_FONT_MAX_BYTES = 4 * 1024 * 1024
+_SOURCE_FONT_FORMATS = {
+    "woff2": (".woff2", "woff2"),
+    "woff": (".woff", "woff"),
+    "truetype": (".ttf", "truetype"),
+    "ttf": (".ttf", "truetype"),
+    "opentype": (".otf", "opentype"),
+    "otf": (".otf", "opentype"),
+}
 
 
 def _box(value: Any) -> list[int] | None:
@@ -35,6 +48,18 @@ def _box(value: Any) -> list[int] | None:
         return None
     try:
         box = [int(round(float(item))) for item in value]
+    except (TypeError, ValueError):
+        return None
+    if box[2] <= box[0] or box[3] <= box[1]:
+        return None
+    return box
+
+
+def _precise_box(value: Any) -> list[float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    try:
+        box = [round(float(item), 3) for item in value]
     except (TypeError, ValueError):
         return None
     if box[2] <= box[0] or box[3] <= box[1]:
@@ -54,11 +79,19 @@ def _number(value: Any, fallback: float = 0.0) -> float:
         return fallback
 
 
-def _box_style(box: list[int]) -> str:
+def _css_number(value: int | float) -> str:
+    number = round(float(value), 3)
+    if number == 0:
+        number = 0.0
+    return f"{number:.3f}".rstrip("0").rstrip(".")
+
+
+def _box_style(box: list[int | float]) -> str:
     x0, y0, x1, y1 = box
     return (
-        f"left:{x0}px;top:{y0}px;width:{x1 - x0}px;"
-        f"height:{y1 - y0}px"
+        f"left:{_css_number(x0)}px;top:{_css_number(y0)}px;"
+        f"width:{_css_number(x1 - x0)}px;"
+        f"height:{_css_number(y1 - y0)}px"
     )
 
 
@@ -76,6 +109,9 @@ def _text_value(entry: dict[str, Any]) -> str:
 def _font_family(entry: dict[str, Any]) -> str:
     typography = entry.get("typographyCandidate") or {}
     font = entry.get("fontFeatures") or {}
+    source_family = str(font.get("sourceFontFamily") or "").strip()
+    if re.fullmatch(r"Sens Source [0-9a-f]{12}", source_family):
+        return f"'{source_family}', Arial, 'Segoe UI', sans-serif"
     kind = str(typography.get("class") or "").casefold()
     family = str(font.get("family") or "").casefold()
     width = str(typography.get("width") or "").casefold()
@@ -131,6 +167,9 @@ def _font_family(entry: dict[str, Any]) -> str:
 
 def _font_weight(entry: dict[str, Any]) -> int:
     font = entry.get("fontFeatures") or {}
+    source_weight = int(_number(font.get("sourceDomFontWeight")))
+    if source_weight:
+        return max(100, min(900, source_weight))
     typography = entry.get("typographyCandidate") or {}
     typography_class = str(typography.get("class") or "").casefold()
     typography_weight = str(typography.get("weight") or "").casefold()
@@ -222,6 +261,10 @@ def _font_weight(entry: dict[str, Any]) -> int:
 
 
 def _font_style(entry: dict[str, Any]) -> str:
+    font = entry.get("fontFeatures") or {}
+    source_style = str(font.get("sourceDomFontStyle") or "").casefold()
+    if source_style in {"normal", "italic", "oblique"}:
+        return source_style
     typography = entry.get("typographyCandidate") or {}
     kind = str(typography.get("class") or "").casefold()
     slant = str(typography.get("slant") or "").casefold()
@@ -232,6 +275,66 @@ def _font_style(entry: dict[str, Any]) -> str:
     if slant in {"italic", "oblique"}:
         return slant
     return "italic" if "script" in kind else "normal"
+
+
+def _letter_spacing(entry: dict[str, Any]) -> float:
+    font = entry.get("fontFeatures") or {}
+    value = str(font.get("sourceDomLetterSpacing") or "").strip().casefold()
+    if not value or value == "normal":
+        return 0.0
+    match = re.fullmatch(r"(-?(?:\d+(?:\.\d*)?|\.\d+))px", value)
+    if match is None:
+        return 0.0
+    return max(-20.0, min(100.0, _number(match.group(1))))
+
+
+def _observed_dom_font_size(entry: dict[str, Any]) -> float | None:
+    """Return an exact live-DOM font size only when its font asset is bound."""
+    font = entry.get("fontFeatures") or {}
+    if (
+        font.get("sourceDomTypographySource")
+        != "observed-live-dom-computed-style"
+        or not re.fullmatch(
+            r"Sens Source [0-9a-f]{12}",
+            str(font.get("sourceFontFamily") or "").strip(),
+        )
+    ):
+        return None
+    match = re.fullmatch(
+        r"((?:\d+(?:\.\d*)?|\.\d+))px",
+        str(font.get("sourceDomFontSize") or "").strip().casefold(),
+    )
+    if match is None:
+        return None
+    size = _number(match.group(1))
+    return size if 4.0 <= size <= 512.0 else None
+
+
+def _observed_word_styles(
+    entry: dict[str, Any], value: str
+) -> tuple[list[re.Match[str]], list[dict[str, Any]]]:
+    tokens = list(re.finditer(r"\S+", value))
+    font = entry.get("fontFeatures") or {}
+    styles = font.get("sourceDomWordStyles") or []
+    if (
+        len(styles) != len(tokens)
+        or any(not isinstance(item, dict) for item in styles)
+        or any(
+            "".join(
+                character
+                for character in token.group(0).casefold()
+                if character.isalnum()
+            )
+            != "".join(
+                character
+                for character in str(item.get("text") or "").casefold()
+                if character.isalnum()
+            )
+            for token, item in zip(tokens, styles, strict=True)
+        )
+    ):
+        return tokens, []
+    return tokens, styles
 
 
 def _text_markup(entry: dict[str, Any], value: str) -> str:
@@ -247,6 +350,45 @@ def _text_markup(entry: dict[str, Any], value: str) -> str:
                 f'{html.escape(prefix)}<sup class="sens-indexed-label-index">{html.escape(index)}</sup> '
                 f'{html.escape(label)}</span>'
             )
+    tokens, source_word_styles = _observed_word_styles(entry, value)
+    if source_word_styles:
+        output: list[str] = []
+        for index, (token, observed_style) in enumerate(
+            zip(tokens, source_word_styles, strict=True)
+        ):
+            start = 0 if index == 0 else token.start()
+            end = tokens[index + 1].start() if index + 1 < len(tokens) else len(value)
+            run_font = dict(entry.get("fontFeatures") or {})
+            for key in (
+                "sourceFontFamily",
+                "sourceFontAssetSha256",
+                "sourceDomFamily",
+                "sourceDomFontWeight",
+                "sourceDomFontStyle",
+                "sourceDomFontSize",
+                "sourceDomLetterSpacing",
+                "sourceDomTypographySource",
+            ):
+                if observed_style.get(key) is not None:
+                    run_font[key] = observed_style[key]
+            run_entry = {**entry, "fontFeatures": run_font}
+            style = (
+                f"font-family:{_font_family(run_entry)};"
+                f"font-weight:{_font_weight(run_entry)};"
+                f"font-style:{_font_style(run_entry)};"
+                f"letter-spacing:{_css_number(_letter_spacing(run_entry))}px"
+            )
+            output.append(
+                '<span class="sens-inline-run" '
+                f'data-sens-run-index="{index}" style="{style}">'
+                f"{html.escape(value[start:end])}</span>"
+            )
+        return (
+            '<span class="sens-text" data-sens-inline-runs="true" '
+            'data-sens-run-authority="observed-live-dom-computed-style">'
+            + "".join(output)
+            + "</span>"
+        )
     runs = entry.get("inlineRuns") or []
     if (
         len(runs) < 2
@@ -310,9 +452,44 @@ def _measured_word_markup(
         for token, item in zip(tokens, word_boxes, strict=True)
     ):
         return None
+    _, source_word_styles = _observed_word_styles(entry, value)
+    ordered_boxes = [_box(item.get("box")) for item in word_boxes]
+    observed_boxes = (
+        [_box(item.get("sourceDomBox")) for item in source_word_styles]
+        if source_word_styles
+        else []
+    )
+    observed_geometry = False
+    if observed_boxes and all(box is not None for box in observed_boxes):
+        precise_boxes = [box for box in observed_boxes if box is not None]
+        union = [
+            min(box[0] for box in precise_boxes),
+            min(box[1] for box in precise_boxes),
+            max(box[2] for box in precise_boxes),
+            max(box[3] for box in precise_boxes),
+        ]
+        intersection = max(
+            0, min(source_box[2], union[2]) - max(source_box[0], union[0])
+        ) * max(
+            0, min(source_box[3], union[3]) - max(source_box[1], union[1])
+        )
+        union_area = (
+            (source_box[2] - source_box[0]) * (source_box[3] - source_box[1])
+            + (union[2] - union[0]) * (union[3] - union[1])
+            - intersection
+        )
+        overlap_ratio = intersection / max(1, union_area)
+        maximum_word_overlap = max(4.0, (source_box[3] - source_box[1]) * 0.25)
+        ordered = all(
+            right[0] >= left[0]
+            and right[0] >= left[2] - maximum_word_overlap
+            for left, right in zip(precise_boxes, precise_boxes[1:])
+        )
+        if overlap_ratio >= 0.45 and ordered:
+            ordered_boxes = precise_boxes
+            observed_geometry = True
     unit_widths = []
-    for token, item in zip(tokens, word_boxes, strict=True):
-        item_box = _box(item.get("box"))
+    for token, item_box in zip(tokens, ordered_boxes, strict=True):
         if item_box is None:
             return None
         character_count = max(
@@ -325,13 +502,12 @@ def _measured_word_markup(
         or max(unit_widths) / min(unit_widths) > 3.5
     ):
         return None
-    ordered_boxes = [_box(item.get("box")) for item in word_boxes]
     cap_height = max(
         1.0,
         _number(font.get("capHeight"), source_box[3] - source_box[1]),
     )
     minimum_visible_space = max(1.0, cap_height * 0.05)
-    if any(
+    if not source_word_styles and any(
         left is None
         or right is None
         or right[0] - left[2] < minimum_visible_space
@@ -339,11 +515,14 @@ def _measured_word_markup(
     ):
         # Touching OCR polygons cannot encode a visible word boundary. Keep
         # natural DOM whitespace instead of stretching words into one token.
+        # Exact live-DOM word styles are a stronger source: browser Range boxes
+        # may legitimately touch when negative tracking closes the visual gap.
         return None
     inline_runs = entry.get("inlineRuns") or []
     nodes: list[str] = []
-    for index, (token, item) in enumerate(zip(tokens, word_boxes, strict=True)):
-        word_box = _box(item.get("box"))
+    for index, (token, item, word_box) in enumerate(
+        zip(tokens, word_boxes, ordered_boxes, strict=True)
+    ):
         if word_box is None:
             return None
         relative = [
@@ -352,7 +531,7 @@ def _measured_word_markup(
             word_box[2] - source_box[0],
             word_box[3] - source_box[1],
         ]
-        if (
+        if not observed_geometry and (
             relative[0] < -2
             or relative[1] < -2
             or relative[2] > source_box[2] - source_box[0] + 2
@@ -370,6 +549,20 @@ def _measured_word_markup(
                 **(inline_runs[index].get("typographyCandidate") or {}),
             }
         word_font = dict(font)
+        if source_word_styles:
+            observed_style = source_word_styles[index]
+            for key in (
+                "sourceFontFamily",
+                "sourceFontAssetSha256",
+                "sourceDomFamily",
+                "sourceDomFontWeight",
+                "sourceDomFontStyle",
+                "sourceDomFontSize",
+                "sourceDomLetterSpacing",
+                "sourceDomTypographySource",
+            ):
+                if observed_style.get(key) is not None:
+                    word_font[key] = observed_style[key]
         for key in (
             "renderFamily",
             "renderFamilyCandidate",
@@ -388,36 +581,147 @@ def _measured_word_markup(
                 **run_typography,
             },
         }
+        observed_font_size = _observed_dom_font_size(word_entry)
+        font_size_style = (
+            f"font-size:{_css_number(observed_font_size)}px"
+            if observed_font_size is not None
+            else "font-size:inherit"
+        )
         style = (
-            f"{_box_style(relative)};font-size:inherit;line-height:normal;"
+            f"{_box_style(relative)};{font_size_style};line-height:normal;"
             f"font-family:{_font_family(word_entry)};"
             f"font-weight:{_font_weight(word_entry)};"
-            f"font-style:{_font_style(word_entry)}"
+            f"font-style:{_font_style(word_entry)};"
+            f"letter-spacing:{_css_number(_letter_spacing(word_entry))}px"
+        )
+        natural_fit = (
+            ' data-sens-natural-dom-fit="true"'
+            if observed_font_size is not None
+            else ""
+        )
+        geometry = (
+            "observed-live-dom-range"
+            if observed_geometry
+            else "measured-screenshot-word-box"
         )
         nodes.append(
-            f'<span class="sens-word-slot sens-fit-slot" data-sens-cap-height="{max(1, relative[3] - relative[1]):g}" data-sens-word-index="{index}" style="{style}"><span class="sens-text">{html.escape(token.group(0))}</span></span>'
+            f'<span class="sens-word-slot sens-fit-slot" data-sens-cap-height="{max(1, relative[3] - relative[1]):g}"{natural_fit} data-sens-word-geometry="{geometry}" data-sens-word-index="{index}" style="{style}"><span class="sens-text">{html.escape(token.group(0))}</span></span>'
         )
     return " ".join(nodes)
 
 
+def _measured_glyph_markup(
+    entry: dict[str, Any], value: str
+) -> str | None:
+    """Fit large display characters to deterministic source glyph boxes."""
+    source_box = _box(entry.get("boxSource"))
+    font = entry.get("fontFeatures") or {}
+    glyph_boxes = [
+        item
+        for item in font.get("glyphBoxes") or []
+        if isinstance(item, dict) and _box(item.get("box")) is not None
+    ]
+    characters = list(value)
+    if (
+        source_box is None
+        or _number(font.get("fontSize")) < 48
+        or not characters
+        or any(character.isspace() for character in characters)
+        or len(characters) != len(glyph_boxes)
+        or any(
+            str(item.get("text") or "") != character
+            for character, item in zip(characters, glyph_boxes, strict=True)
+        )
+    ):
+        return None
+    nodes: list[str] = []
+    previous_right = source_box[0]
+    for index, (character, item) in enumerate(
+        zip(characters, glyph_boxes, strict=True)
+    ):
+        glyph_box = _box(item.get("box"))
+        if glyph_box is None:
+            return None
+        if (
+            glyph_box[0] < source_box[0] - 2
+            or glyph_box[1] < source_box[1] - 2
+            or glyph_box[2] > source_box[2] + 2
+            or glyph_box[3] > source_box[3] + 2
+            or glyph_box[0] < previous_right
+        ):
+            return None
+        relative = [
+            glyph_box[0] - source_box[0],
+            glyph_box[1] - source_box[1],
+            glyph_box[2] - source_box[0],
+            glyph_box[3] - source_box[1],
+        ]
+        previous_right = glyph_box[2]
+        style = (
+            f"{_box_style(relative)};font-size:inherit;line-height:normal;"
+            f"font-family:{_font_family(entry)};"
+            f"font-weight:{_font_weight(entry)};"
+            f"font-style:{_font_style(entry)}"
+        )
+        nodes.append(
+            f'<span class="sens-glyph-slot sens-fit-slot" '
+            f'data-sens-cap-height="{max(1, relative[3] - relative[1]):g}" '
+            f'data-sens-glyph-index="{index}" style="{style}">'
+            f'<span class="sens-text">{html.escape(character)}</span></span>'
+        )
+    return "".join(nodes)
+
+
 def _text_style(entry: dict[str, Any], box: list[int]) -> str:
     font = entry.get("fontFeatures") or {}
-    size = max(1.0, _number(font.get("fontSize"), (box[3] - box[1]) * 0.8))
+    observed_font_size = _observed_dom_font_size(entry)
+    size = (
+        observed_font_size
+        if observed_font_size is not None
+        else max(
+            1.0,
+            _number(font.get("fontSize"), (box[3] - box[1]) * 0.8),
+        )
+    )
     color = _color(entry.get("color") or font.get("color"), "#111111")
     return (
         f"left:{box[0]}px;top:{box[1]}px;width:{box[2] - box[0]}px;"
         f"height:{box[3] - box[1]}px;font-size:{size:g}px;line-height:normal;"
         f"font-family:{_font_family(entry)};font-weight:{_font_weight(entry)};"
-        f"font-style:{_font_style(entry)};color:{color}"
+        f"font-style:{_font_style(entry)};"
+        f"letter-spacing:{_css_number(_letter_spacing(entry))}px;color:{color}"
     )
 
 
 def _text_metrics_attributes(entry: dict[str, Any]) -> str:
     font = entry.get("fontFeatures") or {}
     cap_height = _number(font.get("capHeight"))
-    if cap_height <= 0:
-        return ""
-    return f' data-sens-cap-height="{cap_height:g}"'
+    attributes: list[str] = []
+    if _observed_dom_font_size(entry) is not None:
+        attributes.append('data-sens-natural-dom-fit="true"')
+    if cap_height > 0:
+        attributes.append(
+            f'data-sens-cap-height="{_css_number(cap_height)}"'
+        )
+    source_box = _precise_box(entry.get("boxSource"))
+    ink_box = _precise_box(font.get("inkBox"))
+    if (
+        source_box is not None
+        and ink_box is not None
+        and ink_box[0] >= source_box[0] - 2
+        and ink_box[1] >= source_box[1] - 2
+        and ink_box[2] <= source_box[2] + 2
+        and ink_box[3] <= source_box[3] + 2
+    ):
+        attributes.extend(
+            (
+                f'data-sens-ink-x="{_css_number(ink_box[0] - source_box[0])}"',
+                f'data-sens-ink-y="{_css_number(ink_box[1] - source_box[1])}"',
+                f'data-sens-ink-width="{_css_number(ink_box[2] - ink_box[0])}"',
+                f'data-sens-ink-height="{_css_number(ink_box[3] - ink_box[1])}"',
+            )
+        )
+    return "" if not attributes else " " + " ".join(attributes)
 
 
 _ICON_SVG: dict[str, str] = {
@@ -584,7 +888,44 @@ def _asset_records(spec: dict[str, Any]) -> list[dict[str, Any]]:
     return records
 
 
-def _font_asset_records() -> list[dict[str, Any]]:
+def _source_vector_records(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    from sight.capture import _sanitize_source_svg
+
+    records: list[dict[str, Any]] = []
+    for index, entry in enumerate(spec.get("sourceVectorRegions") or []):
+        source = Path(str(entry.get("assetPath") or ""))
+        box = _precise_box(entry.get("boxSource"))
+        if box is None or not source.is_file():
+            continue
+        try:
+            content = source.read_bytes()
+            declared_sha256 = str(entry.get("contentSha256") or "").casefold()
+            if not declared_sha256 or hashlib.sha256(content).hexdigest() != declared_sha256:
+                continue
+            sanitized = _sanitize_source_svg(
+                content.decode("utf-8"),
+                id_prefix=f"sens-starter-vector-{index}-",
+            )
+        except (OSError, UnicodeDecodeError):
+            continue
+        if sanitized is None:
+            continue
+        records.append(
+            {
+                "elementId": entry.get("elementId"),
+                "box": box,
+                "content": sanitized,
+                "sha256": hashlib.sha256(sanitized).hexdigest(),
+                "wordmarkText": entry.get("wordmarkText"),
+                "selectableLabelElementId": entry.get(
+                    "selectableLabelElementId"
+                ),
+            }
+        )
+    return records
+
+
+def _font_asset_records(document: dict[str, Any]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for spec in _BUNDLED_FONT_SPECS:
         source = _FONT_ROOT / str(spec["source"])
@@ -598,18 +939,67 @@ def _font_asset_records() -> list[dict[str, Any]]:
                 "sha256": hashlib.sha256(content).hexdigest(),
             }
         )
+    spec = document.get("reconstruction") or {}
+    seen = {str(record["sha256"]) for record in records}
+    for source in (spec.get("sourceFontAssets") or [])[:16]:
+        if not isinstance(source, dict):
+            continue
+        digest = str(source.get("sha256") or "").casefold()
+        alias = str(source.get("alias") or "").strip()
+        font_format = str(source.get("format") or "").casefold()
+        format_spec = _SOURCE_FONT_FORMATS.get(font_format)
+        path = Path(str(source.get("path") or "")).expanduser()
+        if (
+            digest in seen
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or not re.fullmatch(r"Sens Source [0-9a-f]{12}", alias)
+            or format_spec is None
+            or not path.is_file()
+        ):
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        if (
+            not content
+            or len(content) > _SOURCE_FONT_MAX_BYTES
+            or hashlib.sha256(content).hexdigest() != digest
+        ):
+            continue
+        suffix, normalized_format = format_spec
+        style = str(source.get("style") or "normal").casefold()
+        style = style if style in {"normal", "italic", "oblique"} else "normal"
+        weight = str(source.get("weight") or "400")
+        if not re.fullmatch(r"(?:[1-9]00|normal|bold)(?:\s+[1-9]00)?", weight):
+            weight = "400"
+        records.append(
+            {
+                "family": alias,
+                "sourceFamily": str(source.get("family") or "")[:128],
+                "filename": f"sens-source-{digest[:12]}{suffix}",
+                "weight": weight,
+                "style": style,
+                "format": normalized_format,
+                "content": content,
+                "sha256": digest,
+                "source": "observed-live-page-font",
+            }
+        )
+        seen.add(digest)
     return records
 
 
 def _projection(
     document: dict[str, Any],
     assets: list[dict[str, Any]],
+    source_vectors: list[dict[str, Any]],
     font_assets: list[dict[str, Any]],
 ) -> dict[str, Any]:
     spec = document.get("reconstruction") or {}
     return {
         "schemaVersion": "sens-semantic-starter-2",
-        "generatorVersion": 22,
+        "generatorVersion": 27,
         "sourceId": (document.get("source") or {}).get("id"),
         "canvas": spec.get("canvas"),
         "background": _token_background(document),
@@ -633,11 +1023,28 @@ def _projection(
             }
             for item in assets
         ],
+        "sourceVectors": [
+            {
+                "elementId": item["elementId"],
+                "box": item["box"],
+                "sha256": item["sha256"],
+                "wordmarkText": item.get("wordmarkText"),
+                "selectableLabelElementId": item.get(
+                    "selectableLabelElementId"
+                ),
+            }
+            for item in source_vectors
+        ],
         "bundledFonts": [
             {
                 "family": item["family"],
+                "sourceFamily": item.get("sourceFamily"),
                 "filename": item["filename"],
                 "sha256": item["sha256"],
+                "weight": item.get("weight"),
+                "style": item.get("style"),
+                "format": item.get("format"),
+                "source": item.get("source", "bundled"),
             }
             for item in font_assets
         ],
@@ -647,6 +1054,7 @@ def _projection(
 def _render_project(
     document: dict[str, Any],
     assets: list[dict[str, Any]],
+    source_vectors: list[dict[str, Any]],
     font_assets: list[dict[str, Any]],
     digest: str,
 ) -> tuple[str, str, str, list[tuple[str, bytes]]]:
@@ -798,14 +1206,29 @@ def _render_project(
         box = _box(entry.get("boxSource"))
         if box is None or not value:
             continue
-        measured_words = _measured_word_markup(entry, value)
-        classes = (
-            "sens-text-slot sens-measured-words"
-            if measured_words is not None
-            else "sens-text-slot sens-fit-slot"
+        vector_wordmark = entry.get("visualRepresentation") == (
+            "source-vector-wordmark-with-selectable-live-label"
         )
+        measured_glyphs = None if vector_wordmark else _measured_glyph_markup(entry, value)
+        measured_words = (
+            None
+            if measured_glyphs is not None
+            else _measured_word_markup(entry, value)
+        )
+        if vector_wordmark:
+            classes = "sens-text-slot sens-vector-wordmark-label"
+            markup = _text_markup(entry, value)
+        elif measured_glyphs is not None:
+            classes = "sens-text-slot sens-measured-glyphs"
+            markup = measured_glyphs
+        elif measured_words is not None:
+            classes = "sens-text-slot sens-measured-words"
+            markup = measured_words
+        else:
+            classes = "sens-text-slot sens-fit-slot"
+            markup = _text_markup(entry, value)
         text_nodes.append(
-            f'<span class="{classes}" data-sens-text-box="true"{_text_metrics_attributes(entry)} data-source-element="{html.escape(str(entry.get("elementId") or ""))}" style="{_text_style(entry, box)}">{measured_words if measured_words is not None else _text_markup(entry, value)}</span>'
+            f'<span class="{classes}" data-sens-text-box="true"{_text_metrics_attributes(entry)} data-source-element="{html.escape(str(entry.get("elementId") or ""))}" style="{_text_style(entry, box)}">{markup}</span>'
         )
 
     lines: list[str] = []
@@ -860,15 +1283,28 @@ def _render_project(
     for index, asset in enumerate(assets, start=1):
         name = f"asset-{index}-{asset['sha256'][:8]}{asset['suffix']}"
         asset_files.append((name, asset["content"]))
-        background_artwork = asset.get("kind") == "alpha-masked-background-artwork"
+        background_artwork = asset.get("kind") in {
+            "alpha-masked-background-artwork",
+            "browser-source-background-artwork",
+        }
         raster_class = "sens-background-artwork" if background_artwork else "sens-raster"
         raster_role = (
-            ' data-sens-raster-role="alpha-masked-background-artwork"'
+            f' data-sens-raster-role="{html.escape(str(asset.get("kind")))}"'
             if background_artwork
             else ""
         )
         raster_nodes.append(
             f'<img class="{raster_class}" src="assets/{html.escape(name)}" alt="" draggable="false"{raster_role} data-sens-artifact-id="{html.escape(str(asset.get("artifactId") or ""))}" data-source-element="{html.escape(str(asset.get("elementId") or ""))}" style="{_box_style(asset["box"])}">'
+        )
+
+    source_vector_nodes: list[str] = []
+    for vector in source_vectors:
+        markup = vector["content"].decode("utf-8")
+        source_vector_nodes.append(
+            f'<div class="sens-source-vector" aria-hidden="true" '
+            f'data-sens-vector-role="source-vector-artwork" '
+            f'data-source-element="{html.escape(str(vector.get("elementId") or ""))}" '
+            f'style="{_box_style(vector["box"])}">{markup}</div>'
         )
 
     vector_nodes: list[str] = []
@@ -918,6 +1354,7 @@ def _render_project(
             *lines,
             vector_layer,
             *raster_nodes,
+            *source_vector_nodes,
             *symbols,
             *icons,
             *badges,
@@ -942,7 +1379,7 @@ def _render_project(
 </html>
 """
     font_faces = "\n".join(
-        f"@font-face{{font-family:'{font['family']}';src:url('assets/{font['filename']}') format('truetype');font-style:normal;font-weight:{font['weight']};font-display:block}}"
+        f"@font-face{{font-family:'{font['family']}';src:url('assets/{font['filename']}') format('{font['format']}');font-style:{font['style']};font-weight:{font['weight']};font-display:block}}"
         for font in font_assets
     )
     css = f"""{font_faces}
@@ -950,13 +1387,15 @@ def _render_project(
 html,body{{margin:0;width:100%;min-height:100%;background:{background}}}
 body{{overflow:auto}}
 .sens-canvas{{position:relative;width:{width}px;height:{height}px;overflow:hidden;background:{background};isolation:isolate}}
-.sens-surface,.sens-shape,.sens-line,.sens-raster,.sens-background-artwork,.sens-symbol-art,.sens-icon,.sens-badge,.sens-text-slot,.sens-control{{position:absolute;margin:0}}
+.sens-surface,.sens-shape,.sens-line,.sens-raster,.sens-background-artwork,.sens-source-vector,.sens-symbol-art,.sens-icon,.sens-badge,.sens-text-slot,.sens-control{{position:absolute;margin:0}}
 .sens-background-artwork{{z-index:0;display:block;object-fit:fill;user-select:none;pointer-events:none}}
 .sens-surface{{z-index:1}}
 .sens-shape{{z-index:2}}
 .sens-line{{z-index:3;pointer-events:none}}
 .sens-vector-layer{{position:absolute;inset:0;z-index:8;overflow:visible;pointer-events:none}}
 .sens-raster{{z-index:10;display:block;object-fit:fill;user-select:none}}
+.sens-source-vector{{z-index:29;display:block;pointer-events:none;user-select:none;overflow:visible}}
+.sens-source-vector>svg{{display:block;width:100%;height:100%;overflow:visible}}
 .sens-symbol-art{{z-index:20;white-space:pre;overflow:hidden;font-family:Consolas,'Courier New',monospace;font-weight:400;letter-spacing:0;user-select:text}}
 .sens-indexed-label-index{{font-size:.56em;line-height:0;vertical-align:.62em;margin-right:.08em}}
 .sens-symbol-visual{{position:absolute;display:block;background:currentColor;pointer-events:none}}
@@ -965,7 +1404,9 @@ body{{overflow:auto}}
 .sens-badge{{z-index:29;display:flex;align-items:center;justify-content:center;line-height:1;white-space:nowrap;user-select:text}}
 .sens-badge-text{{display:block;user-select:text}}
 .sens-text-slot{{z-index:30;display:block;overflow:visible;white-space:nowrap;letter-spacing:0;text-rendering:geometricPrecision;user-select:text}}
-.sens-word-slot{{position:absolute;display:block;overflow:visible;white-space:nowrap;letter-spacing:0;text-rendering:geometricPrecision;user-select:text}}
+.sens-vector-wordmark-label{{color:transparent!important;user-select:text}}
+.sens-vector-wordmark-label *{{color:transparent!important;user-select:text}}
+.sens-word-slot,.sens-glyph-slot{{position:absolute;display:block;overflow:visible;white-space:nowrap;letter-spacing:0;text-rendering:geometricPrecision;user-select:text}}
 .sens-text{{display:block;position:absolute;left:0;top:0;line-height:1;white-space:pre;transform-origin:0 0;user-select:text}}
 .sens-inline-run{{display:inline;line-height:inherit;white-space:pre;user-select:text}}
 .sens-control{{z-index:35;padding:0;display:flex;align-items:center;justify-content:center;appearance:none;text-align:center;text-decoration:none;color:inherit;white-space:nowrap;cursor:pointer}}
@@ -982,7 +1423,9 @@ body{{overflow:auto}}
     text.style.transform = 'none';
     const target = slot.getBoundingClientRect();
     const style = getComputedStyle(slot);
+    const naturalDomFit = slot.dataset.sensNaturalDomFit === 'true';
     const fontSize = Number.parseFloat(style.fontSize) || target.height;
+    const slotLetterSpacing = Number.parseFloat(style.letterSpacing) || 0;
     const runs = [...text.querySelectorAll('.sens-inline-run')];
     let left, right, ascent, descent, fontAscent, fontDescent;
     if (runs.length) {
@@ -1001,7 +1444,8 @@ body{{overflow:auto}}
         const runRight = Number.isFinite(runMetrics.actualBoundingBoxRight) ? runMetrics.actualBoundingBoxRight : runMetrics.width;
         minInkX = Math.min(minInkX, cursor - runLeft);
         maxInkX = Math.max(maxInkX, cursor + runRight);
-        cursor += runMetrics.width;
+        const runLetterSpacing = Number.parseFloat(runStyle.letterSpacing) || slotLetterSpacing;
+        cursor += runMetrics.width + runLetterSpacing * Math.max(0, run.textContent.length - 1);
         ascent = Math.max(ascent, Number.isFinite(runMetrics.actualBoundingBoxAscent) ? runMetrics.actualBoundingBoxAscent : fontSize * .8);
         descent = Math.max(descent, Number.isFinite(runMetrics.actualBoundingBoxDescent) ? runMetrics.actualBoundingBoxDescent : fontSize * .2);
         fontAscent = Math.max(fontAscent, Number.isFinite(runMetrics.fontBoundingBoxAscent) ? runMetrics.fontBoundingBoxAscent : ascent);
@@ -1014,6 +1458,7 @@ body{{overflow:auto}}
       const metrics = context.measureText(text.textContent);
       left = Number.isFinite(metrics.actualBoundingBoxLeft) ? metrics.actualBoundingBoxLeft : 0;
       right = Number.isFinite(metrics.actualBoundingBoxRight) ? metrics.actualBoundingBoxRight : metrics.width;
+      right += slotLetterSpacing * Math.max(0, text.textContent.length - 1);
       ascent = Number.isFinite(metrics.actualBoundingBoxAscent) ? metrics.actualBoundingBoxAscent : fontSize * .8;
       descent = Number.isFinite(metrics.actualBoundingBoxDescent) ? metrics.actualBoundingBoxDescent : fontSize * .2;
       fontAscent = Number.isFinite(metrics.fontBoundingBoxAscent) ? metrics.fontBoundingBoxAscent : ascent;
@@ -1023,14 +1468,31 @@ body{{overflow:auto}}
     const inkHeight = ascent + descent;
     if (inkWidth <= 0 || inkHeight <= 0) continue;
     const baseline = (fontSize - fontAscent - fontDescent) / 2 + fontAscent;
-    const scaleX = target.width / inkWidth;
+    const measuredInkWidth = Number.parseFloat(slot.dataset.sensInkWidth || '');
+    const desiredInkWidth = Number.isFinite(measuredInkWidth) && measuredInkWidth > 0
+      ? Math.min(target.width, measuredInkWidth)
+      : target.width;
+    const scaleX = naturalDomFit ? 1 : desiredInkWidth / inkWidth;
     const measuredCapHeight = Number.parseFloat(slot.dataset.sensCapHeight || '');
-    const desiredInkHeight = Number.isFinite(measuredCapHeight) && measuredCapHeight > 0
-      ? Math.min(target.height, measuredCapHeight)
-      : Math.min(target.height, fontSize * .73);
-    const scaleY = desiredInkHeight / inkHeight;
-    const translateX = left * scaleX;
-    const verticalPadding = Math.max(0, (target.height - desiredInkHeight) / 2);
+    const measuredInkHeight = Number.parseFloat(slot.dataset.sensInkHeight || '');
+    const desiredInkHeight = Number.isFinite(measuredInkHeight) && measuredInkHeight > 0
+      ? Math.min(target.height, measuredInkHeight)
+      : Number.isFinite(measuredCapHeight) && measuredCapHeight > 0
+        ? Math.min(target.height, measuredCapHeight)
+        : Math.min(target.height, fontSize * .73);
+    const scaleY = naturalDomFit ? 1 : desiredInkHeight / inkHeight;
+    const measuredInkX = Number.parseFloat(slot.dataset.sensInkX || '');
+    const measuredInkY = Number.parseFloat(slot.dataset.sensInkY || '');
+    const inkInsetX = naturalDomFit
+      ? Math.max(0, (target.width - inkWidth) / 2)
+      : Number.isFinite(measuredInkX) ? Math.max(0, measuredInkX) : 0;
+    const inkInsetY = naturalDomFit
+      ? Math.max(0, (target.height - inkHeight) / 2)
+      : Number.isFinite(measuredInkY)
+        ? Math.max(0, measuredInkY)
+        : Math.max(0, (target.height - desiredInkHeight) / 2);
+    const translateX = inkInsetX + left * scaleX;
+    const verticalPadding = inkInsetY;
     const translateY = verticalPadding - (baseline - ascent) * scaleY;
     text.style.transform = `matrix(${scaleX},0,0,${scaleY},${translateX},${translateY})`;
   }
@@ -1059,8 +1521,11 @@ def materialize_starter_project(
     assets = _asset_records(spec)
     if len(assets) != len(spec.get("allowedRasterRegions") or []):
         return None
-    font_assets = _font_asset_records()
-    projection = _projection(document, assets, font_assets)
+    source_vectors = _source_vector_records(spec)
+    if len(source_vectors) != len(spec.get("sourceVectorRegions") or []):
+        return None
+    font_assets = _font_asset_records(document)
+    projection = _projection(document, assets, source_vectors, font_assets)
     canonical = json.dumps(
         projection, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
@@ -1069,7 +1534,7 @@ def materialize_starter_project(
     destination = output_root / f"sens-starter-{digest[:16]}"
     destination.mkdir(parents=True, exist_ok=True)
     index, css, script, asset_files = _render_project(
-        document, assets, font_assets, digest
+        document, assets, source_vectors, font_assets, digest
     )
     _atomic_text(destination / "index.html", index)
     _atomic_text(destination / "styles.css", css)
@@ -1084,8 +1549,9 @@ def materialize_starter_project(
         "stylesheetPath": str(destination / "styles.css"),
         "sourceFiles": ["index.html", "styles.css", "script.js"],
         "rasterAssetCount": len(assets),
+        "sourceVectorAssetCount": len(source_vectors),
         "fontAssetCount": len(font_assets),
-        "representation": "live-dom-css-with-allowed-raster-assets-only",
+        "representation": "live-dom-css-with-allowed-raster-and-sanitized-vector-assets",
         "rule": "Copy or serve this starter immediately, then repair it only from sens_review repairHints. Do not rewrite the first candidate from scratch.",
     }
     spec["starterProject"] = result

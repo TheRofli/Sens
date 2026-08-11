@@ -7,6 +7,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+const SENS_MCP_TIMEOUT_MS: u64 = 35 * 60 * 1_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ZCodeConnectionStatus {
@@ -88,7 +90,7 @@ pub fn install(
             "SENS_SIDECARS_ROOT": sens_root.join("sidecars")
         },
         "enabled": true,
-        "timeoutMs": 900000
+        "timeoutMs": SENS_MCP_TIMEOUT_MS
     });
     let already_current = servers.get("sens") == Some(&desired)
         && servers
@@ -255,7 +257,7 @@ mod tests {
         assert_eq!(document["keep"], 7);
         assert_eq!(document["mcp"]["servers"]["eye"]["enabled"], false);
         assert_eq!(document["mcp"]["servers"]["sens"]["enabled"], true);
-        assert_eq!(document["mcp"]["servers"]["sens"]["timeoutMs"], 900_000);
+        assert_eq!(document["mcp"]["servers"]["sens"]["timeoutMs"], 2_100_000);
 
         let removed = uninstall(&config).expect("uninstall");
         assert!(removed.changed);

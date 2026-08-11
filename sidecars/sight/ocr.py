@@ -107,6 +107,11 @@ def run_ocr(image_path: str) -> list[dict[str, Any]]:
     return _run_with_engine(ocr_engine(), image_path)
 
 
+def run_ocr_image(image: Any) -> list[dict[str, Any]]:
+    """Run the Cyrillic-capable recognizer on an in-memory image."""
+    return _run_with_engine(ocr_engine(), image)
+
+
 def run_latin_ocr(image_path: str) -> list[dict[str, Any]]:
     return _run_with_engine(latin_ocr_engine(), image_path)
 
@@ -382,6 +387,163 @@ def merge_script_ocr_passes(
         ]
         merged.append(entry)
     return merged
+
+
+def discover_display_ocr(
+    image_path: str,
+    base_items: list[dict[str, Any]],
+    *,
+    scale: float = 0.5,
+    min_height_ratio: float = 0.12,
+) -> list[dict[str, Any]]:
+    """Discover oversized display text that native-scale OCR can miss.
+
+    OCR detectors are commonly tuned for ordinary text lines. A hero word that
+    occupies half the viewport can therefore be treated as artwork and leak
+    into a reconstruction background. A bounded adaptive set of downscaled
+    passes brings those glyphs back into the detector's normal operating range;
+    the alternate scales run only when the primary scale finds nothing. Only
+    large, high-confidence rows absent from the native-scale result are returned.
+    """
+    import cv2
+
+    if not 0.1 <= float(scale) < 1.0:
+        raise ValueError("display OCR scale must be between 0.1 and 1.0")
+    image = cv2.imread(image_path)
+    if image is None:
+        raise ValueError(f"cannot decode image: {image_path}")
+    height, width = image.shape[:2]
+    if height < 160 or width < 160:
+        return []
+    minimum_height = max(72, round(height * max(0.05, min_height_ratio)))
+
+    def scan(scan_scale: float) -> list[dict[str, Any]]:
+        resized = cv2.resize(
+            image,
+            None,
+            fx=scan_scale,
+            fy=scan_scale,
+            interpolation=cv2.INTER_AREA,
+        )
+        cyrillic = run_ocr_image(resized)
+        latin = run_latin_ocr_image(resized)
+        merged = merge_script_ocr_passes(cyrillic, latin)
+        discovered: list[dict[str, Any]] = []
+        for item in merged:
+            alternatives = item.get("alternatives") or []
+            current_text = str(item.get("text") or "").strip()
+            current_compact = "".join(
+                character.casefold()
+                for character in current_text
+                if character.isalnum()
+            )
+            latin_alternative = next(
+                (
+                    alternative
+                    for alternative in alternatives
+                    if alternative.get("script") == "latin"
+                ),
+                None,
+            )
+            if isinstance(latin_alternative, dict):
+                latin_text = str(latin_alternative.get("text") or "").strip()
+                latin_compact = "".join(
+                    character.casefold()
+                    for character in latin_text
+                    if character.isalnum()
+                )
+                latin_confidence = float(
+                    latin_alternative.get("confidence") or 0.0
+                )
+                current_confidence = float(item.get("confidence") or 0.0)
+                remaining = iter(latin_compact)
+                current_is_subsequence = bool(current_compact) and all(
+                    character in remaining for character in current_compact
+                )
+                if (
+                    str(item.get("method") or "")
+                    == "rapidocr-dual-script-disagreement"
+                    and len(current_compact) <= 2
+                    and len(latin_compact) >= 4
+                    and current_is_subsequence
+                    and _portable_latin_candidate(latin_text)
+                    and latin_confidence >= 0.93
+                    and latin_confidence >= current_confidence + 0.06
+                ):
+                    item = dict(item)
+                    item.update(
+                        {
+                            "text": latin_text,
+                            "confidence": round(latin_confidence, 3),
+                            "verified": True,
+                            "method": "rapidocr-dual-script-latin-preferred",
+                        }
+                    )
+            raw_box = item.get("box") or []
+            if len(raw_box) != 4:
+                continue
+            box = [
+                max(0, min(limit, round(float(value) / scan_scale)))
+                for value, limit in zip(
+                    raw_box, (width, height, width, height)
+                )
+            ]
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+            value = str(item.get("text") or "").strip()
+            confidence = float(item.get("confidence") or 0.0)
+            if (
+                box[3] - box[1] < minimum_height
+                or confidence < 0.82
+                or sum(character.isalnum() for character in value) < 2
+            ):
+                continue
+            duplicate = any(
+                _normalized_ocr_text(value)
+                == _normalized_ocr_text(str(existing.get("text") or ""))
+                and _box_match_score(box, list(existing.get("box") or []))
+                >= 0.30
+                for existing in base_items
+                if len(existing.get("box") or []) == 4
+            )
+            if duplicate:
+                continue
+            entry = dict(item)
+            method = str(item.get("method") or "")
+            if method == "rapidocr-dual-script-latin-preferred":
+                suffix = "latin-preferred"
+            elif method in {
+                "rapidocr-dual-script-consensus",
+                "rapidocr-dual-script-visible-sigil-consensus",
+            }:
+                suffix = "consensus"
+            else:
+                suffix = "candidate"
+            entry.update(
+                {
+                    "box": box,
+                    "text": value,
+                    "confidence": round(confidence, 3),
+                    "verified": bool(item.get("verified")),
+                    "method": f"rapidocr-downscaled-display-{suffix}",
+                    "displayScale": scan_scale,
+                    "epistemic": "observed",
+                }
+            )
+            discovered.append(entry)
+        return discovered
+
+    scales = [float(scale)]
+    scales.extend(
+        fallback
+        for fallback in (0.3, 0.4, 0.6)
+        if abs(float(scale) - fallback) > 0.001
+    )
+    for scan_scale in scales:
+        discovered = scan(scan_scale)
+        if discovered:
+            return discovered
+    return []
 
 
 def refine_ocr_for_reconstruction(

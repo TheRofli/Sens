@@ -15,6 +15,7 @@ from functools import lru_cache
 from typing import Any
 
 from sight.ocr import (
+    discover_display_ocr,
     load_cv,
     merge_script_ocr_passes,
     refine_ocr_for_reconstruction,
@@ -829,8 +830,780 @@ def _hydrate_intrinsic_text_raster_assets(
     _sanitize_web_structure(document)
 
 
+_SOURCE_BACKGROUND_MEDIA_TYPES = {
+    "image/avif",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+}
+_SOURCE_BACKGROUND_SUFFIXES = {
+    "image/avif": ".avif",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+_SOURCE_BACKGROUND_MAX_BYTES = 12 * 1024 * 1024
+_SOURCE_VECTOR_MAX_BYTES = 512 * 1024
+_SOURCE_FONT_MAX_BYTES = 4 * 1024 * 1024
+_SOURCE_FONT_MEDIA_TYPES = {
+    "font/woff2": (".woff2", "woff2"),
+    "application/font-woff2": (".woff2", "woff2"),
+    "font/woff": (".woff", "woff"),
+    "application/font-woff": (".woff", "woff"),
+    "font/ttf": (".ttf", "truetype"),
+    "application/x-font-ttf": (".ttf", "truetype"),
+    "font/otf": (".otf", "opentype"),
+    "application/x-font-opentype": (".otf", "opentype"),
+}
+
+
+def _source_raster_cache_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict[str, Any]] = []
+    for entry in value[:12]:
+        if not isinstance(entry, dict):
+            continue
+        evidence.append(
+            {
+                key: entry.get(key)
+                for key in (
+                    "rasterIndex",
+                    "domIndex",
+                    "kind",
+                    "sha256",
+                    "sizeBytes",
+                    "mediaType",
+                    "box",
+                    "visible",
+                    "objectFit",
+                    "backgroundSize",
+                    "backdropColor",
+                    "overlappingLiveTextCount",
+                    "source",
+                    "method",
+                )
+            }
+        )
+    return evidence
+
+
+def _source_vector_cache_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict[str, Any]] = []
+    for entry in value[:12]:
+        if not isinstance(entry, dict):
+            continue
+        evidence.append(
+            {
+                key: entry.get(key)
+                for key in (
+                    "vectorIndex",
+                    "domIndex",
+                    "sha256",
+                    "sizeBytes",
+                    "mediaType",
+                    "box",
+                    "visible",
+                    "viewportCoverage",
+                    "source",
+                    "method",
+                )
+            }
+        )
+    return evidence
+
+
+def _source_text_cache_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict[str, Any]] = []
+    for entry in value[:500]:
+        if not isinstance(entry, dict) or entry.get("visible") is False:
+            continue
+        style = entry.get("style") if isinstance(entry.get("style"), dict) else {}
+        evidence.append(
+            {
+                "text": str(entry.get("text") or "")[:500],
+                "box": entry.get("box"),
+                "style": {
+                    key: style.get(key)
+                    for key in (
+                        "fontFamily",
+                        "fontSize",
+                        "fontWeight",
+                        "fontStyle",
+                        "letterSpacing",
+                    )
+                },
+            }
+        )
+    return evidence
+
+
+def _source_font_cache_evidence(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    evidence: list[dict[str, Any]] = []
+    for entry in value[:16]:
+        if not isinstance(entry, dict):
+            continue
+        evidence.append(
+            {
+                key: entry.get(key)
+                for key in (
+                    "family",
+                    "weight",
+                    "style",
+                    "stretch",
+                    "sha256",
+                    "sizeBytes",
+                    "mediaType",
+                    "format",
+                    "source",
+                    "method",
+                )
+            }
+        )
+    return evidence
+
+
+def _source_font_weight(value: Any, fallback: int = 400) -> int:
+    text = str(value or "").strip().casefold()
+    named = {
+        "normal": 400,
+        "regular": 400,
+        "medium": 500,
+        "semibold": 600,
+        "semi-bold": 600,
+        "bold": 700,
+        "light": 300,
+    }
+    if text in named:
+        return named[text]
+    match = re.search(r"\b([1-9]00)\b", text)
+    if match:
+        return int(match.group(1))
+    return fallback
+
+
+def _source_font_family(value: Any) -> str:
+    first = str(value or "").split(",", 1)[0].strip().strip("'\"")
+    if not first or len(first) > 128 or any(ord(character) < 32 for character in first):
+        return ""
+    return first
+
+
+def _source_box_match(left: Any, right: Any) -> float:
+    if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+        return 0.0
+    if len(left) != 4 or len(right) != 4:
+        return 0.0
+    intersection = _box_intersection(list(left), list(right))
+    try:
+        left_area = max(1.0, (float(left[2]) - float(left[0])) * (float(left[3]) - float(left[1])))
+        right_area = max(1.0, (float(right[2]) - float(right[0])) * (float(right[3]) - float(right[1])))
+    except (TypeError, ValueError):
+        return 0.0
+    return min(1.0, intersection / min(left_area, right_area))
+
+
+def _verified_source_font_assets(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    verified: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for entry in value[:16]:
+        if not isinstance(entry, dict):
+            continue
+        family = _source_font_family(entry.get("family"))
+        digest = str(entry.get("sha256") or "").casefold()
+        media_type = str(entry.get("mediaType") or "").split(";", 1)[0].casefold()
+        media = _SOURCE_FONT_MEDIA_TYPES.get(media_type)
+        path = Path(str(entry.get("path") or "")).expanduser()
+        if (
+            not family
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or media is None
+            or not path.is_file()
+        ):
+            continue
+        try:
+            content = path.read_bytes()
+        except OSError:
+            continue
+        if not content or len(content) > _SOURCE_FONT_MAX_BYTES:
+            continue
+        if hashlib.sha256(content).hexdigest() != digest:
+            continue
+        suffix, font_format = media
+        weight = str(entry.get("weight") or "normal")[:32]
+        style = str(entry.get("style") or "normal").casefold()
+        style = style if style in {"normal", "italic", "oblique"} else "normal"
+        identity = (family.casefold(), weight.casefold(), style, digest)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        verified.append(
+            {
+                "family": family,
+                "alias": f"Sens Source {digest[:12]}",
+                "weight": weight,
+                "style": style,
+                "stretch": str(entry.get("stretch") or "normal")[:32],
+                "path": str(path.resolve()),
+                "sha256": digest,
+                "sizeBytes": len(content),
+                "mediaType": media_type,
+                "format": font_format,
+                "suffix": suffix,
+                "source": "observed",
+                "method": "verified-playwright-loaded-font-response",
+            }
+        )
+    return verified
+
+
+def _hydrate_source_dom_typography(
+    document: dict[str, Any],
+    source_text_nodes: Any = None,
+    source_font_assets: Any = None,
+) -> None:
+    """Prefer observed live-DOM typography over screenshot font inference."""
+    spec = document.get("reconstruction") or {}
+    if not spec:
+        return
+    fonts = _verified_source_font_assets(source_font_assets)
+    if fonts:
+        spec["sourceFontAssets"] = fonts
+    nodes = [
+        entry
+        for entry in (source_text_nodes if isinstance(source_text_nodes, list) else [])[:500]
+        if isinstance(entry, dict)
+        and entry.get("visible") is not False
+        and _normalized_text(entry.get("text"))
+        and isinstance(entry.get("style"), dict)
+    ]
+    if not nodes:
+        return
+    spec["typographyAuthority"] = _web_typography_authority()
+
+    def best_node(entry: dict[str, Any]) -> dict[str, Any] | None:
+        target = _normalized_text(entry.get("preferredValue") or entry.get("value"))
+        if not target:
+            return None
+        target_box = entry.get("boxSource") or []
+        ranked: list[tuple[float, dict[str, Any]]] = []
+        for node in nodes:
+            observed = _normalized_text(node.get("text"))
+            exact = target == observed
+            contains = target in observed or observed in target
+            similarity = SequenceMatcher(None, target, observed).ratio()
+            if not exact and not contains and similarity < 0.72:
+                continue
+            box_match = _source_box_match(target_box, node.get("box"))
+            text_score = 1.0 if exact else max(similarity, 0.86 if contains else 0.0)
+            ranked.append((text_score * 0.75 + box_match * 0.25, node))
+        if not ranked:
+            return None
+        score, node = max(ranked, key=lambda item: item[0])
+        return node if score >= 0.66 else None
+
+    def closest_font(family: str, weight: int, style: str) -> dict[str, Any] | None:
+        candidates = [font for font in fonts if font["family"].casefold() == family.casefold()]
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda font: (
+                0 if font["style"] == style else 1,
+                abs(_source_font_weight(font["weight"]) - weight),
+            ),
+        )
+
+    def text_words(value: Any) -> list[tuple[str, str]]:
+        words: list[tuple[str, str]] = []
+        for match in re.finditer(r"\S+", str(value or "")):
+            normalized = _normalized_text(match.group(0))
+            if normalized:
+                words.append((match.group(0), normalized))
+        return words
+
+    observed_words: list[dict[str, Any]] = []
+    for node_index, node in enumerate(nodes):
+        node_words = text_words(node.get("text"))
+        if not node_words:
+            continue
+        measured_words = [
+            item
+            for item in (node.get("wordBoxes") or [])
+            if isinstance(item, dict)
+            and _normalized_text(item.get("text"))
+            and isinstance(item.get("box"), (list, tuple))
+            and len(item.get("box")) == 4
+        ]
+        use_measured_words = (
+            len(measured_words) == len(node_words)
+            and all(
+                _normalized_text(item.get("text")) == normalized
+                for item, (_, normalized) in zip(
+                    measured_words, node_words, strict=True
+                )
+            )
+        )
+        for word_index, (text, normalized) in enumerate(node_words):
+            observed_words.append(
+                {
+                    "text": text,
+                    "normalized": normalized,
+                    "box": list(measured_words[word_index]["box"])
+                    if use_measured_words
+                    else list(node.get("box") or [])[:4],
+                    "node": node,
+                    "nodeIndex": node_index,
+                }
+            )
+
+    def observed_word_styles(entry: dict[str, Any]) -> list[dict[str, Any]]:
+        target_words = text_words(
+            entry.get("preferredValue") or entry.get("value")
+        )
+        if not target_words or len(observed_words) < len(target_words):
+            return []
+        target_normalized = [normalized for _, normalized in target_words]
+        target_box = list(entry.get("boxSource") or [])[:4]
+        ranked: list[tuple[float, list[dict[str, Any]]]] = []
+        for start in range(len(observed_words) - len(target_words) + 1):
+            window = observed_words[start : start + len(target_words)]
+            if [word["normalized"] for word in window] != target_normalized:
+                continue
+            boxes = [word.get("box") or [] for word in window]
+            if any(len(box) != 4 for box in boxes):
+                continue
+            union = [
+                min(float(box[0]) for box in boxes),
+                min(float(box[1]) for box in boxes),
+                max(float(box[2]) for box in boxes),
+                max(float(box[3]) for box in boxes),
+            ]
+            overlap = _source_box_match(target_box, union)
+            try:
+                target_center = (
+                    (float(target_box[0]) + float(target_box[2])) / 2.0,
+                    (float(target_box[1]) + float(target_box[3])) / 2.0,
+                )
+                union_center = (
+                    (union[0] + union[2]) / 2.0,
+                    (union[1] + union[3]) / 2.0,
+                )
+                scale = max(
+                    1.0,
+                    float(target_box[2]) - float(target_box[0]),
+                    float(target_box[3]) - float(target_box[1]),
+                )
+                distance = (
+                    (target_center[0] - union_center[0]) ** 2
+                    + (target_center[1] - union_center[1]) ** 2
+                ) ** 0.5
+                proximity = max(0.0, 1.0 - distance / (scale * 2.0))
+            except (IndexError, TypeError, ValueError):
+                proximity = 0.0
+            ranked.append((overlap * 0.75 + proximity * 0.25, window))
+        if not ranked:
+            return []
+        score, selected = max(ranked, key=lambda item: item[0])
+        if score < 0.45:
+            return []
+        styles: list[dict[str, Any]] = []
+        for (target_text, _), observed in zip(
+            target_words, selected, strict=True
+        ):
+            node = observed["node"]
+            style_data = node.get("style") or {}
+            family = _source_font_family(style_data.get("fontFamily"))
+            if not family:
+                return []
+            weight = _source_font_weight(style_data.get("fontWeight"))
+            style = str(style_data.get("fontStyle") or "normal").casefold()
+            style = style if style in {"normal", "italic", "oblique"} else "normal"
+            result = {
+                "text": target_text,
+                "sourceDomFamily": family,
+                "sourceDomFontWeight": weight,
+                "sourceDomFontStyle": style,
+                "sourceDomFontSize": str(style_data.get("fontSize") or "")[:32],
+                "sourceDomLineHeight": str(style_data.get("lineHeight") or "")[:32],
+                "sourceDomLetterSpacing": str(
+                    style_data.get("letterSpacing") or ""
+                )[:32],
+                "sourceDomBox": list(observed.get("box") or [])[:4],
+                "sourceDomTypographySource": (
+                    "observed-live-dom-computed-style"
+                ),
+            }
+            font = closest_font(family, weight, style)
+            if font is not None:
+                result["sourceFontFamily"] = font["alias"]
+                result["sourceFontAssetSha256"] = font["sha256"]
+            styles.append(result)
+        return styles
+
+    for entry in spec.get("text") or []:
+        if not isinstance(entry, dict):
+            continue
+        node = best_node(entry)
+        if node is None:
+            continue
+        style_data = node.get("style") or {}
+        family = _source_font_family(style_data.get("fontFamily"))
+        if not family:
+            continue
+        weight = _source_font_weight(style_data.get("fontWeight"))
+        style = str(style_data.get("fontStyle") or "normal").casefold()
+        style = style if style in {"normal", "italic", "oblique"} else "normal"
+        metrics = dict(entry.get("fontFeatures") or {})
+        metrics.update(
+            {
+                "sourceDomFamily": family,
+                "sourceDomFontWeight": weight,
+                "sourceDomFontStyle": style,
+                "sourceDomFontSize": str(style_data.get("fontSize") or "")[:32],
+                "sourceDomLineHeight": str(style_data.get("lineHeight") or "")[:32],
+                "sourceDomLetterSpacing": str(style_data.get("letterSpacing") or "")[:32],
+                "sourceDomTextTransform": str(style_data.get("textTransform") or "")[:32],
+                "sourceDomTextAlign": str(style_data.get("textAlign") or "")[:32],
+                "sourceDomBox": list(node.get("box") or [])[:4],
+                "sourceDomText": str(node.get("text") or "")[:500],
+                "sourceDomTypographySource": "observed-live-dom-computed-style",
+                "renderWeight": weight,
+            }
+        )
+        font = closest_font(family, weight, style)
+        if font is not None:
+            metrics["sourceFontFamily"] = font["alias"]
+            metrics["sourceFontAssetSha256"] = font["sha256"]
+        word_styles = observed_word_styles(entry)
+        if word_styles:
+            metrics["sourceDomWordStyles"] = word_styles
+            metrics["sourceDomRunAuthority"] = (
+                "observed-live-dom-computed-style"
+            )
+        entry["fontFeatures"] = metrics
+        typography = entry.get("typographyCandidate")
+        if isinstance(typography, dict):
+            typography = dict(typography)
+            typography["authority"] = "inferred-fallback-only-when-source-dom-is-unavailable"
+            entry["typographyCandidate"] = typography
+
+
+def _hydrate_source_vector_regions(
+    document: dict[str, Any], source_vector_assets: Any = None
+) -> None:
+    """Verify captured SVG bytes and bind large wordmarks to selectable labels."""
+    spec = document.get("reconstruction") or {}
+    canvas = spec.get("canvas") or {}
+    if (
+        spec.get("targetKind") != "web"
+        or not isinstance(source_vector_assets, list)
+        or int(canvas.get("width") or 0) <= 0
+        or int(canvas.get("height") or 0) <= 0
+    ):
+        return
+    from sight.capture import _sanitize_source_svg
+
+    verified: list[dict[str, Any]] = []
+    safe_root = Path(cache_root()) / "source-vectors"
+    for asset_index, asset in enumerate(source_vector_assets[:12]):
+        if not isinstance(asset, dict) or (
+            asset.get("source") != "observed"
+            or asset.get("method") != "sanitized-live-dom-svg"
+            or asset.get("mediaType") != "image/svg+xml"
+            or asset.get("visible") is not True
+        ):
+            continue
+        box = asset.get("box")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            normalized_box = [round(float(value), 3) for value in box]
+        except (TypeError, ValueError):
+            continue
+        if _source_box_area(normalized_box) <= 0:
+            continue
+        path = Path(str(asset.get("path") or "")).expanduser()
+        try:
+            content = path.read_bytes()
+            declared_size = int(asset.get("sizeBytes") or 0)
+        except (OSError, TypeError, ValueError):
+            continue
+        if (
+            not content
+            or len(content) > _SOURCE_VECTOR_MAX_BYTES
+            or declared_size != len(content)
+            or hashlib.sha256(content).hexdigest()
+            != str(asset.get("sha256") or "").casefold()
+        ):
+            continue
+        try:
+            markup = content.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        safe_content = _sanitize_source_svg(
+            markup,
+            id_prefix=f"sens-contract-vector-{asset_index}-",
+        )
+        if safe_content is None:
+            continue
+        safe_digest = hashlib.sha256(safe_content).hexdigest()
+        destination = safe_root / f"source-vector-{safe_digest[:20]}.svg"
+        try:
+            safe_root.mkdir(parents=True, exist_ok=True)
+            if not destination.exists() or destination.read_bytes() != safe_content:
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix=f".{destination.name}.", dir=safe_root
+                )
+                os.close(descriptor)
+                try:
+                    Path(temporary).write_bytes(safe_content)
+                    os.replace(temporary, destination)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+        except OSError:
+            continue
+        element_id = f"source-vector-{asset_index}-{safe_digest[:12]}"
+        region = {
+            "elementId": element_id,
+            "boxSource": normalized_box,
+            "assetPath": str(destination.resolve()),
+            "contentSha256": safe_digest,
+            "mediaType": "image/svg+xml",
+            "source": "observed",
+            "method": "verified-sanitized-live-dom-svg",
+            "ariaHidden": True,
+            "evidence": {
+                "vectorIndex": asset.get("vectorIndex"),
+                "domIndex": asset.get("domIndex"),
+                "captureSha256": asset.get("sha256"),
+                "sizeBytes": len(safe_content),
+            },
+        }
+        verified.append(region)
+        artifact_id = f"vector:{safe_digest}"
+        artifacts = document.setdefault("artifacts", [])
+        if not any(item.get("id") == artifact_id for item in artifacts):
+            artifacts.append(
+                {
+                    "id": artifact_id,
+                    "kind": "sanitized-source-vector",
+                    "uri": str(destination.resolve()),
+                    "mediaType": "image/svg+xml",
+                }
+            )
+    if not verified:
+        return
+    verified.sort(key=lambda entry: (entry["boxSource"][0], entry["boxSource"][1]))
+
+    for entry in spec.get("text") or []:
+        value = str(entry.get("preferredValue") or entry.get("value") or "").strip()
+        text_box = entry.get("boxSource") or []
+        if (
+            not re.fullmatch(r"[A-Za-z0-9]{2,12}", value)
+            or len(text_box) != 4
+            or not str(entry.get("method") or "").startswith(
+                "rapidocr-downscaled-display-"
+            )
+        ):
+            continue
+        text_width = max(1.0, float(text_box[2]) - float(text_box[0]))
+        text_height = max(1.0, float(text_box[3]) - float(text_box[1]))
+        candidates = [
+            region
+            for region in verified
+            if (
+                max(
+                    0.0,
+                    min(float(text_box[2]), float(region["boxSource"][2]))
+                    - max(float(text_box[0]), float(region["boxSource"][0])),
+                )
+                / max(
+                    1.0,
+                    float(region["boxSource"][2])
+                    - float(region["boxSource"][0]),
+                )
+                >= 0.5
+                and max(
+                    0.0,
+                    min(float(text_box[3]), float(region["boxSource"][3]))
+                    - max(float(text_box[1]), float(region["boxSource"][1])),
+                )
+                / text_height
+                >= 0.65
+            )
+        ]
+        if len(candidates) != len(value):
+            continue
+        union = [
+            min(region["boxSource"][0] for region in candidates),
+            min(region["boxSource"][1] for region in candidates),
+            max(region["boxSource"][2] for region in candidates),
+            max(region["boxSource"][3] for region in candidates),
+        ]
+        horizontal_coverage = max(
+            0.0,
+            min(float(text_box[2]), float(union[2]))
+            - max(float(text_box[0]), float(union[0])),
+        ) / text_width
+        if horizontal_coverage < 0.8:
+            continue
+        asset_ids = [region["elementId"] for region in candidates]
+        entry["visualRepresentation"] = (
+            "source-vector-wordmark-with-selectable-live-label"
+        )
+        entry["sourceVectorAssetIds"] = asset_ids
+        entry["representationSource"] = "verified-live-dom-svg-geometry"
+        for region in candidates:
+            region["wordmarkText"] = value
+            region["selectableLabelElementId"] = entry.get("elementId")
+    materialized = [region for region in verified if region.get("wordmarkText")]
+    if materialized:
+        spec["sourceVectorRegions"] = materialized
+    else:
+        spec.pop("sourceVectorRegions", None)
+
+
+def _css_backdrop_to_hex(value: Any) -> str | None:
+    """Normalize a measured opaque CSS backdrop to a starter-safe hex color."""
+    text = str(value or "").strip()
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", text):
+        return text.upper()
+    short_hex = re.fullmatch(r"#([0-9A-Fa-f])([0-9A-Fa-f])([0-9A-Fa-f])", text)
+    if short_hex:
+        return "#" + "".join(channel * 2 for channel in short_hex.groups()).upper()
+    match = re.fullmatch(
+        r"rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})"
+        r"(?:\s*,\s*(0(?:\.\d+)?|1(?:\.0+)?))?\s*\)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    red, green, blue = (int(channel) for channel in match.groups()[:3])
+    if any(channel > 255 for channel in (red, green, blue)):
+        return None
+    alpha = match.group(4)
+    if alpha is not None and float(alpha) < 0.999:
+        return None
+    return f"#{red:02X}{green:02X}{blue:02X}"
+
+
+def _verified_source_background(
+    source_raster_assets: Any,
+    *,
+    width: int,
+    height: int,
+) -> dict[str, Any] | None:
+    if not isinstance(source_raster_assets, list) or width <= 0 or height <= 0:
+        return None
+    candidates: list[tuple[float, dict[str, Any]]] = []
+    for asset in source_raster_assets[:12]:
+        if not isinstance(asset, dict):
+            continue
+        if (
+            asset.get("source") != "observed"
+            or asset.get("method") != "playwright-response-body"
+            or asset.get("visible") is not True
+            or str(asset.get("mediaType") or "").lower()
+            not in _SOURCE_BACKGROUND_MEDIA_TYPES
+            or int(asset.get("overlappingLiveTextCount") or 0) < 1
+        ):
+            continue
+        box = asset.get("box")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            x0, y0, x1, y1 = (int(round(float(value))) for value in box)
+        except (TypeError, ValueError):
+            continue
+        if x1 <= x0 or y1 <= y0:
+            continue
+        intersection_width = max(0, min(width, x1) - max(0, x0))
+        intersection_height = max(0, min(height, y1) - max(0, y0))
+        coverage = (intersection_width * intersection_height) / max(
+            1, width * height
+        )
+        if coverage < 0.55:
+            continue
+        path = Path(str(asset.get("path") or "")).expanduser()
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if size <= 0 or size > _SOURCE_BACKGROUND_MAX_BYTES:
+            continue
+        try:
+            declared_size = int(asset.get("sizeBytes") or size)
+        except (TypeError, ValueError):
+            continue
+        if declared_size != size:
+            continue
+        content_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if content_sha256 != str(asset.get("sha256") or "").lower():
+            continue
+        background_color = _css_backdrop_to_hex(asset.get("backdropColor"))
+        candidates.append(
+            (
+                coverage,
+                {
+                    "elementId": "browser-source-background",
+                    "kind": "browser-source-background-artwork",
+                    "boxSource": [x0, y0, x1, y1],
+                    "strategy": "preserve-browser-loaded-source-raster",
+                    "implementation": "Use the Sens-copied browser source as the noninteractive background at its measured box. Keep every separately observed text node and control as live semantic DOM above it.",
+                    "semanticContentRemoved": True,
+                    "protectionVersion": 4,
+                    "protectionPolicy": {
+                        "backgroundOnly": True,
+                        "liveText": "separate-observed-live-dom",
+                        "controlDecoration": "separate-semantic-css",
+                        "fullReferenceScreenshot": False,
+                    },
+                    "source": "observed",
+                    "method": "verified-playwright-response-body",
+                    "sourceAssetPath": str(path.resolve()),
+                    "contentSha256": content_sha256,
+                    "mediaType": str(asset.get("mediaType")).lower(),
+                    "objectFit": asset.get("objectFit"),
+                    "backgroundSize": asset.get("backgroundSize"),
+                    **(
+                        {"backgroundColor": background_color}
+                        if background_color
+                        else {}
+                    ),
+                    "evidence": {
+                        "rasterIndex": asset.get("rasterIndex"),
+                        "domIndex": asset.get("domIndex"),
+                        "viewportCoverage": round(coverage, 5),
+                        "overlappingLiveTextCount": int(
+                            asset.get("overlappingLiveTextCount") or 0
+                        ),
+                        "sizeBytes": size,
+                    },
+                },
+            )
+        )
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def _hydrate_background_artwork_layer(
-    document: dict[str, Any], image_path: str
+    document: dict[str, Any],
+    image_path: str,
+    source_raster_assets: Any = None,
 ) -> None:
     """Preserve a genuinely textured canvas without flattening live content.
 
@@ -847,15 +1620,76 @@ def _hydrate_background_artwork_layer(
     if spec.get("targetKind") != "web":
         return
     allowed = spec.setdefault("allowedRasterRegions", [])
+    try:
+        source_image = load_cv(image_path)
+    except (OSError, ValueError):
+        return
+    source_height, source_width = source_image.shape[:2]
+    source_background = _verified_source_background(
+        source_raster_assets,
+        width=source_width,
+        height=source_height,
+    )
+    if source_background is not None:
+        allowed[:] = [
+            entry
+            for entry in allowed
+            if entry.get("kind")
+            not in {
+                "alpha-masked-background-artwork",
+                "browser-source-background-artwork",
+            }
+        ]
+        composite_overlay = {
+            "elementId": "browser-source-composite-overlay",
+            "kind": "alpha-masked-background-artwork",
+            "boxSource": [0, 0, source_width, source_height],
+            "boxNormSource": [0, 0, 1000, 1000],
+            "strategy": "preserve-reference-decoration-with-semantic-alpha-holes",
+            "implementation": "Layer this Sens-materialized decorative overlay above the verified browser source raster. Its measured semantic regions are transparent, so live text and controls remain DOM while the exact source raster supplies the pixels beneath them.",
+            "semanticContentRemoved": True,
+            "protectionVersion": 5,
+            "protectionPolicy": {
+                "backgroundOnly": True,
+                "liveText": "transparent-holes-reveal-verified-browser-source-under-live-dom",
+                "controlDecoration": "transparent-holes-reveal-verified-browser-source-under-semantic-css",
+                "microIcons": "transparent-holes-reveal-verified-browser-source-under-svg-css",
+                "surfaces": "transparent-holes-reveal-verified-browser-source-under-css",
+                "structuralLines": "transparent-holes-reveal-verified-browser-source-under-css-vector",
+                "vectorPaths": "transparent-holes-reveal-verified-browser-source-under-svg",
+                "badges": "transparent-holes-reveal-verified-browser-source-under-live-dom",
+                "symbolArt": "transparent-holes-reveal-verified-browser-source-under-live-preformatted-text",
+                "objects": "independent-approved-assets-only",
+                "fullReferenceScreenshot": False,
+            },
+            "source": "measured",
+            "method": "protected-composite-alpha-mask",
+            "compositeUnderlay": "browser-source-background",
+            "evidence": {
+                "browserSourceSha256": source_background.get("contentSha256"),
+                "browserSourceBox": source_background.get("boxSource"),
+            },
+        }
+        allowed.extend([source_background, composite_overlay])
+        background_color = source_background.get("backgroundColor")
+        if background_color:
+            tokens = document.setdefault("tokens", {})
+            colors = tokens.setdefault("color", {})
+            color_token = {"$type": "color", "$value": background_color}
+            colors["canvas"] = dict(color_token)
+            colors["background"] = dict(color_token)
+            document.setdefault("header", {})["background"] = background_color
+        return
     if any(
-        entry.get("kind") == "alpha-masked-background-artwork"
+        entry.get("kind")
+        in {
+            "alpha-masked-background-artwork",
+            "browser-source-background-artwork",
+        }
         for entry in allowed
     ):
         return
-    try:
-        image = load_cv(image_path)
-    except (OSError, ValueError):
-        return
+    image = source_image
     height, width = image.shape[:2]
     if width * height <= 0:
         return
@@ -901,6 +1735,11 @@ def _hydrate_background_artwork_layer(
         and distance_spread >= 20.0
         and gradient_p75 >= 3.0
     )
+    textured_artwork = bool(
+        distance_spread >= 8.0
+        and detail_p75 >= 4.0
+        and gradient_p75 >= 6.0
+    )
     dense_interface = bool(
         len(spec.get("surfaces") or []) > 8
         or len(spec.get("visualControlCandidates") or []) > 14
@@ -909,10 +1748,10 @@ def _hydrate_background_artwork_layer(
         dense_interface
         or len(spec.get("vectorPaths") or []) > 0
     )
-    if not complex_interface and (
-        distance_p75 < 5.0
-        or (detail_p75 < 4.0 and not soft_photographic_artwork)
-    ):
+    # Density is never a reason to flatten interface chrome into a raster.
+    # A full-canvas layer is allowed only when the pixels provide genuine
+    # photographic or textural information that CSS cannot reproduce.
+    if not (soft_photographic_artwork or textured_artwork):
         return
     allowed.append(
         {
@@ -921,15 +1760,20 @@ def _hydrate_background_artwork_layer(
             "boxSource": [0, 0, width, height],
             "boxNormSource": [0, 0, 1000, 1000],
             "strategy": "extract-background-with-protected-alpha-mask",
-            "implementation": "Use only the Sens-materialized protected background asset. It preserves measured non-text artwork, surfaces, chart paths, separators, control chrome, and icons behind live semantic HTML. Source text glyphs are inpainted before selectable DOM text is placed; symbol art and foreground-raster objects remain independently reconstructed.",
+            "implementation": "Use only the Sens-materialized background-only asset. Sens removes full measured boxes for live text, controls, surfaces, separators, paths, icons, badges, symbol art, and foreground raster objects before materialization. Recreate those elements independently with semantic HTML, CSS, SVG, or approved object assets.",
+            "semanticContentRemoved": True,
+            "protectionVersion": 2,
             "protectionPolicy": {
-                "liveText": "source-glyphs-inpainted-under-live-dom",
-                "controlDecoration": "preserved-in-background-behind-semantic-dom",
-                "microIcons": "preserved-in-background-no-duplicate-dom-icon",
-                "surfaces": "preserved-in-background-no-duplicate-css-surface",
-                "structuralLines": "preserved-in-background-with-transparent-dom-measurement-node",
-                "vectorPaths": "preserved-in-background-no-duplicate-svg-path",
-                "objects": "full-box-transparent",
+                "backgroundOnly": True,
+                "liveText": "full-box-inpainted-under-live-dom",
+                "controlDecoration": "removed-from-raster-recreated-as-semantic-css",
+                "microIcons": "removed-from-raster-recreated-as-svg-css",
+                "surfaces": "removed-from-raster-recreated-as-css",
+                "structuralLines": "removed-from-raster-recreated-as-css-vector",
+                "vectorPaths": "removed-from-raster-recreated-as-svg",
+                "badges": "removed-from-raster-recreated-as-live-dom",
+                "symbolArt": "removed-from-raster-recreated-as-live-preformatted-text",
+                "objects": "removed-from-raster-recreated-as-approved-assets",
                 "fullReferenceScreenshot": False,
             },
             "source": "measured",
@@ -941,6 +1785,7 @@ def _hydrate_background_artwork_layer(
                 "localDetailP75": round(detail_p75, 2),
                 "softGradientP75": round(gradient_p75, 2),
                 "softPhotographicArtwork": soft_photographic_artwork,
+                "texturedArtwork": textured_artwork,
                 "denseInterface": dense_interface,
                 "complexInterface": complex_interface,
             },
@@ -998,9 +1843,24 @@ def _refine_large_text_box(
     if len(raw_box) != 4:
         return None
     height, width = image.shape[:2]
-    x0, y0, x1, y1 = (int(round(value)) for value in raw_box)
-    x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(width, x1), min(height, y1)
+    raw_x0, raw_y0, raw_x1, raw_y1 = (
+        int(round(value)) for value in raw_box
+    )
+    is_downscaled_display = str(entry.get("method") or "").startswith(
+        "rapidocr-downscaled-display-"
+    )
+    pad_x = (
+        min(72, max(4, round((raw_x1 - raw_x0) * 0.06)))
+        if is_downscaled_display
+        else 0
+    )
+    pad_y = (
+        min(42, max(4, round((raw_y1 - raw_y0) * 0.05)))
+        if is_downscaled_display
+        else 0
+    )
+    x0, y0 = max(0, raw_x0 - pad_x), max(0, raw_y0 - pad_y)
+    x1, y1 = min(width, raw_x1 + pad_x), min(height, raw_y1 + pad_y)
     if x1 - x0 < 20 or y1 - y0 < 20:
         return None
     color = entry.get("color") or font.get("color")
@@ -1060,6 +1920,52 @@ def _refine_large_text_box(
     required_components = max(1, min(3, round(expected_glyphs * 0.35)))
     if len(primary) < required_components:
         return None
+    edge_artwork_trimmed = False
+    if is_downscaled_display and len(primary) >= 3:
+        primary = sorted(primary, key=lambda component: component["x0"])
+        median_width = float(
+            np.median(
+                [component["x1"] - component["x0"] for component in primary]
+            )
+        )
+        gaps = [
+            max(0, right["x0"] - left["x1"])
+            for left, right in zip(primary, primary[1:])
+        ]
+        median_gap = float(np.median(gaps)) if gaps else 0.0
+        interior = primary[1:-1] or primary
+        consensus_y0 = round(
+            float(np.median([component["y0"] for component in interior]))
+        )
+        consensus_y1 = round(
+            float(np.median([component["y1"] for component in interior]))
+        )
+        first = primary[0]
+        if first["x1"] - first["x0"] >= median_width * 1.30:
+            first["x0"] = max(
+                first["x0"],
+                round(
+                    primary[1]["x0"]
+                    - median_gap
+                    - median_width
+                ),
+            )
+            first["y0"] = consensus_y0
+            first["y1"] = consensus_y1
+            edge_artwork_trimmed = True
+        last = primary[-1]
+        if last["x1"] - last["x0"] >= median_width * 1.30:
+            last["x1"] = min(
+                last["x1"],
+                round(
+                    primary[-2]["x1"]
+                    + median_gap
+                    + median_width
+                ),
+            )
+            last["y0"] = consensus_y0
+            last["y1"] = consensus_y1
+            edge_artwork_trimmed = True
     refined = [
         max(0, x0 + min(component["x0"] for component in primary) - 1),
         max(0, y0 + min(component["y0"] for component in primary) - 1),
@@ -1071,7 +1977,10 @@ def _refine_large_text_box(
         1, (refined[2] - refined[0]) * (refined[3] - refined[1])
     )
     height_overscan = (y1 - y0) / max(1, refined[3] - refined[1])
-    if height_overscan < 1.35:
+    minimum_height_overscan = 1.35 if is_downscaled_display else 1.5
+    if height_overscan < minimum_height_overscan and not (
+        is_downscaled_display and edge_artwork_trimmed
+    ):
         return None
     if refined_area / old_area > 0.92:
         return None
@@ -3399,6 +4308,13 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
             "fontSize",
             "widthEm",
             "fontFamily",
+            "sourceFontFamily",
+            "sourceDomFamily",
+            "sourceDomFontWeight",
+            "sourceDomFontStyle",
+            "sourceDomFontSize",
+            "sourceDomWords",
+            "typographyAuthority",
             "fontClass",
             "fontWidth",
             "fontWeight",
@@ -3420,6 +4336,13 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
             "avgGlyphWidth",
             "widthEm",
             "fontFamily",
+            "sourceFontFamily",
+            "sourceDomFamily",
+            "sourceDomFontWeight",
+            "sourceDomFontStyle",
+            "sourceDomFontSize",
+            "sourceDomWords",
+            "typographyAuthority",
             "fontFamilyStatus",
             "fontFamilyCandidate",
             "fontFamilyDistance",
@@ -3451,6 +4374,10 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
 
     def compact_text_row(entry: dict[str, Any]) -> list[Any]:
         font = entry.get("fontFeatures") or {}
+        source_authority = (
+            font.get("sourceDomTypographySource")
+            == "observed-live-dom-computed-style"
+        )
         candidates = sorted(
             (
                 candidate
@@ -3461,11 +4388,27 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
         )
         candidate = candidates[0] if candidates else {}
         typography = entry.get("typographyCandidate") or {}
+        source_words = [
+            [
+                word.get("text"),
+                word.get("sourceFontFamily"),
+                word.get("sourceDomFontWeight"),
+                word.get("sourceDomFontStyle"),
+                word.get("sourceDomLetterSpacing"),
+                word.get("sourceDomBox"),
+            ]
+            for word in font.get("sourceDomWordStyles") or []
+            if isinstance(word, dict)
+        ] or None
         if dense_text:
             preferred_value = entry.get("preferredValue")
             observed_value = entry.get("value")
             resolved_value = preferred_value or observed_value
-            family = font.get("family")
+            family = (
+                font.get("sourceDomFamily")
+                if source_authority
+                else font.get("family")
+            )
             if family in {None, "custom", "unknown"} and candidate.get("family"):
                 family = candidate.get("family")
             return [
@@ -3482,16 +4425,29 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
                 font.get("fontSize"),
                 font.get("widthEm"),
                 family,
-                typography.get("class"),
+                font.get("sourceFontFamily"),
+                font.get("sourceDomFamily"),
+                font.get("sourceDomFontWeight"),
+                font.get("sourceDomFontStyle"),
+                font.get("sourceDomFontSize"),
+                source_words,
+                font.get("sourceDomTypographySource"),
+                "observed-live-dom" if source_authority else typography.get("class"),
                 typography.get("width"),
-                font.get("weightCandidate") or typography.get("weight"),
                 (
-                    font.get("weightCandidateMethod")
+                    font.get("sourceDomFontWeight")
+                    if source_authority
+                    else font.get("weightCandidate") or typography.get("weight")
+                ),
+                (
+                    font.get("sourceDomTypographySource")
+                    if source_authority
+                    else font.get("weightCandidateMethod")
                     if font.get("weightCandidate")
                     else typography.get("method")
                 ),
                 entry.get("color") or font.get("color"),
-                [
+                None if source_authority else [
                     [
                         run.get("text"),
                         (run.get("typographyCandidate") or {}).get("class"),
@@ -3516,23 +4472,36 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
             font.get("capHeight"),
             font.get("avgGlyphWidth"),
             font.get("widthEm"),
-            font.get("family"),
-            font.get("familyStatus"),
-            candidate.get("family"),
-            candidate.get("distance"),
-            typography.get("class"),
+            font.get("sourceDomFamily") if source_authority else font.get("family"),
+            font.get("sourceFontFamily"),
+            font.get("sourceDomFamily"),
+            font.get("sourceDomFontWeight"),
+            font.get("sourceDomFontStyle"),
+            font.get("sourceDomFontSize"),
+            source_words,
+            font.get("sourceDomTypographySource"),
+            "observed" if source_authority else font.get("familyStatus"),
+            None if source_authority else candidate.get("family"),
+            None if source_authority else candidate.get("distance"),
+            "observed-live-dom" if source_authority else typography.get("class"),
             typography.get("contrast"),
             typography.get("width"),
-            font.get("weightCandidate") or typography.get("weight"),
             (
-                font.get("weightCandidateMethod")
+                font.get("sourceDomFontWeight")
+                if source_authority
+                else font.get("weightCandidate") or typography.get("weight")
+            ),
+            (
+                font.get("sourceDomTypographySource")
+                if source_authority
+                else font.get("weightCandidateMethod")
                 if font.get("weightCandidate")
                 else typography.get("method")
             ),
-            typography.get("confidence"),
+            None if source_authority else typography.get("confidence"),
             entry.get("color") or font.get("color"),
             entry.get("colorSource") or font.get("colorSource"),
-            [
+            None if source_authority else [
                 [
                     run.get("text"),
                     (run.get("typographyCandidate") or {}).get("class"),
@@ -3592,6 +4561,7 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
         "contentPolicy",
         "representationPolicy",
         "typographyRule",
+        "typographyAuthority",
         "completionGate",
         "semanticStrategy",
         "resolvedFocus",
@@ -3618,12 +4588,6 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
                     "borderColor",
                     "borderWidth",
                     "cornerRadius",
-                    "source",
-                    "epistemic",
-                    "geometrySource",
-                    "interactionEvidence",
-                    "behavior",
-                    "decorationPreservedInBackgroundArtwork",
                     "zIndex",
                 ],
             ),
@@ -3673,6 +4637,10 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
                 ],
             ),
             "symbolArt": reconstruction.get("symbolArt", []),
+            "sourceFontAssets": compact_mapping_table(
+                reconstruction.get("sourceFontAssets", []),
+                ["family", "alias", "weight", "style", "format", "sha256", "source"],
+            ),
             "allowedRasterRegions": [
                 compact_raster(entry)
                 for entry in reconstruction.get("allowedRasterRegions", [])
@@ -3741,6 +4709,7 @@ def _compact_document(doc: dict[str, Any]) -> dict[str, Any]:
         if reconstruction.get("targetKind") == "web":
             compact_reconstruction["implementationRules"] = [
                 "Use starterProject for the first candidate; do not rebuild it from scratch.",
+                "Preserve starter @font-face rules and observed DOM typography exactly; inferred typography is fallback-only.",
                 "Render at the exact source canvas and DPR without inventing hidden content.",
                 "Keep every word as selectable DOM text and every control as semantic HTML.",
                 "Use native CSS/SVG/preformatted text for structure and symbol art.",
@@ -3793,6 +4762,58 @@ def _brief_table(columns: list[str], rows: list[list[Any]]) -> dict[str, Any]:
     return _sparse_jsonl_table(columns, rows)
 
 
+def _web_geometry_authority() -> dict[str, Any]:
+    return {
+        "textDomBox": "reconstruction.text[].boxSource",
+        "textInkBox": "reconstruction.text[].fontFeatures.inkBox",
+        "textGlyphBoxes": "reconstruction.text[].fontFeatures.glyphBoxes",
+        "controls": "reconstruction.visualControlCandidates[].boxSource",
+        "structuralLines": "reconstruction.structuralLines[].boxSource",
+        "rasterAssets": "reconstruction.allowedRasterRegions[].boxSource",
+        "nonAuthoritative": [
+            "elements[].box_norm",
+            "claims[].regionNorm",
+        ],
+        "rule": (
+            "Use the named reconstruction fields for implementation geometry. "
+            "Raw element and claim regions are connected-component diagnostics; "
+            "they can merge neighboring text, controls, and artwork and must never "
+            "be used as DOM, text-ink, control, or asset layout boxes."
+        ),
+    }
+
+
+def _web_typography_authority() -> dict[str, Any]:
+    return {
+        "priority": [
+            "observed-live-dom-computed-style",
+            "measured-screenshot-geometry",
+            "inferred-typography-fallback",
+        ],
+        "authoritativeFields": [
+            "sourceFontFamily",
+            "sourceDomFamily",
+            "sourceDomFontWeight",
+            "sourceDomFontStyle",
+            "sourceDomFontSize",
+            "sourceDomLetterSpacing",
+            "sourceDomWordStyles",
+        ],
+        "nonAuthoritativeWhenObserved": [
+            "familyHint",
+            "fontFeatures.renderFamilyScores",
+            "typographyCandidate",
+            "inlineRuns.typographyCandidate",
+        ],
+        "rule": (
+            "When a text row has observed-live-dom-computed-style evidence, its "
+            "source font family, weight, style, and packaged @font-face are authoritative. "
+            "Screenshot or semantic inference must not override them; inferred typography "
+            "is a fallback only when observed DOM typography is unavailable."
+        ),
+    }
+
+
 def _implementation_brief(
     doc: dict[str, Any], contract_path: str | None
 ) -> dict[str, Any]:
@@ -3810,18 +4831,43 @@ def _implementation_brief(
         "fontWeight",
         "fontWeightSource",
         "familyHint",
+        "sourceFontFamily",
+        "sourceFontAssetSha256",
+        "sourceDomFamily",
+        "sourceDomFontWeight",
+        "sourceDomFontStyle",
+        "sourceDomFontSize",
+        "sourceDomLetterSpacing",
+        "sourceDomBox",
+        "sourceDomWords(text,font,weight,style,letterSpacing,box)",
+        "typographyAuthority",
         "color",
+        "inkBox",
+        "glyphBoxes(text,box)",
+        "measuredCharacterCount",
+        "inkCoverage",
+        "strokeWidthPx",
         "inlineRuns(text,class,contrast,width,weight,slant)",
     ]
     text_rows = []
     for entry in spec.get("text") or []:
         font = entry.get("fontFeatures") or {}
         typography = entry.get("typographyCandidate") or {}
+        source_authority = (
+            font.get("sourceDomTypographySource")
+            == "observed-live-dom-computed-style"
+        )
         candidates = sorted(
             font.get("familyCandidates") or [],
             key=lambda item: float(item.get("distance") or 999),
         )
-        family_hint = candidates[0].get("family") if candidates else font.get("family")
+        family_hint = (
+            font.get("sourceDomFamily")
+            if source_authority
+            else candidates[0].get("family")
+            if candidates
+            else font.get("family")
+        )
         text_rows.append(
             [
                 entry.get("elementId"),
@@ -3836,16 +4882,56 @@ def _implementation_brief(
                 entry.get("boxSource"),
                 font.get("fontSize"),
                 font.get("widthEm"),
-                typography.get("class"),
-                font.get("weightCandidate") or typography.get("weight"),
+                "observed-live-dom" if source_authority else typography.get("class"),
                 (
-                    font.get("weightCandidateMethod")
+                    font.get("sourceDomFontWeight")
+                    if source_authority
+                    else font.get("weightCandidate") or typography.get("weight")
+                ),
+                (
+                    font.get("sourceDomTypographySource")
+                    if source_authority
+                    else font.get("weightCandidateMethod")
                     if font.get("weightCandidate")
                     else typography.get("method")
                 ),
                 family_hint,
-                entry.get("color") or font.get("color"),
+                font.get("sourceFontFamily"),
+                font.get("sourceFontAssetSha256"),
+                font.get("sourceDomFamily"),
+                font.get("sourceDomFontWeight"),
+                font.get("sourceDomFontStyle"),
+                font.get("sourceDomFontSize"),
+                font.get("sourceDomLetterSpacing"),
+                font.get("sourceDomBox"),
                 [
+                    [
+                        word.get("text"),
+                        word.get("sourceFontFamily"),
+                        word.get("sourceDomFontWeight"),
+                        word.get("sourceDomFontStyle"),
+                        word.get("sourceDomLetterSpacing"),
+                        word.get("sourceDomBox"),
+                    ]
+                    for word in font.get("sourceDomWordStyles") or []
+                    if isinstance(word, dict)
+                ]
+                or None,
+                font.get("sourceDomTypographySource"),
+                entry.get("color") or font.get("color"),
+                font.get("inkBox"),
+                [
+                    [item.get("text"), item.get("box")]
+                    for item in font.get("glyphBoxes") or []
+                    if isinstance(item, dict)
+                    and item.get("text") is not None
+                    and len(item.get("box") or []) == 4
+                ]
+                or None,
+                font.get("measuredCharacterCount"),
+                font.get("inkCoverage"),
+                font.get("strokeWidthPx"),
+                None if source_authority else [
                     [
                         run.get("text"),
                         (run.get("typographyCandidate") or {}).get("class"),
@@ -3983,9 +5069,13 @@ def _implementation_brief(
         for entry in spec.get("allowedRasterRegions") or []
     ]
     return {
-        "schemaVersion": "sens-web-brief-2",
+        "schemaVersion": "sens-web-brief-3",
         "source": doc.get("source"),
         "canvas": spec.get("canvas"),
+        "geometryAuthority": spec.get("geometryAuthority")
+        or _web_geometry_authority(),
+        "typographyAuthority": spec.get("typographyAuthority")
+        or _web_typography_authority(),
         "palette": (doc.get("tokens") or {}).get("color"),
         "text": _brief_table(text_columns, text_rows),
         "controls": controls,
@@ -3998,6 +5088,15 @@ def _implementation_brief(
         "symbolArt": spec.get("symbolArt") or [],
         "rasterAssets": raster_assets,
         "starterProject": spec.get("starterProject"),
+        "sourceFonts": [
+            {
+                key: asset.get(key)
+                for key in ("family", "alias", "weight", "style", "format", "source")
+                if asset.get(key) is not None
+            }
+            for asset in spec.get("sourceFontAssets") or []
+            if isinstance(asset, dict)
+        ],
         "representationPolicy": spec.get("representationPolicy"),
         "workflow": spec.get("workflow"),
         "completionGate": spec.get("completionGate"),
@@ -4009,8 +5108,11 @@ def _implementation_brief(
             "If starterProject is present, copy or serve it immediately; do not generate the first candidate from scratch.",
             "Render only visible content on the exact source-pixel canvas at DPR 1.",
             "All words are live selectable DOM text; controls are semantic HTML with hover and focus.",
+            "When glyphBoxes are present, fit each live character to those measured boxes; inkCoverage is aggregate evidence and must never be interpreted as a connected slab.",
             "Lines, cards, chart geometry, and symbol art are native HTML/CSS/SVG or preformatted text, never reference slices.",
             "Raster images are forbidden except the exact returned rasterAssets paths and boxes.",
+            "For layout geometry use geometryAuthority only; never position DOM from elements[].box_norm or claims[].regionNorm.",
+            "Preserve starter @font-face rules and observed DOM typography exactly; never replace them from familyHint, render-family scores, typographyCandidate, or inferred inline runs.",
             "After the first candidate call sens_review with this brief's contractPath; use only its repairHints, checkpoint champions, and roll back regressions.",
         ],
         "contract": {
@@ -4074,7 +5176,7 @@ def _apply_reconstruction_ocr(image_path: str, dump: dict[str, Any]) -> None:
         refined = merge_script_ocr_passes(refined, run_latin_ocr(image_path))
         ocr_method = "rapidocr-multiscale-plus-latin-consensus"
         ocr_passes = 3
-    except (ImportError, ModuleNotFoundError, RuntimeError, OSError) as error:
+    except Exception as error:  # noqa: BLE001 - optional third-party OCR must degrade
         dump.setdefault("warnings", []).append(
             {
                 "code": "optional_latin_ocr_unavailable",
@@ -4084,6 +5186,44 @@ def _apply_reconstruction_ocr(image_path: str, dump: dict[str, Any]) -> None:
         )
         ocr_method = "rapidocr-multiscale-consensus"
         ocr_passes = 2
+    try:
+        display_items = discover_display_ocr(image_path, refined)
+        refined.extend(display_items)
+        selected_display_scale = (
+            float(display_items[0].get("displayScale") or 0.5)
+            if display_items
+            else None
+        )
+        display_discovery = {
+            "status": "complete",
+            "scale": selected_display_scale,
+            "primaryScale": 0.5,
+            "fallbackScales": [0.3, 0.4, 0.6],
+            "fallbackUsed": bool(
+                selected_display_scale is not None
+                and abs(selected_display_scale - 0.5) > 0.001
+            ),
+            "candidateCount": len(display_items),
+            "method": "rapidocr-downscaled-display-scan",
+        }
+        ocr_passes += 2
+    except (ImportError, ModuleNotFoundError, RuntimeError, OSError, ValueError) as error:
+        display_discovery = {
+            "status": "unavailable",
+            "scale": None,
+            "primaryScale": 0.5,
+            "fallbackScales": [0.3, 0.4, 0.6],
+            "fallbackUsed": False,
+            "candidateCount": 0,
+            "method": "rapidocr-downscaled-display-scan",
+        }
+        dump.setdefault("warnings", []).append(
+            {
+                "code": "display_text_discovery_unavailable",
+                "message": f"Downscaled display-text OCR is unavailable: {error}",
+                "recovery": "Do not trust a full-canvas background raster; continue with live DOM and non-background assets.",
+            }
+        )
     numeric_badges = list(dump.get("numericBadges") or [])
     for badge_index, badge in enumerate(numeric_badges):
         text_box = [int(value) for value in badge.get("textBox") or []]
@@ -4122,11 +5262,25 @@ def _apply_reconstruction_ocr(image_path: str, dump: dict[str, Any]) -> None:
         "passes": ocr_passes,
         "scale": 1.5,
         "method": ocr_method,
+        "displayTextDiscovery": display_discovery,
     }
     if not refined:
         return
     image = load_cv(image_path)
     _sync_bounded_ocr_elements(dump, image, refined)
+
+
+def _attach_display_text_discovery(
+    document: dict[str, Any], dump: dict[str, Any]
+) -> None:
+    spec = document.get("reconstruction") or {}
+    if not spec or spec.get("targetKind") != "web":
+        return
+    discovery = (dump.get("ocrConsensus") or {}).get(
+        "displayTextDiscovery"
+    )
+    if isinstance(discovery, dict):
+        spec["displayTextDiscovery"] = dict(discovery)
 
 
 def _hydrate_numeric_badges(
@@ -4238,6 +5392,7 @@ def _refresh_reconstruction_workflow(document: dict[str, Any]) -> None:
     spec = document.get("reconstruction") or {}
     if not spec or spec.get("targetKind") != "web":
         return
+    spec["geometryAuthority"] = _web_geometry_authority()
     focus_plan = spec.get("focusPlan") or []
     assets_ready = (spec.get("rasterAssetRule") or {}).get("assetsReady", True)
     if focus_plan:
@@ -4323,16 +5478,26 @@ def _materialize_raster_assets(
         import numpy as np
 
         rgba = cv2.cvtColor(image, cv2.COLOR_BGR2BGRA)
-        alpha = rgba[:, :, 3]
-        text_removal_mask = np.zeros((height, width), np.uint8)
-        dense_interface = any(
-            region.get("kind") == "alpha-masked-background-artwork"
-            and bool((region.get("evidence") or {}).get("denseInterface"))
-            for region in regions
-        )
+        semantic_removal_mask = np.zeros((height, width), np.uint8)
+        removed_categories: set[str] = set()
+        display_glyph_mask_element_ids: list[Any] = []
 
         def clipped_box(entry: dict[str, Any], padding: int = 0) -> list[int] | None:
             box = entry.get("boxSource") or []
+            if len(box) != 4:
+                points = entry.get("pointsSource") or []
+                valid_points = [
+                    point
+                    for point in points
+                    if isinstance(point, (list, tuple)) and len(point) == 2
+                ]
+                if valid_points:
+                    box = [
+                        min(float(point[0]) for point in valid_points),
+                        min(float(point[1]) for point in valid_points),
+                        max(float(point[0]) for point in valid_points),
+                        max(float(point[1]) for point in valid_points),
+                    ]
             if len(box) != 4:
                 return None
             x0, y0, x1, y1 = (int(round(value)) for value in box)
@@ -4344,164 +5509,355 @@ def _materialize_raster_assets(
             ]
             return box if box[2] > box[0] and box[3] > box[1] else None
 
-        def clear_box(entry: dict[str, Any], padding: int = 2) -> None:
+        def remove_box(
+            entry: dict[str, Any],
+            category: str,
+            padding: int = 3,
+            *,
+            skip_canvas_surface: bool = False,
+        ) -> None:
             box = clipped_box(entry, padding)
-            if box is not None:
-                alpha[box[1] : box[3], box[0] : box[2]] = 0
-
-        for entry in spec.get("text") or []:
-            box = clipped_box(entry, 2)
-            raw_box = clipped_box(entry, 0)
             if box is None:
-                continue
-            x0, y0, x1, y1 = box
-            if dense_interface and raw_box is not None:
-                rx0, ry0, rx1, ry1 = raw_box
-                text_removal_mask[ry0:ry1, rx0:rx1] = 255
-                continue
-            patch = image[y0:y1, x0:x1].astype(np.float32)
-            if patch.size == 0:
-                continue
-            ring_mask = np.ones(patch.shape[:2], dtype=bool)
-            if raw_box is not None:
-                ring_mask[
-                    raw_box[1] - y0 : raw_box[3] - y0,
-                    raw_box[0] - x0 : raw_box[2] - x0,
-                ] = False
-            ring_pixels = patch[ring_mask]
-            if ring_pixels.shape[0] >= 8:
-                local_background = np.median(
-                    ring_pixels.reshape((-1, 3)), axis=0
-                ).astype(np.float32)
-            else:
-                border_pixels = np.concatenate(
-                    (patch[0], patch[-1], patch[:, 0], patch[:, -1]), axis=0
-                )
-                local_background = np.median(
-                    border_pixels.reshape((-1, 3)), axis=0
-                ).astype(np.float32)
-            local_distance = np.linalg.norm(patch - local_background, axis=2)
-            signal = local_distance[local_distance >= 8.0]
-            contrast_threshold = (
-                max(18.0, float(np.percentile(signal, 65)))
-                if signal.size
-                else 18.0
+                return
+            if skip_canvas_surface:
+                area = (box[2] - box[0]) * (box[3] - box[1])
+                if area / max(1, width * height) >= 0.85:
+                    return
+            semantic_removal_mask[box[1] : box[3], box[0] : box[2]] = 255
+            removed_categories.add(category)
+
+        def remove_display_text_glyphs(entry: dict[str, Any]) -> bool:
+            method = str(entry.get("method") or "")
+            if not method.startswith("rapidocr-downscaled-display-"):
+                return False
+            stroke_width = float(
+                (entry.get("fontFeatures") or {}).get("strokeWidthPx") or 3.0
             )
-            glyph_mask = local_distance >= contrast_threshold
-            text_color = entry.get("color") or (
+            box = clipped_box(
+                entry,
+                max(1, min(3, round(stroke_width * 0.08))),
+            )
+            color = entry.get("color") or (
                 entry.get("fontFeatures") or {}
             ).get("color")
-            if isinstance(text_color, str):
-                text_bgr = np.asarray(_hex_to_bgr(text_color), dtype=np.float32)
-                if float(np.linalg.norm(text_bgr - local_background)) >= 14.0:
-                    color_mask = (
-                        np.linalg.norm(patch - text_bgr, axis=2) <= 42.0
-                    ) & (local_distance >= 10.0)
-                    if int(color_mask.sum()) >= 3:
-                        glyph_mask = color_mask
+            if box is None or not color:
+                return False
+            crop = image[box[1] : box[3], box[0] : box[2]].astype(
+                np.float32
+            )
+            target = np.asarray(_hex_to_bgr(str(color)), dtype=np.float32)
+            color_distance = np.linalg.norm(crop - target, axis=2)
+            seed = (color_distance <= 44.0).astype(np.uint8)
+            count, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+                seed, 8
+            )
+            cap_height = float(
+                (entry.get("fontFeatures") or {}).get("capHeight")
+                or box[3] - box[1]
+            )
+            minimum_height = max(12, round(cap_height * 0.32))
+            minimum_area = max(
+                24,
+                round((box[2] - box[0]) * (box[3] - box[1]) * 0.0015),
+            )
+            eligible_components: list[tuple[int, int]] = []
+            for component in range(1, count):
+                _x, _y, _w, component_height, area = (
+                    int(value) for value in stats[component]
+                )
+                if component_height >= minimum_height and area >= minimum_area:
+                    eligible_components.append((area, component))
+            expected_glyphs = sum(
+                character.isalnum()
+                for character in str(
+                    entry.get("preferredValue") or entry.get("value") or ""
+                )
+            )
+            if expected_glyphs >= 2 and len(eligible_components) > expected_glyphs:
+                eligible_components = sorted(
+                    eligible_components,
+                    key=lambda item: item[0],
+                    reverse=True,
+                )[:expected_glyphs]
+            glyph_mask = np.zeros_like(seed)
+            for _area, component in eligible_components:
+                glyph_mask[labels == component] = 255
+            if int(glyph_mask.sum()) == 0:
+                return False
+            dilation = max(3, min(9, round(stroke_width * 0.16) * 2 + 1))
             glyph_mask = cv2.dilate(
-                glyph_mask.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=1
-            ).astype(bool)
-            if int(glyph_mask.sum()) < max(4, round(glyph_mask.size * 0.01)):
-                alpha[y0:y1, x0:x1] = 0
-            else:
-                target = text_removal_mask[y0:y1, x0:x1]
-                target[glyph_mask] = 255
-
-        # OCR polygons can fuse a leading navigation/logo icon into a text row.
-        # Named measured icons are independent non-text evidence, so they must
-        # never be erased by the glyph inpaint mask even before the text box is
-        # narrowed by the typography pass.
-        for icon in spec.get("icons") or []:
-            icon_box = clipped_box(icon, 1)
-            if icon_box is not None:
-                text_removal_mask[
-                    icon_box[1] : icon_box[3], icon_box[0] : icon_box[2]
-                ] = 0
-
-        # Transparent glyph-shaped holes expose the flat CSS canvas whenever a
-        # substitute font differs by even a few pixels, producing a dark
-        # duplicate silhouette. Inpaint the measured source glyphs instead;
-        # the surrounding photograph/paper texture continues naturally below
-        # the live selectable DOM text.
-        if int(text_removal_mask.sum()) > 0:
-            inpaint_radius = max(2.0, min(5.0, min(width, height) / 320.0))
-            rgba[:, :, :3] = cv2.inpaint(
-                image,
-                text_removal_mask,
-                inpaint_radius,
-                cv2.INPAINT_TELEA,
+                glyph_mask,
+                np.ones((dilation, dilation), np.uint8),
+                iterations=1,
             )
-
-        # A translucent outline, brand glyph, or other small piece of control
-        # chrome is often impossible to reproduce faithfully from a single
-        # sampled fill/border token. Keep those exact pixels in the protected
-        # background, but only behind live semantic HTML. The control itself is
-        # made visually transparent and its label glyphs were removed above,
-        # so this cannot flatten either the interaction or selectable text.
-        for entry in spec.get("visualControlCandidates") or []:
-            if not entry.get("decorationPreservedInBackgroundArtwork"):
-                entry["preservedDecoration"] = {
-                    key: entry.get(key)
-                    for key in (
-                        "background",
-                        "borderColor",
-                        "borderWidth",
-                        "cornerRadius",
-                    )
-                    if entry.get(key) is not None
-                }
-            entry.update(
-                {
-                    "decorationPreservedInBackgroundArtwork": True,
-                    "background": "#00000000",
-                    "borderColor": "#00000000",
-                    "borderWidth": 0,
-                }
+            target_view = semantic_removal_mask[
+                box[1] : box[3], box[0] : box[2]
+            ]
+            np.maximum(target_view, glyph_mask, out=target_view)
+            removed_categories.add("liveText")
+            entry["backgroundRemovalMode"] = (
+                "measured-display-glyph-mask-inpaint"
             )
-        for entry in spec.get("icons") or []:
-            entry["preservedInBackgroundArtwork"] = True
-        for key in ("surfaces", "decorativeShapes", "vectorPaths"):
+            display_glyph_mask_element_ids.append(entry.get("elementId"))
+            return True
+
+        for entry in spec.get("text") or []:
+            if not remove_display_text_glyphs(entry):
+                remove_box(entry, "liveText", 6)
+
+        removal_groups = (
+            ("visualControlCandidates", "controlDecoration", 5, False),
+            ("surfaces", "surfaces", 3, True),
+            ("decorativeShapes", "decorativeShapes", 4, False),
+            ("icons", "microIcons", 4, False),
+            ("badges", "badges", 4, False),
+            ("symbolArt", "symbolArt", 5, False),
+            ("structuralLines", "structuralLines", 4, False),
+            ("vectorPaths", "vectorPaths", 4, False),
+        )
+        for key, category, padding, skip_canvas_surface in removal_groups:
             for entry in spec.get(key) or []:
-                entry["preservedInBackgroundArtwork"] = True
-        for entry in spec.get("structuralLines") or []:
-            entry["preservedInBackgroundArtwork"] = True
-        for entry in spec.get("badges") or []:
-            entry.update(
-                {
-                    "decorationPreservedInBackgroundArtwork": True,
-                    "background": "#00000000",
-                    "borderColor": "#00000000",
-                    "borderWidth": 0,
-                }
+                remove_box(
+                    entry,
+                    category,
+                    padding,
+                    skip_canvas_surface=skip_canvas_surface,
+                )
+        for entry in regions:
+            if entry.get("kind") not in {
+                "alpha-masked-background-artwork",
+                "browser-source-background-artwork",
+            }:
+                remove_box(entry, "objects", 4)
+
+        composite_over_browser_source = any(
+            entry.get("kind") == "alpha-masked-background-artwork"
+            and entry.get("compositeUnderlay")
+            == "browser-source-background"
+            for entry in regions
+        )
+
+        # Cached contracts from the previous policy may ask the starter to hide
+        # independent DOM/CSS decoration. Restore those measured values before
+        # producing the new background-only asset.
+        for key in ("visualControlCandidates", "badges"):
+            for entry in spec.get(key) or []:
+                preserved = entry.pop("preservedDecoration", None)
+                if isinstance(preserved, dict):
+                    entry.update(preserved)
+                entry.pop("decorationPreservedInBackgroundArtwork", None)
+        for key in (
+            "icons",
+            "surfaces",
+            "decorativeShapes",
+            "vectorPaths",
+            "structuralLines",
+        ):
+            for entry in spec.get(key) or []:
+                entry.pop("preservedInBackgroundArtwork", None)
+
+        removal_ratio = float((semantic_removal_mask > 0).mean())
+        if int(semantic_removal_mask.sum()) > 0:
+            if composite_over_browser_source:
+                rgba[:, :, 3][semantic_removal_mask > 0] = 0
+            elif removal_ratio >= 0.85:
+                remaining = image[semantic_removal_mask == 0]
+                fill = (
+                    np.median(remaining.reshape((-1, 3)), axis=0)
+                    if remaining.size
+                    else np.asarray((255, 255, 255), dtype=np.float32)
+                )
+                rgba[:, :, :3] = np.asarray(fill, dtype=np.uint8)
+            else:
+                inpaint_radius = max(
+                    3.0, min(7.0, min(width, height) / 220.0)
+                )
+                rgba[:, :, :3] = cv2.inpaint(
+                    image,
+                    semantic_removal_mask,
+                    inpaint_radius,
+                    cv2.INPAINT_TELEA,
+                )
+
+        display_discovery = spec.get("displayTextDiscovery") or {}
+        display_discovery_complete = bool(
+            isinstance(display_discovery, dict)
+            and display_discovery.get("status") == "complete"
+        )
+        semantic_residual_protection = {
+            "displayTextDiscoveryComplete": display_discovery_complete,
+            "displayTextCandidateCount": int(
+                display_discovery.get("candidateCount") or 0
             )
+            if isinstance(display_discovery, dict)
+            else 0,
+            "method": (
+                display_discovery.get("method")
+                if isinstance(display_discovery, dict)
+                else None
+            ),
+            "displayGlyphMaskElementIds": [
+                element_id
+                for element_id in display_glyph_mask_element_ids
+                if element_id is not None
+            ],
+        }
         for region in regions:
             if region.get("kind") != "alpha-masked-background-artwork":
                 continue
+            composite_overlay = bool(
+                region.get("compositeUnderlay")
+                == "browser-source-background"
+            )
+            region.update(
+                {
+                    "semanticContentRemoved": True,
+                    "protectionVersion": (
+                        5
+                        if composite_overlay and display_discovery_complete
+                        else 4
+                        if composite_overlay
+                        else 3
+                        if display_discovery_complete
+                        else 2
+                    ),
+                    "semanticRemovalMaskCoverage": round(removal_ratio, 5),
+                    "semanticCategoriesRemoved": sorted(removed_categories),
+                    "semanticResidualProtection": semantic_residual_protection,
+                }
+            )
             protection = region.setdefault("protectionPolicy", {})
             protection.update(
                 {
-                    "liveText": "source-glyphs-inpainted-under-live-dom",
-                    "controlDecoration": "preserved-in-background-behind-semantic-dom",
-                    "microIcons": "preserved-in-background-no-duplicate-dom-icon",
-                    "surfaces": "preserved-in-background-no-duplicate-css-surface",
-                    "structuralLines": "preserved-in-background-with-transparent-dom-measurement-node",
-                    "vectorPaths": "preserved-in-background-no-duplicate-svg-path",
-                    "objects": "full-box-transparent",
+                    "backgroundOnly": True,
+                    "liveText": (
+                        "transparent-holes-reveal-verified-browser-source-under-live-dom"
+                        if composite_overlay
+                        else
+                        "full-box-and-measured-display-glyph-mask-inpainted-under-live-dom"
+                        if display_glyph_mask_element_ids
+                        else "full-box-inpainted-under-live-dom"
+                    ),
+                    "controlDecoration": (
+                        "transparent-holes-reveal-verified-browser-source-under-semantic-css"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-semantic-css"
+                    ),
+                    "microIcons": (
+                        "transparent-holes-reveal-verified-browser-source-under-svg-css"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-svg-css"
+                    ),
+                    "surfaces": (
+                        "transparent-holes-reveal-verified-browser-source-under-css"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-css"
+                    ),
+                    "structuralLines": (
+                        "transparent-holes-reveal-verified-browser-source-under-css-vector"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-css-vector"
+                    ),
+                    "vectorPaths": (
+                        "transparent-holes-reveal-verified-browser-source-under-svg"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-svg"
+                    ),
+                    "badges": (
+                        "transparent-holes-reveal-verified-browser-source-under-live-dom"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-live-dom"
+                    ),
+                    "symbolArt": (
+                        "transparent-holes-reveal-verified-browser-source-under-live-preformatted-text"
+                        if composite_overlay
+                        else "removed-from-raster-recreated-as-live-preformatted-text"
+                    ),
+                    "objects": "removed-from-raster-recreated-as-approved-assets",
                     "fullReferenceScreenshot": False,
                 }
             )
-
-        for entry in spec.get("symbolArt") or []:
-            clear_box(entry)
-        for entry in regions:
-            if entry.get("kind") != "alpha-masked-background-artwork":
-                clear_box(entry)
         return rgba
 
     for region in regions:
         box = region.get("boxSource") or []
         if len(box) != 4:
+            continue
+        if region.get("kind") == "browser-source-background-artwork":
+            try:
+                measured_box = [int(round(float(value))) for value in box]
+            except (TypeError, ValueError):
+                continue
+            if (
+                measured_box[2] <= measured_box[0]
+                or measured_box[3] <= measured_box[1]
+            ):
+                continue
+            source_path = Path(
+                str(region.get("sourceAssetPath") or "")
+            ).expanduser()
+            try:
+                source_bytes = source_path.read_bytes()
+            except OSError:
+                continue
+            content_sha256 = hashlib.sha256(source_bytes).hexdigest()
+            media_type = str(region.get("mediaType") or "").lower()
+            suffix = _SOURCE_BACKGROUND_SUFFIXES.get(media_type)
+            if (
+                not source_bytes
+                or len(source_bytes) > _SOURCE_BACKGROUND_MAX_BYTES
+                or suffix is None
+                or content_sha256 != str(region.get("contentSha256") or "").lower()
+            ):
+                continue
+            destination = output_dir / (
+                f"sens-raster-browser-source-{content_sha256[:16]}{suffix}"
+            )
+            if not destination.exists():
+                fd, temporary = tempfile.mkstemp(
+                    prefix=f".{destination.stem}-",
+                    suffix=suffix,
+                    dir=str(output_dir),
+                )
+                os.close(fd)
+                try:
+                    Path(temporary).write_bytes(source_bytes)
+                    os.replace(temporary, destination)
+                finally:
+                    if os.path.exists(temporary):
+                        os.unlink(temporary)
+            artifact_id = f"raster:{content_sha256[:16]}"
+            region.update(
+                {
+                    "boxSource": measured_box,
+                    "assetPath": str(destination),
+                    "artifactId": artifact_id,
+                    "mediaType": media_type,
+                    "contentSha256": content_sha256,
+                }
+            )
+            if (
+                isinstance(primary, dict)
+                and primary.get("elementId") == region.get("elementId")
+            ):
+                primary.update(
+                    {
+                        "assetPath": str(destination),
+                        "artifactId": artifact_id,
+                        "mediaType": media_type,
+                    }
+                )
+            if not any(item.get("id") == artifact_id for item in artifacts):
+                artifacts.append(
+                    {
+                        "id": artifact_id,
+                        "kind": "reconstruction-browser-source-background",
+                        "uri": str(destination),
+                        "mediaType": media_type,
+                        "boxSource": measured_box,
+                    }
+                )
+            written += 1
             continue
         x0, y0, x1, y1 = (int(round(value)) for value in box)
         x0, y0 = max(0, min(width, x0)), max(0, min(height, y0))
@@ -7851,6 +9207,10 @@ def see_document(
     target_kind: str | None = None,
     resolve_focus: bool = False,
     asset_output_dir: str | None = None,
+    source_raster_assets: Any = None,
+    source_vector_assets: Any = None,
+    source_text_nodes: Any = None,
+    source_font_assets: Any = None,
 ) -> dict:
     if response not in {"brief", "compact", "full"}:
         raise ValueError("response must be 'brief', 'compact', or 'full'")
@@ -7881,6 +9241,18 @@ def see_document(
                         if resolved_profile == "reconstruct" and target_kind == "web"
                         else intent
                     ),
+                    "sourceRasterAssets": _source_raster_cache_evidence(
+                        source_raster_assets
+                    ),
+                    "sourceVectorAssets": _source_vector_cache_evidence(
+                        source_vector_assets
+                    ),
+                    "sourceTextNodes": _source_text_cache_evidence(
+                        source_text_nodes
+                    ),
+                    "sourceFontAssets": _source_font_cache_evidence(
+                        source_font_assets
+                    ),
                 },
             )
             doc = read_cache(completed_cache_key)
@@ -7899,6 +9271,7 @@ def see_document(
             profile=resolved_profile,
             target_kind=target_kind,
         )
+        _attach_display_text_discovery(doc, dump)
         _hydrate_numeric_badges(doc, dump)
         _resolve_numeric_axis_labels(doc)
         _exclude_tiny_glyph_noise(doc)
@@ -7948,7 +9321,17 @@ def see_document(
         _sanitize_structural_lines(doc, image_path)
         _refine_overlapping_raster_candidates(doc, image_path)
         _hydrate_intrinsic_text_raster_assets(doc, image_path)
-        _hydrate_background_artwork_layer(doc, image_path)
+        _hydrate_background_artwork_layer(
+            doc,
+            image_path,
+            source_raster_assets,
+        )
+        _hydrate_source_vector_regions(doc, source_vector_assets)
+        _hydrate_source_dom_typography(
+            doc,
+            source_text_nodes,
+            source_font_assets,
+        )
         _infer_contextual_ui_structure(doc)
         _infer_corner_navigation_controls(doc)
         _infer_top_navigation_controls(doc)
@@ -7975,7 +9358,17 @@ def see_document(
     _sanitize_structural_lines(doc, image_path)
     _refine_overlapping_raster_candidates(doc, image_path)
     _hydrate_intrinsic_text_raster_assets(doc, image_path)
-    _hydrate_background_artwork_layer(doc, image_path)
+    _hydrate_background_artwork_layer(
+        doc,
+        image_path,
+        source_raster_assets,
+    )
+    _hydrate_source_vector_regions(doc, source_vector_assets)
+    _hydrate_source_dom_typography(
+        doc,
+        source_text_nodes,
+        source_font_assets,
+    )
     _infer_contextual_ui_structure(doc)
     _infer_corner_navigation_controls(doc)
     _infer_top_navigation_controls(doc)

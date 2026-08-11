@@ -146,6 +146,20 @@ def test_approved_alpha_masked_background_does_not_count_as_full_screenshot() ->
                 "kind": "alpha-masked-background-artwork",
                 "boxSource": [0, 0, 1000, 500],
                 "alphaProtected": True,
+                "semanticContentRemoved": True,
+                "protectionVersion": 3,
+                "semanticResidualProtection": {
+                    "displayTextDiscoveryComplete": True,
+                    "displayTextCandidateCount": 0,
+                    "method": "rapidocr-downscaled-display-scan",
+                },
+                "protectionPolicy": {
+                    "backgroundOnly": True,
+                    "liveText": "full-box-inpainted-under-live-dom",
+                    "controlDecoration": "removed-from-raster-recreated-as-semantic-css",
+                    "surfaces": "removed-from-raster-recreated-as-css",
+                    "structuralLines": "removed-from-raster-recreated-as-css-vector",
+                },
             },
         ],
     }
@@ -171,6 +185,297 @@ def test_approved_alpha_masked_background_does_not_count_as_full_screenshot() ->
     background = result["rasterAudit"]["elements"][1]
     assert background["alphaMaskedBackground"] is True
     assert background["overlapsText"] is False
+
+
+def test_verified_browser_source_background_can_cover_live_dom_text() -> None:
+    content_sha256 = "a" * 64
+    artifact_id = f"raster:{content_sha256[:16]}"
+    spec = {
+        **SPEC,
+        "allowedRasterRegions": [
+            *SPEC["allowedRasterRegions"],
+            {
+                "elementId": "browser-source-background",
+                "artifactId": artifact_id,
+                "kind": "browser-source-background-artwork",
+                "boxSource": [-50, -40, 1050, 540],
+                "semanticContentRemoved": True,
+                "protectionVersion": 4,
+                "contentSha256": content_sha256,
+                "mediaType": "image/avif",
+                "source": "observed",
+                "method": "verified-playwright-response-body",
+                "protectionPolicy": {
+                    "backgroundOnly": True,
+                    "liveText": "separate-observed-live-dom",
+                    "controlDecoration": "separate-semantic-css",
+                    "fullReferenceScreenshot": False,
+                },
+            },
+        ],
+    }
+    capture = {
+        **GOOD_CAPTURE,
+        "rasterElements": [
+            *GOOD_CAPTURE["rasterElements"],
+            {
+                "kind": "img",
+                "box": [-50, -40, 1050, 540],
+                "src": "assets/hero.avif",
+                "sensRasterRole": "browser-source-background-artwork",
+                "sensArtifactId": artifact_id,
+                "visible": True,
+            },
+        ],
+        "sourceRasterAssets": [
+            {
+                "rasterIndex": 1,
+                "sha256": content_sha256,
+                "mediaType": "image/avif",
+                "source": "observed",
+                "method": "playwright-response-body",
+            }
+        ],
+    }
+
+    result = evaluate_web_integrity(spec, capture)
+
+    assert result["webPass"] is True
+    assert result["blockingReasons"] == []
+    background = result["rasterAudit"]["elements"][1]
+    assert background["browserSourceBackground"] is True
+    assert background["overlapsText"] is False
+
+
+def test_overlapping_background_layers_match_their_declared_raster_roles() -> None:
+    content_sha256 = "a" * 64
+    source_artifact_id = f"raster:{content_sha256[:16]}"
+    overlay_artifact_id = "raster:composite-overlay"
+    spec = {
+        **SPEC,
+        "allowedRasterRegions": [
+            *SPEC["allowedRasterRegions"],
+            {
+                "elementId": "browser-source-background",
+                "artifactId": source_artifact_id,
+                "kind": "browser-source-background-artwork",
+                "boxSource": [-50, -40, 1050, 540],
+                "semanticContentRemoved": True,
+                "protectionVersion": 4,
+                "contentSha256": content_sha256,
+                "mediaType": "image/avif",
+                "source": "observed",
+                "method": "verified-playwright-response-body",
+                "protectionPolicy": {
+                    "backgroundOnly": True,
+                    "liveText": "separate-observed-live-dom",
+                    "controlDecoration": "separate-semantic-css",
+                    "fullReferenceScreenshot": False,
+                },
+            },
+            {
+                "elementId": "browser-source-composite-overlay",
+                "artifactId": overlay_artifact_id,
+                "kind": "alpha-masked-background-artwork",
+                "boxSource": [0, 0, 1000, 500],
+                "alphaProtected": True,
+                "semanticContentRemoved": True,
+                "protectionVersion": 5,
+                "semanticResidualProtection": {
+                    "displayTextDiscoveryComplete": True,
+                    "displayTextCandidateCount": 1,
+                    "method": "rapidocr-downscaled-display-scan",
+                },
+                "protectionPolicy": {
+                    "backgroundOnly": True,
+                    "liveText": "transparent-holes-reveal-verified-browser-source-under-live-dom",
+                    "controlDecoration": "transparent-holes-reveal-verified-browser-source-under-semantic-css",
+                    "fullReferenceScreenshot": False,
+                },
+            },
+        ],
+    }
+    capture = {
+        **GOOD_CAPTURE,
+        "rasterElements": [
+            *GOOD_CAPTURE["rasterElements"],
+            {
+                "kind": "img",
+                "box": [-50, -40, 1050, 540],
+                "src": "assets/hero.avif",
+                "sensRasterRole": "browser-source-background-artwork",
+                "sensArtifactId": source_artifact_id,
+                "visible": True,
+            },
+            {
+                "kind": "img",
+                "box": [0, 0, 1000, 500],
+                "src": "assets/composite-overlay.png",
+                "sensRasterRole": "alpha-masked-background-artwork",
+                "sensArtifactId": overlay_artifact_id,
+                "visible": True,
+            },
+        ],
+        "sourceRasterAssets": [
+            {
+                "rasterIndex": 1,
+                "sha256": content_sha256,
+                "mediaType": "image/avif",
+                "source": "observed",
+                "method": "playwright-response-body",
+            }
+        ],
+    }
+
+    result = evaluate_web_integrity(spec, capture)
+
+    assert result["webPass"] is True
+    source_audit, overlay_audit = result["rasterAudit"]["elements"][1:]
+    assert source_audit["browserSourceBackground"] is True
+    assert overlay_audit["alphaMaskedBackground"] is True
+
+
+def test_browser_source_background_with_changed_bytes_is_blocked() -> None:
+    content_sha256 = "a" * 64
+    artifact_id = f"raster:{content_sha256[:16]}"
+    spec = {
+        **SPEC,
+        "allowedRasterRegions": [
+            *SPEC["allowedRasterRegions"],
+            {
+                "elementId": "browser-source-background",
+                "artifactId": artifact_id,
+                "kind": "browser-source-background-artwork",
+                "boxSource": [0, 0, 1000, 500],
+                "semanticContentRemoved": True,
+                "protectionVersion": 4,
+                "contentSha256": content_sha256,
+                "mediaType": "image/avif",
+                "source": "observed",
+                "method": "verified-playwright-response-body",
+                "protectionPolicy": {
+                    "backgroundOnly": True,
+                    "liveText": "separate-observed-live-dom",
+                    "fullReferenceScreenshot": False,
+                },
+            },
+        ],
+    }
+    capture = {
+        **GOOD_CAPTURE,
+        "rasterElements": [
+            *GOOD_CAPTURE["rasterElements"],
+            {
+                "kind": "img",
+                "box": [0, 0, 1000, 500],
+                "src": "assets/hero.avif",
+                "sensRasterRole": "browser-source-background-artwork",
+                "sensArtifactId": artifact_id,
+                "visible": True,
+            },
+        ],
+        "sourceRasterAssets": [
+            {
+                "rasterIndex": 1,
+                "sha256": "b" * 64,
+                "mediaType": "image/avif",
+                "source": "observed",
+                "method": "playwright-response-body",
+            }
+        ],
+    }
+
+    result = evaluate_web_integrity(spec, capture)
+
+    codes = {reason["code"] for reason in result["blockingReasons"]}
+    assert "untrusted-background-raster" in codes
+    assert "full-reference-raster" in codes
+    assert "raster-overlaps-text" in codes
+
+
+def test_v2_background_without_display_text_scan_is_blocked() -> None:
+    spec = {
+        **SPEC,
+        "allowedRasterRegions": [
+            *SPEC["allowedRasterRegions"],
+            {
+                "elementId": "background-artwork",
+                "artifactId": "raster:bg-v2",
+                "kind": "alpha-masked-background-artwork",
+                "boxSource": [0, 0, 1000, 500],
+                "alphaProtected": True,
+                "semanticContentRemoved": True,
+                "protectionVersion": 2,
+                "protectionPolicy": {
+                    "backgroundOnly": True,
+                    "liveText": "full-box-inpainted-under-live-dom",
+                    "controlDecoration": "removed-from-raster-recreated-as-semantic-css",
+                },
+            },
+        ],
+    }
+    capture = {
+        **GOOD_CAPTURE,
+        "rasterElements": [
+            *GOOD_CAPTURE["rasterElements"],
+            {
+                "kind": "img",
+                "box": [0, 0, 1000, 500],
+                "src": "background-v2.png",
+                "sensRasterRole": "alpha-masked-background-artwork",
+                "sensArtifactId": "raster:bg-v2",
+                "visible": True,
+            },
+        ],
+    }
+
+    result = evaluate_web_integrity(spec, capture)
+
+    assert result["webPass"] is False
+    assert "untrusted-background-raster" in {
+        reason["code"] for reason in result["blockingReasons"]
+    }
+
+
+def test_legacy_full_canvas_background_that_preserves_ui_is_blocked() -> None:
+    spec = {
+        **SPEC,
+        "allowedRasterRegions": [
+            *SPEC["allowedRasterRegions"],
+            {
+                "elementId": "background-artwork",
+                "artifactId": "raster:legacy",
+                "kind": "alpha-masked-background-artwork",
+                "boxSource": [0, 0, 1000, 500],
+                "alphaProtected": True,
+                "protectionPolicy": {
+                    "controlDecoration": "preserved-in-background-behind-semantic-dom",
+                    "surfaces": "preserved-in-background-no-duplicate-css-surface",
+                },
+            },
+        ],
+    }
+    capture = {
+        **GOOD_CAPTURE,
+        "rasterElements": [
+            *GOOD_CAPTURE["rasterElements"],
+            {
+                "kind": "img",
+                "box": [0, 0, 1000, 500],
+                "src": "legacy-background.png",
+                "sensRasterRole": "alpha-masked-background-artwork",
+                "sensArtifactId": "raster:legacy",
+                "visible": True,
+            },
+        ],
+    }
+
+    result = evaluate_web_integrity(spec, capture)
+
+    assert result["webPass"] is False
+    codes = {entry["code"] for entry in result["blockingReasons"]}
+    assert "untrusted-background-raster" in codes
+    assert "full-reference-raster" in codes
 
 
 def test_string_element_ids_remain_stable_in_web_review() -> None:
@@ -529,6 +834,106 @@ def test_combined_completion_requires_visual_and_web_passes() -> None:
     assert "sens_zoom" not in str(failed["visual"])
 
 
+def test_text_similarity_failure_prioritizes_repeated_text_not_verified_vector_wordmark() -> None:
+    reconstruction = {
+        "text": [
+            {
+                "elementId": 1,
+                "value": "SLUSH CARD WAITLIST IS LIVE",
+                "boxSource": [0, 8, 182, 27],
+            },
+            {
+                "elementId": 2,
+                "value": "SLUSH CARD WAITLIST IS LIVE",
+                "boxSource": [192, 8, 374, 27],
+            },
+            {
+                "elementId": 32,
+                "value": "SLUSH",
+                "boxSource": [345, 184, 1103, 593],
+                "visualRepresentation": (
+                    "source-vector-wordmark-with-selectable-live-label"
+                ),
+            },
+        ]
+    }
+    web = {
+        "webPass": True,
+        "blockingReasons": [],
+        "repairHints": {"text": [], "controls": [], "structure": []},
+        "textMatches": [
+            {
+                "referenceElementId": 1,
+                "referenceText": "SLUSH CARD WAITLIST IS LIVE",
+                "candidateText": "SLUSH CARD WAITLIST IS LIVE",
+                "exact": True,
+                "selectable": True,
+            },
+            {
+                "referenceElementId": 2,
+                "referenceText": "SLUSH CARD WAITLIST IS LIVE",
+                "candidateText": "SLUSH CARD WAITLIST IS LIVE",
+                "exact": True,
+                "selectable": True,
+            },
+            {
+                "referenceElementId": 32,
+                "referenceText": "SLUSH",
+                "candidateText": "SLUSH",
+                "exact": True,
+                "selectable": True,
+            },
+        ],
+    }
+    visual = {
+        "verdict": "partial",
+        "canComplete": False,
+        "similarityScore": 0.8804,
+        "acceptance": {
+            "checks": [
+                {"name": "similarity_minimum", "passed": True},
+                {
+                    "name": "text_similarity_minimum",
+                    "passed": False,
+                    "actual": 0.641,
+                    "threshold": 0.7,
+                },
+                {"name": "largest_hot_region_maximum", "passed": True},
+            ]
+        },
+        "metrics": {
+            "text": {
+                "similarity": 0.641,
+                "reference": "slush card waitlist is live slush card waitlist is live slush",
+                "candidate": "slueh card waitliet is lile slush",
+            }
+        },
+        "hotRegions": [{"box": [343, 182, 853, 610], "areaRatio": 0.013}],
+    }
+
+    result = combine_review(visual, web, reconstruction)
+
+    hint = result["repairHints"]["visual"][0]
+    assert hint["kind"] == "ocr-text-similarity"
+    assert hint["actual"] == 0.641
+    assert hint["threshold"] == 0.7
+    assert hint["repeatedReferenceTextGroups"][0]["text"] == (
+        "SLUSH CARD WAITLIST IS LIVE"
+    )
+    assert hint["repeatedReferenceTextGroups"][0]["elementIds"] == [1, 2]
+    assert hint["verifiedVectorWordmarks"] == [
+        {
+            "elementId": 32,
+            "text": "SLUSH",
+            "boxSource": [345, 184, 1103, 593],
+        }
+    ]
+    assert "Do not replace verified source-vector wordmarks" in hint["action"]
+    assert result["visual"]["requiredAction"]["kind"] == (
+        "repair-ocr-text-rendering-from-existing-contract"
+    )
+
+
 def test_review_no_store_cleans_owned_browser_artifacts(tmp_path, monkeypatch) -> None:
     reference = tmp_path / "reference.png"
     cv2.imwrite(str(reference), np.full((500, 1000, 3), 255, np.uint8))
@@ -547,6 +952,7 @@ def test_review_no_store_cleans_owned_browser_artifacts(tmp_path, monkeypatch) -
 
     def fake_capture(_url, out_dir, options, *, no_store=False):
         assert no_store is False
+        assert options["networkPolicy"] == "candidate"
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         screenshot = Path(out_dir) / "candidate.png"
         cv2.imwrite(str(screenshot), np.full((500, 1000, 3), 255, np.uint8))

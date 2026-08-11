@@ -110,7 +110,9 @@ def test_matrix_compact_contract_fits_agent_tool_result_budget() -> None:
         ).encode("utf-8")
 
         assert len(pretty_wrapped) < 40_000, case["id"]
-        assert result["doc"]["reconstruction"]["focusPlan"] == result["summary"][
-            "nextActions"
-        ]
+        assert result["doc"]["reconstruction"]["focusPlan"] == {
+            "encoding": "response-reference",
+            "path": "summary.nextActions",
+            "count": len(result["summary"]["nextActions"]),
+        }
         assert len(result["summary"]["nextActions"]) <= 4

@@ -31,10 +31,17 @@ _last_cache_cleanup: float = 0.0
 # scene10: compact numeric badges use a local multi-font digit atlas.
 # scene15: measured inline typography, protected control chrome, and inpainted
 # live-text backgrounds must not reuse pre-1.3.7 visual dumps.
-CACHE_SCHEMA_VERSION = "scene18"
+# scene19: giant display tokens recover per-glyph geometry even when an OCR
+# crop touches a section border and its first background estimate is wrong.
+CACHE_SCHEMA_VERSION = "scene19"
 # document19: textured canvases use a protected alpha-masked artwork layer.
 # document29: reconstruction contracts carry the 1.3.7 DOM/raster policy.
-DOCUMENT_CACHE_SCHEMA_VERSION = "document44"
+# document51: browser-loaded source rasters can replace guessed background inpaint.
+# document52: high-confidence complete Latin display words beat two-glyph scan noise.
+# document53: transparent browser source rasters preserve their measured CSS backdrop.
+# document54: browser source rasters receive a semantic-hole decorative overlay.
+# document55: sanitized live SVG artwork can replace guessed custom display fonts.
+DOCUMENT_CACHE_SCHEMA_VERSION = "document55"
 
 
 

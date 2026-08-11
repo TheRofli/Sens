@@ -71,6 +71,10 @@ def test_see_forwards_reconstruction_profile_and_response_mode(monkeypatch) -> N
                 "targetKind": "web",
                 "resolveFocus": True,
                 "assetOutputDir": "D:/project/assets",
+                "sourceRasterAssets": [{"sha256": "abc123"}],
+                "sourceVectorAssets": [{"sha256": "def456"}],
+                "sourceTextNodes": [{"text": "Gateway", "box": [1, 2, 3, 4]}],
+                "sourceFontAssets": [{"sha256": "font123", "family": "Whyte"}],
             },
         }
     )
@@ -82,6 +86,10 @@ def test_see_forwards_reconstruction_profile_and_response_mode(monkeypatch) -> N
         "target_kind": "web",
         "resolve_focus": True,
         "asset_output_dir": "D:/project/assets",
+        "source_raster_assets": [{"sha256": "abc123"}],
+        "source_vector_assets": [{"sha256": "def456"}],
+        "source_text_nodes": [{"text": "Gateway", "box": [1, 2, 3, 4]}],
+        "source_font_assets": [{"sha256": "font123", "family": "Whyte"}],
     }
 
 

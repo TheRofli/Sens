@@ -614,6 +614,7 @@ def evaluate_web_integrity(
     raster_structure_indexes: list[int] = []
     outside_allowed_indexes: list[int] = []
     full_reference_indexes: list[int] = []
+    untrusted_background_indexes: list[int] = []
     allowed_count = 0
     canvas_area = max(1.0, float(canvas_width * canvas_height))
     for index, raster in enumerate(capture.get("rasterElements", [])):
@@ -632,21 +633,122 @@ def evaluate_web_integrity(
             continue
         source_box = project(box)
         area_ratio = _box_area(source_box) / canvas_area
+        matching_allowed = [
+            entry
+            for entry in allowed_entries
+            if _coverage(source_box, entry["boxSource"]) >= 0.72
+        ]
+        declared_role = raster.get("sensRasterRole")
+        role_matching_allowed = [
+            entry
+            for entry in matching_allowed
+            if declared_role and entry.get("kind") == declared_role
+        ]
         matched_allowed = next(
+            iter(role_matching_allowed or matching_allowed),
+            None,
+        )
+        background_policy = (
+            matched_allowed.get("protectionPolicy")
+            if isinstance(matched_allowed, dict)
+            else None
+        )
+        preserves_interface_pixels = bool(
+            isinstance(background_policy, dict)
+            and any(
+                "preserved-in-background" in str(value).casefold()
+                for value in background_policy.values()
+            )
+        )
+        alpha_background_candidate = bool(
+            matched_allowed
+            and matched_allowed.get("kind") == "alpha-masked-background-artwork"
+            and raster.get("sensRasterRole") == "alpha-masked-background-artwork"
+        )
+        browser_source_candidate = bool(
+            matched_allowed
+            and matched_allowed.get("kind")
+            == "browser-source-background-artwork"
+            and raster.get("sensRasterRole")
+            == "browser-source-background-artwork"
+        )
+        background_candidate = bool(
+            alpha_background_candidate or browser_source_candidate
+        )
+        semantic_residual_protection = (
+            matched_allowed.get("semanticResidualProtection")
+            if isinstance(matched_allowed, dict)
+            else None
+        )
+        trusted_alpha_background = bool(
+            alpha_background_candidate
+            and matched_allowed.get("alphaProtected") is True
+            and matched_allowed.get("semanticContentRemoved") is True
+            and int(matched_allowed.get("protectionVersion") or 0) >= 3
+            and isinstance(semantic_residual_protection, dict)
+            and semantic_residual_protection.get(
+                "displayTextDiscoveryComplete"
+            )
+            is True
+            and isinstance(background_policy, dict)
+            and background_policy.get("backgroundOnly") is True
+            and not preserves_interface_pixels
+            and raster.get("sensArtifactId") == matched_allowed.get("artifactId")
+        )
+        candidate_source_asset = next(
             (
-                entry
-                for entry in allowed_entries
-                if _coverage(source_box, entry["boxSource"]) >= 0.72
+                asset
+                for asset in capture.get("sourceRasterAssets", [])
+                if isinstance(asset, dict)
+                and asset.get("rasterIndex") == index
             ),
             None,
         )
-        trusted_background = bool(
-            matched_allowed
-            and matched_allowed.get("kind") == "alpha-masked-background-artwork"
-            and matched_allowed.get("alphaProtected") is True
-            and raster.get("sensRasterRole") == "alpha-masked-background-artwork"
-            and raster.get("sensArtifactId") == matched_allowed.get("artifactId")
+        contract_content_sha256 = str(
+            matched_allowed.get("contentSha256")
+            if isinstance(matched_allowed, dict)
+            else ""
+        ).lower()
+        valid_contract_hash = bool(
+            len(contract_content_sha256) == 64
+            and all(
+                character in "0123456789abcdef"
+                for character in contract_content_sha256
+            )
         )
+        trusted_browser_source_background = bool(
+            browser_source_candidate
+            and matched_allowed.get("semanticContentRemoved") is True
+            and int(matched_allowed.get("protectionVersion") or 0) >= 4
+            and matched_allowed.get("source") == "observed"
+            and matched_allowed.get("method")
+            == "verified-playwright-response-body"
+            and isinstance(background_policy, dict)
+            and background_policy.get("backgroundOnly") is True
+            and background_policy.get("liveText")
+            == "separate-observed-live-dom"
+            and background_policy.get("controlDecoration")
+            == "separate-semantic-css"
+            and background_policy.get("fullReferenceScreenshot") is False
+            and not preserves_interface_pixels
+            and valid_contract_hash
+            and raster.get("sensArtifactId")
+            == f"raster:{contract_content_sha256[:16]}"
+            and raster.get("sensArtifactId") == matched_allowed.get("artifactId")
+            and isinstance(candidate_source_asset, dict)
+            and str(candidate_source_asset.get("sha256") or "").lower()
+            == contract_content_sha256
+            and str(candidate_source_asset.get("mediaType") or "").lower()
+            == str(matched_allowed.get("mediaType") or "").lower()
+            and candidate_source_asset.get("source") == "observed"
+            and candidate_source_asset.get("method")
+            == "playwright-response-body"
+        )
+        trusted_background = bool(
+            trusted_alpha_background or trusted_browser_source_background
+        )
+        if background_candidate and not trusted_background:
+            untrusted_background_indexes.append(index)
         allowed = matched_allowed is not None
         overlaps_text = not trusted_background and any(
             _coverage(text_box, source_box) >= 0.12 for text_box in reference_text_boxes
@@ -683,7 +785,10 @@ def evaluate_web_integrity(
                 "overlapsText": overlaps_text,
                 "overlapsSymbolArt": overlaps_symbol_art,
                 "overlapsStructure": overlaps_structure,
-                "alphaMaskedBackground": trusted_background,
+                "alphaMaskedBackground": trusted_alpha_background,
+                "browserSourceBackground": trusted_browser_source_background,
+                "backgroundTrustFailure": background_candidate
+                and not trusted_background,
                 "source": "observed-dom",
             }
         )
@@ -793,6 +898,14 @@ def evaluate_web_integrity(
                 rasterIndexes=full_reference_indexes,
             )
         )
+    if untrusted_background_indexes:
+        blocking_reasons.append(
+            _blocking_reason(
+                "untrusted-background-raster",
+                "A full-canvas background raster has not proved that live text, controls, surfaces, lines, paths, icons, badges, symbol art, and foreground objects were removed before materialization.",
+                rasterIndexes=untrusted_background_indexes,
+            )
+        )
 
     text_count = len(reconstruction.get("text", []))
     selectable_count = len(text_matches) - len(unselectable_text)
@@ -858,8 +971,93 @@ def evaluate_web_integrity(
     return result
 
 
+def _ocr_text_repair_hint(
+    visual_result: dict[str, Any],
+    web_result: dict[str, Any],
+    reconstruction: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    checks = (visual_result.get("acceptance") or {}).get("checks") or []
+    failed = next(
+        (
+            check
+            for check in checks
+            if check.get("name") == "text_similarity_minimum"
+            and not check.get("passed")
+        ),
+        None,
+    )
+    if not failed:
+        return None
+
+    text_rows = _decode_compact_table((reconstruction or {}).get("text"))
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in text_rows:
+        key = _normalized_text(row.get("preferredValue") or row.get("value"))
+        if key:
+            grouped.setdefault(key, []).append(row)
+    repeated_groups = []
+    for rows in sorted(grouped.values(), key=len, reverse=True):
+        if len(rows) < 2:
+            continue
+        repeated_groups.append(
+            {
+                "text": str(rows[0].get("preferredValue") or rows[0].get("value") or ""),
+                "elementIds": [
+                    _element_identifier(row.get("elementId")) for row in rows[:12]
+                ],
+                "boxesSource": [row.get("boxSource") for row in rows[:12]],
+                "count": len(rows),
+            }
+        )
+        if len(repeated_groups) >= 4:
+            break
+
+    text_matches = {
+        _element_identifier(match.get("referenceElementId")): match
+        for match in web_result.get("textMatches") or []
+    }
+    verified_vectors = []
+    for row in text_rows:
+        if row.get("visualRepresentation") != (
+            "source-vector-wordmark-with-selectable-live-label"
+        ):
+            continue
+        element_id = _element_identifier(row.get("elementId"))
+        match = text_matches.get(element_id) or {}
+        if not match.get("exact") or not match.get("selectable"):
+            continue
+        verified_vectors.append(
+            {
+                "elementId": element_id,
+                "text": str(row.get("preferredValue") or row.get("value") or ""),
+                "boxSource": row.get("boxSource"),
+            }
+        )
+
+    text_metrics = (visual_result.get("metrics") or {}).get("text") or {}
+    return {
+        "kind": "ocr-text-similarity",
+        "actual": failed.get("actual", text_metrics.get("similarity")),
+        "threshold": failed.get("threshold"),
+        "referenceOcr": str(text_metrics.get("reference") or "")[:1200],
+        "candidateOcr": str(text_metrics.get("candidate") or "")[:1200],
+        "repeatedReferenceTextGroups": repeated_groups,
+        "verifiedVectorWordmarks": verified_vectors,
+        "action": (
+            "Repair the visible rendering and spacing of repeated/live text groups first, "
+            "using their contract boxes and DOM text hints. Compare the returned referenceOcr "
+            "and candidateOcr strings to identify missing or garbled repetitions. Do not "
+            "replace verified source-vector wordmarks solely to improve OCR; their exact "
+            "selectable label and source vectors are already verified. Then call sens_review again."
+        ),
+        "source": "measured-rapidocr-plus-live-dom-contract",
+    }
+
+
 def combine_review(
-    visual_result: dict[str, Any], web_result: dict[str, Any]
+    visual_result: dict[str, Any],
+    web_result: dict[str, Any],
+    reconstruction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     visual_pass = bool(
         visual_result.get("canComplete")
@@ -893,6 +1091,17 @@ def combine_review(
     }
     visual_hints = []
     if not visual_pass:
+        text_hint = _ocr_text_repair_hint(
+            visual_result,
+            web_result,
+            reconstruction,
+        )
+        if text_hint:
+            visual_hints.append(text_hint)
+            visual_projection["requiredAction"] = {
+                "kind": "repair-ocr-text-rendering-from-existing-contract",
+                "reason": "Use the OCR strings, repeated text groups, and existing DOM hints returned by this review; preserve verified source vectors.",
+            }
         hot_regions = visual_result.get("hotRegions") or []
         if hot_regions:
             largest = hot_regions[0]
@@ -905,11 +1114,12 @@ def combine_review(
                     "source": "measured-strict-diff",
                 }
             )
-            visual_projection["requiredAction"] = {
-                "kind": "repair-largest-hot-region-from-existing-contract",
-                "region": largest.get("box"),
-                "reason": "Use the existing reconstruction contract plus measured DOM/CSS deltas; do not request another visual description.",
-            }
+            if not text_hint:
+                visual_projection["requiredAction"] = {
+                    "kind": "repair-largest-hot-region-from-existing-contract",
+                    "region": largest.get("box"),
+                    "reason": "Use the existing reconstruction contract plus measured DOM/CSS deltas; do not request another visual description.",
+                }
     web_hints = web_result.get("repairHints") or {}
     return {
         "schemaVersion": "2.0.0",
@@ -1046,6 +1256,7 @@ def review_web(
     )
     capture_options.setdefault("dpr", 1.0)
     capture_options.setdefault("fullPage", False)
+    capture_options["networkPolicy"] = "candidate"
 
     owned_root: Path | None = None
     if no_store:
@@ -1069,7 +1280,7 @@ def review_web(
         reconstruction = _reference_reconstruction(reference_path, contract_path)
         visual = compare_images(reference_path, str(screenshot_path), fit="strict")
         web = evaluate_web_integrity(reconstruction, capture)
-        result = combine_review(visual, web)
+        result = combine_review(visual, web, reconstruction)
         capture_summary = {
             "captureId": capture.get("captureId"),
             "source": capture.get("source"),
@@ -1080,6 +1291,7 @@ def review_web(
             "structuralLineCount": len(capture.get("structuralLines", [])),
             "rasterElementCount": len(capture.get("rasterElements", [])),
             "accessibilityAvailable": capture.get("accessibility") is not None,
+            "visualFreeze": capture.get("visualFreeze"),
         }
         artifacts = [] if no_store else list(capture.get("artifacts", []))
         if not no_store:

@@ -285,6 +285,20 @@ def test_dense_broad_hot_region_gets_a_material_bounding_gate() -> None:
     )
 
 
+def test_sparse_multiline_text_region_does_not_fail_on_empty_bounding_area() -> None:
+    accurate_multiline_text = {
+        "signalAreaRatio": 0.0324,
+        "boundingAreaRatio": 0.1174,
+    }
+    overlapping_text = {
+        "signalAreaRatio": 0.0291,
+        "boundingAreaRatio": 0.0839,
+    }
+
+    assert compare._material_hot_region_bounding_ratio(accurate_multiline_text) == 0.0
+    assert compare._material_hot_region_bounding_ratio(overlapping_text) == 0.0839
+
+
 def test_ocr_text_similarity_tolerates_visual_script_confusion_and_row_order() -> None:
     reference = "partners revenue сommissions landing page"
     candidate = "landing page partners revenue commissions"
