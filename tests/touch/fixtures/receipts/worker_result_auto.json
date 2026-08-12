@@ -1,0 +1,46 @@
+{
+  "jobId": "tch_7f3a0001",
+  "status": "complete",
+  "role": "explorer",
+  "provider": "openrouter",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "conclusion": "Корень бага — неочищенный интервал в useSocket (см. claims).",
+  "confidence": 0.82,
+  "claims": [
+    {
+      "claim": "Интервал reconnect не очищается при unmount",
+      "claimStatus": "inferred",
+      "confidence": 0.9,
+      "evidence": [
+        { "evidenceId": "ev_82a4f1c9", "evidenceStatus": "verified" }
+      ]
+    },
+    {
+      "claim": "Строка 47 файла tests/touch/fixtures/source_files/useSocket.ts содержит вызов setInterval",
+      "claimStatus": "verified",
+      "confidence": 1.0,
+      "evidence": [
+        { "evidenceId": "ev_82a4f1c9", "evidenceStatus": "verified" }
+      ]
+    }
+  ],
+  "findings": [
+    "всего 2 места создания интервала",
+    "cleanup очищает reconnectTimer, но не inline-интервал из строки 47"
+  ],
+  "risks": [
+    "правка затронет автотесты reconnect"
+  ],
+  "recommendedAction": "clearInterval в cleanup-функции",
+  "unresolved": [
+    "не проверял: сценарий потери фокуса окна"
+  ],
+  "usage": {
+    "steps": 9,
+    "totalInputTokens": 24134,
+    "totalOutputTokens": 3140,
+    "costEstimateUsd": 0.019,
+    "latencyMs": 48210
+  },
+  "warnings": []
+}

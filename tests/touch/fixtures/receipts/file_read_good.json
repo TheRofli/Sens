@@ -1,0 +1,9 @@
+{
+  "evidenceId": "ev_82a4f1c9",
+  "kind": "file_read",
+  "path": "tests/touch/fixtures/source_files/useSocket.ts",
+  "range": [47, 47],
+  "sha256": "d2f1bea053a4e9f08c759330920e5ed9307e5bf38c406ba8c76548dc82969326",
+  "observedAt": "2026-08-13T12:00:00Z",
+  "snippet": "        setInterval(reconnect, 5000); // leaked: handle is not stored"
+}

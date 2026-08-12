@@ -1,0 +1,22 @@
+{
+  "categories": {
+    "loopback": ["http://127.0.0.1:8080/", "http://localhost/", "http://[::1]/"],
+    "private": [
+      "http://10.0.0.1/",
+      "http://172.16.0.1/",
+      "http://172.31.255.254/",
+      "http://192.168.1.50:11434/v1/"
+    ],
+    "link_local": ["http://169.254.169.254/latest/meta-data/"],
+    "multicast": ["http://224.0.0.1/"],
+    "reserved": ["http://0.0.0.0/", "http://240.0.0.1/"],
+    "ipv6_private": ["http://[fc00::1]/", "http://[fe80::1]/"],
+    "unspecified": ["http://0.0.0.0:11434/v1/"]
+  },
+  "must_allow": [
+    "https://example.com/",
+    "https://api.deepseek.com/",
+    "https://openrouter.ai/api/v1/"
+  ],
+  "note": "Provider endpoints in the user config are a user-chosen trust boundary and are NOT subject to the web_fetch SSRF policy; the URLs above apply to model-controlled web_fetch only."
+}

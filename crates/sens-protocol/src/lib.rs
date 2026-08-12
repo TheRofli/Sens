@@ -2,6 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod touch;
+
 pub const PROTOCOL_VERSION: &str = "1.0.0";
 pub const PRODUCT_NAME: &str = "Sens";
 
@@ -307,6 +309,37 @@ pub fn default_capabilities() -> Vec<CapabilityManifest> {
                 .map(str::to_owned)
                 .collect(),
         },
+        CapabilityManifest {
+            id: touch::TOUCH_CAPABILITY_ID.into(),
+            version: "1.4.0".into(),
+            title: "Touch".into(),
+            description:
+                "Delegation of self-contained work to cheap worker models (OpenRouter/DeepSeek/OpenAI-compatible) with roles, budgets, context isolation, broker-issued evidence receipts, and deterministic verification. Opt-in; requires a provider key. Workers have no secrets, no direct filesystem, and no network; the broker executes all privileged actions.".into(),
+            operations: vec![
+                "touch",
+                "parallel",
+                "opinions",
+                "verify",
+                "status",
+                "cancel",
+                "check",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            runtime: RuntimeDescriptor {
+                kind: "python_sidecar".into(),
+                lazy: true,
+            },
+            permissions: vec![Permission::LocalFileRead, Permission::ProviderNetwork],
+            // Coordinator not registered yet (Slice 0 freezes the contract);
+            // the capability is advertised so hosts see the intent honestly.
+            state: CapabilityState::Unavailable,
+            artifact_types: vec!["worker_result", "evidence_receipt", "patch"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        },
     ]
 }
 
@@ -337,9 +370,14 @@ mod tests {
     #[test]
     fn default_registry_is_capability_first() {
         let capabilities = default_capabilities();
-        assert_eq!(capabilities.len(), 2);
+        assert_eq!(capabilities.len(), 3);
         assert!(capabilities.iter().any(|item| item.id == "sight"));
         assert!(capabilities.iter().any(|item| item.id == "hearing"));
+        assert!(
+            capabilities
+                .iter()
+                .any(|item| item.id == touch::TOUCH_CAPABILITY_ID)
+        );
         assert!(capabilities.iter().all(|item| item.runtime.lazy));
         let sight = capabilities
             .iter()
@@ -363,5 +401,21 @@ mod tests {
                 .iter()
                 .any(|operation| operation == "web_review")
         );
+        // Touch advertises every operation from Slice 0 (manifest-first lesson
+        // from the watch/fetch gap) even though the coordinator lands in
+        // Slice 1.
+        let touch = capabilities
+            .iter()
+            .find(|item| item.id == touch::TOUCH_CAPABILITY_ID)
+            .expect("touch capability");
+        for operation in [
+            "touch", "parallel", "opinions", "verify", "status", "cancel", "check",
+        ] {
+            assert!(
+                touch.operations.iter().any(|item| item == operation),
+                "touch manifest must advertise {operation}"
+            );
+        }
+        assert_eq!(touch.state, CapabilityState::Unavailable);
     }
 }

@@ -1,0 +1,27 @@
+{
+  "jobId": "tch_5b220011",
+  "role": "coder",
+  "summary": "Реализован rate limiter: токен-бакет",
+  "filesExamined": ["src/client/api.ts", "src/client/limiter.ts"],
+  "proposedChanges": [
+    {
+      "file": "src/client/limiter.ts",
+      "change": "новый файл: класс TokenBucket",
+      "reason": "изолирует логику лимитирования"
+    },
+    {
+      "file": "src/client/api.ts",
+      "change": "обёртка fetch через limiter",
+      "reason": "единая точка применения"
+    }
+  ],
+  "testsRequired": [
+    "unit: лимит не превышается",
+    "unit: ожидание при исчерпании"
+  ],
+  "patch": "diff --git a/src/client/limiter.ts b/src/client/limiter.ts\nnew file mode 100644\n--- /dev/null\n+++ b/src/client/limiter.ts\n@@ -0,0 +1,24 @@\n+export class TokenBucket {\n+  // ...broker-generated diff, not model text\n+}\n",
+  "risks": [
+    "изменение дефолтного поведения таймаутов"
+  ],
+  "unresolved": []
+}

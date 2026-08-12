@@ -1,0 +1,33 @@
+{
+  "jobId": "tch_7f3a0002",
+  "status": "complete",
+  "role": "explorer",
+  "provider": "openrouter",
+  "model": "deepseek/deepseek-v4-flash-0731",
+  "conclusion": "Фикстура: воркер ссылается на рецепт, который ему не выдавали.",
+  "confidence": 0.5,
+  "claims": [
+    {
+      "claim": "Файл src/secret/config.json содержит пароль",
+      "claimStatus": "inferred",
+      "confidence": 0.9,
+      "evidence": [
+        { "evidenceId": "ev_does_not_exist", "evidenceStatus": "unverifiable" }
+      ]
+    }
+  ],
+  "findings": [],
+  "risks": [],
+  "recommendedAction": null,
+  "unresolved": [],
+  "usage": {
+    "steps": 2,
+    "totalInputTokens": 1200,
+    "totalOutputTokens": 200,
+    "costEstimateUsd": 0.001,
+    "latencyMs": 4100
+  },
+  "warnings": [
+    "claim references evidence_id ev_does_not_exist which was never issued to this job"
+  ]
+}
