@@ -8,12 +8,18 @@ rust-version.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+reqwest.workspace = true
+regex.workspace = true
 sens-core = { path = "../sens-core" }
 sens-protocol = { path = "../sens-protocol" }
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+similar.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [

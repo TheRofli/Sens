@@ -1,7 +1,47 @@
 # Sens 1.4.0 — Touch: осязание (делегирование дешёвым воркер-моделям)
 
-> Обновлено 2026-08-13 (v1.1): интегрированы все 15 пунктов внешнего ревью
-> (GPT-5.6 SOL). Полный дизайн-документ: `docs/touch/touch-1.4.0-plan.md`.
+> Обновлено 2026-08-13: **слайсы 0–4 реализованы, слайс 5 (dev-гейт) пройден**
+> на коммите с полным прогоном: fmt, clippy `-D warnings` (workspace excl.
+> sens-desktop — экологический лок runtime\python в build script), 63
+> Rust-теста, 17 python-тестов. Полный дизайн: `docs/touch/touch-1.4.0-plan.md`.
+
+## Статус реализации (2026-08-13)
+
+- **Слайс 0** ✅ контракты v1.1, роли EN, фикстуры, верификация фактов.
+- **Слайс 1** ✅ `TouchExecutor` в sens-broker: конфиг `touch` из config.json,
+  job store (capacity 2, очередь FIFO, TTL, noStore, лимит хранимых),
+  кумулятивные token-бюджеты, pessimistic spend-оценка + consent
+  (`awaiting_consent` → `sens_touch_status(job_id, consent:true)`), дневной
+  лимит, **provider proxy** (ключ только в брокере, HTTPS делает брокер,
+  Debug маскирует ключ), 7 MCP-тулов в sens-mcp (fallback-путь:
+  sens_touch/_parallel/_opinions/_verify/_status/_cancel/_check).
+- **Слайс 2** ✅ `sidecars/touch/touch-worker.py` (agent loop, роли из
+  roles/*.md, tool calling через broker, JSON-финальный ответ, честный
+  partial при limit); broker-executed тулы read/glob/grep (scope check,
+  canonicalization, лимиты, traversal/symlink), evidence-рецепты в момент
+  чтения, верификатор claims (двухосная семантика, downgrade verified →
+  inferred при невалидных рецептах).
+- **Слайс 3** ✅ web_fetch (https-only + private-range/loopback rejection,
+  2 МБ/30 c, рецепт с sha256), web_search (Tavily/SerpAPI/Brave, без ключа
+  честно disabled), opinions (изоляция, дефолтные перспективы по ролям,
+  count/N), verify, check (чистые предикаты без LLM и трат).
+- **Слайс 4** ✅ coder: песочница брокера (копирование scope + зависимых
+  файлов), write только в песочницу, **unified diff генерирует брокер**
+  (similar), рабочее дерево primary не трогается, tests_required без
+  исполнения (run_tests НЕ в v1).
+- **Слайс 5 (dev)** ✅ интеграционный гейт: E2E брокер → touch-worker.py →
+  mock-провайдер (полный цикл с рецептами и verified-claims), check-
+  предикаты (verified/refuted/unverifiable), coder-песочница (diff + дерево
+  primary нетронуто), opinions (явные и дефолтные перспективы), тесты
+  «ключ не в логах/IPC/телах запросов», «auth на каждом вызове».
+- **MCP Tasks**: rmcp 0.16 поддерживает Tasks-протокол нативно
+  (CreateTaskResult/tasks:get/cancel в ServerResult, TaskManager). Job store
+  Tasks-ready (durable job_id, статусы, TTL). Нативный мост через
+  OperationProcessor rmcp — отдельный пункт релизной упаковки (не блокирует
+  dev-гейт; fallback sens_touch_status/cancel работает всегда).
+- **Публичная установка 1.4.0**: НЕ выпущена. Dev-линия не входит в
+  установщики до релизной упаковки (версии, tauri build, sidecar-деплой,
+  подписанный релиз по отмашке).
 
 ## Outcome
 

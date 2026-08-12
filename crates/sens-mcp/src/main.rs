@@ -8,6 +8,7 @@ use rmcp::{
     transport::stdio,
 };
 use sens_broker::BrokerClient;
+use sens_protocol::touch;
 use sens_protocol::{BrokerRequest, BrokerResponse, InvokeRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -887,6 +888,139 @@ impl SensMcp {
         self.invoke(
             "hearing",
             "fetch",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Delegate one self-contained task to a cheap worker model (Touch). Use this tool proactively to offload verifiable work that does not require the full primary-agent context. Consider delegation BEFORE using the primary model to read, search, inspect, or reason over a large amount of raw material. Prefer a worker when the primary would otherwise need to: inspect more than a few files; perform several exploratory searches; compare many similar candidates; generate several independent alternatives; review a large diff; process long logs or documents. The purpose of Touch is context isolation: do not first ingest the material into the primary context and then delegate it; delegate the acquisition itself. Do NOT delegate: final decisions, destructive operations, security-critical authorization decisions, work requiring private context unavailable to workers, or tasks resolvable with one or two simple steps (delegation must have positive expected value). Async: returns a jobId; poll sens_touch_status. Worker requests, the broker permits and executes: workers have no secrets, no direct filesystem, and no network.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Delegate to worker", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn sens_touch(
+        &self,
+        Parameters(args): Parameters<touch::TouchRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "touch",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Run several independent worker tasks as one job group. Each worker is isolated: workers never see each other's packets or results. Respects maxWorkersPerTurn (default 4). Async: returns job ids; poll sens_touch_status per job.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Delegate parallel tasks", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn sens_touch_parallel(
+        &self,
+        Parameters(args): Parameters<touch::TouchParallelRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "parallel",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Get N independent opinions on one problem (bounded swarm / council of opinions). Workers run isolated contexts and never see each other's answers, producing real trajectory diversity. Pass explicit perspectives to fix them; otherwise the broker applies role defaults (researcher: evidence-first / alternative approaches / skeptical; critic: counterexamples / failure modes / hidden assumptions; reviewer: correctness+regressions / edge cases / maintainability). synthesize=true merges candidates with one extra worker; false (default) returns raw candidates for the primary to merge. Async: returns job ids.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Independent opinions", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn sens_touch_opinions(
+        &self,
+        Parameters(args): Parameters<touch::TouchOpinionsRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "opinions",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Verify a candidate (code, diff, or design description) with a skeptical worker (reviewer by default, critic to attempt disproof). The broker additionally machine-verifies every evidence receipt beneath the worker's claims (evidence_status verified/refuted/unverifiable), so the result is never just \"a reviewer said ok\". Async: returns a jobId.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Verify candidate", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn sens_touch_verify(
+        &self,
+        Parameters(args): Parameters<touch::TouchVerifyRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "verify",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Poll a Touch job (fallback path for hosts without native MCP Tasks support; native Tasks hosts poll tasks/get instead). Returns queued/awaitingConsent/running/partial/complete/failed/cancelled with progress events and the full result on terminal states. Pass consent=true to confirm a spend request on a job in awaitingConsent.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Touch job status", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn sens_touch_status(
+        &self,
+        Parameters(args): Parameters<touch::TouchStatusRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "status",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Cancel a Touch job (fallback path for hosts without native MCP Tasks support; native Tasks hosts use tasks/cancel). Cooperative: the worker finishes its current step and exits; a completed job is a no-op.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Cancel Touch job", read_only_hint = false, destructive_hint = false, idempotent_hint = false, open_world_hint = false)
+    )]
+    async fn sens_touch_cancel(
+        &self,
+        Parameters(args): Parameters<touch::TouchCancelRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "cancel",
+            serde_json::to_value(args).unwrap_or(Value::Null),
+            false,
+            None,
+        )
+        .await
+    }
+
+    #[tool(
+        description = "Deterministically check machine-verifiable assertions WITHOUT any worker model and without spend: file_exists, line_contains, pattern_count, url_contains_quote, hash_matches. Every result is verified/refuted/unverifiable with a detail. Use this to check facts yourself instead of trusting a model's word.",
+        output_schema = sens_result_schema(),
+        annotations(title = "Check facts deterministically", read_only_hint = true, destructive_hint = false, idempotent_hint = true, open_world_hint = false)
+    )]
+    async fn sens_touch_check(
+        &self,
+        Parameters(args): Parameters<touch::TouchCheckRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        self.invoke(
+            "touch",
+            "check",
             serde_json::to_value(args).unwrap_or(Value::Null),
             false,
             None,

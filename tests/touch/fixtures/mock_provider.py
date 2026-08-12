@@ -26,10 +26,32 @@ SCENARIO_DEFAULT = [
     },
     {
         "role": "final",
+        "echo_evidence": True,
         "content": '{"conclusion": "fixture", "confidence": 0.9}',
         "usage": {"prompt_tokens": 1200, "completion_tokens": 300},
     },
 ]
+
+EVIDENCE_MARKER = "EVIDENCE RECEIPT (reference this evidenceId in claims):"
+
+
+def extract_evidence_id(messages):
+    """Pull the last evidenceId the worker embedded from a tool_result."""
+    for message in reversed(messages or []):
+        if message.get("role") != "tool":
+            continue
+        content = message.get("content") or ""
+        if EVIDENCE_MARKER not in content:
+            continue
+        payload = content.split(EVIDENCE_MARKER, 1)[1].strip()
+        try:
+            receipt = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        evidence_id = receipt.get("evidenceId")
+        if evidence_id:
+            return evidence_id
+    return None
 
 
 class MockProviderHandler(BaseHTTPRequestHandler):
@@ -102,6 +124,11 @@ class MockProviderHandler(BaseHTTPRequestHandler):
             )
             return
         usage = entry.get("usage", {})
+        content = entry.get("content", "")
+        if entry.get("echo_evidence"):
+            evidence_id = extract_evidence_id(body.get("messages", []))
+            if evidence_id:
+                content = content.replace("{EVIDENCE_ID}", evidence_id)
         self._json(
             200,
             {

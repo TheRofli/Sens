@@ -29,6 +29,10 @@ tokio = { version = "1.47", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.18", features = ["v4", "serde"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "webpki-roots"] }
+similar = "2.0"
+regex = "1.0"
+sha2 = "0.10"
 
 [profile.release]
 lto = "thin"

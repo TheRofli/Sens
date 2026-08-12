@@ -5,6 +5,7 @@ mod hearing;
 #[cfg(windows)]
 mod process_group;
 mod sight;
+mod touch;
 
 use std::sync::Arc;
 
@@ -14,6 +15,7 @@ use sens_protocol::{BrokerRequest, BrokerResponse, PROTOCOL_VERSION, SensError};
 
 pub use hearing::{HearingExecutor, HearingRuntimeConfig};
 pub use sight::{SightExecutor, SightRuntimeConfig};
+pub use touch::{TouchExecutor, TouchRuntimeConfig};
 
 #[cfg(windows)]
 pub use windows::{BrokerClient, BrokerServer, DEFAULT_PIPE_NAME, is_broker_already_running};
@@ -31,6 +33,21 @@ pub async fn build_core() -> anyhow::Result<SensCore> {
     core.register_executor("hearing", Arc::new(hearing))
         .await
         .map_err(|error| anyhow::anyhow!(error.message))?;
+    let touch_config = TouchRuntimeConfig::discover()?;
+    let touch_enabled = touch_config.enabled;
+    let touch = TouchExecutor::new(touch_config);
+    core.register_executor(sens_protocol::touch::TOUCH_CAPABILITY_ID, Arc::new(touch))
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    core.set_capability_state(
+        sens_protocol::touch::TOUCH_CAPABILITY_ID,
+        if touch_enabled {
+            sens_protocol::CapabilityState::Asleep
+        } else {
+            sens_protocol::CapabilityState::Disabled
+        },
+    )
+    .await;
     core.mark_ready().await;
     Ok(core)
 }

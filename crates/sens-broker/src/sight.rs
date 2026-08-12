@@ -69,7 +69,7 @@ impl SightRuntimeConfig {
     }
 }
 
-fn discover_sens_root() -> PathBuf {
+pub(crate) fn discover_sens_root() -> PathBuf {
     if let Some(root) = std::env::var_os("SENS_ROOT") {
         return PathBuf::from(root);
     }
@@ -85,11 +85,14 @@ fn discover_sens_root() -> PathBuf {
         .join("..")
 }
 
-fn discover_python_executable(sens_root: &Path) -> PathBuf {
+pub(crate) fn discover_python_executable(sens_root: &Path) -> PathBuf {
     choose_python_executable(std::env::var_os("SENS_PYTHON"), sens_root)
 }
 
-fn choose_python_executable(configured: Option<std::ffi::OsString>, sens_root: &Path) -> PathBuf {
+pub(crate) fn choose_python_executable(
+    configured: Option<std::ffi::OsString>,
+    sens_root: &Path,
+) -> PathBuf {
     if let Some(path) = configured {
         return PathBuf::from(path);
     }
@@ -113,7 +116,7 @@ fn discover_vision_pack(eye_root: &Path) -> Option<String> {
     matches!(pack.as_str(), "lite" | "quality" | "quality_large").then_some(pack)
 }
 
-fn discover_worker_script(name: &str) -> PathBuf {
+pub(crate) fn discover_worker_script(name: &str) -> PathBuf {
     if let Some(root) = std::env::var_os("SENS_SIDECARS_ROOT") {
         return PathBuf::from(root).join(name);
     }
@@ -132,7 +135,7 @@ fn discover_worker_script(name: &str) -> PathBuf {
         .join(name)
 }
 
-fn discover_eye_root() -> PathBuf {
+pub(crate) fn discover_eye_root() -> PathBuf {
     if let Some(path) = std::env::var_os("SENS_EYE_ROOT") {
         return PathBuf::from(path);
     }
