@@ -1,5 +1,9 @@
 # Sens 1.4.0 — Media understanding and Voice output
 
+> **Status (2026-08-13): отложено.** В приоритете — Sens 1.4.0 Touch
+> (`.omx/plans/sens-1.4.0-touch.md`). Этот план переезжает на 1.5.0 без
+> изменения содержимого.
+
 ## Outcome
 
 Sens can locally analyze an explicitly supplied video, song, audio file,
