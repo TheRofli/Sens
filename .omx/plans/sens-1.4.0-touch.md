@@ -1,150 +1,93 @@
 # Sens 1.4.0 — Touch: осязание (делегирование дешёвым воркер-моделям)
 
+> Обновлено 2026-08-13 (v1.1): интегрированы все 15 пунктов внешнего ревью
+> (GPT-5.6 SOL). Полный дизайн-документ: `docs/touch/touch-1.4.0-plan.md`.
+
 ## Outcome
 
 Sens получает четвёртое чувство — **Осязание (Touch)**: текстовый primary-агент
 может делегировать самодостаточную работу дешёвым воркер-моделям с ролями,
-бюджетами, изоляцией контекста, структурированными результатами и
-детерминированной проверкой claims. Провайдер — любой OpenAI-совместимый API
-по ключу пользователя (OpenRouter, DeepSeek и т.д.). Существующие Sight,
-Hearing и MCP-тулы остаются совместимыми.
+бюджетами, изоляцией контекста и evidence-рецептами. Провайдер — любой
+OpenAI-совместимый API по ключу пользователя (OpenRouter/DeepSeek). Существующие
+Sight, Hearing и MCP-тулы остаются совместимыми.
 
-Главная ценность: primary тратит токены на решения, а не на механический сбор
-информации. Воркер читает/ищет/пишет в песочнице и возвращает концентрат
-(700–1500 токенов), а не сырой контекст. Sens при этом **проверяет claims
-детерминированно** (файл существует, строка совпадает, URL докачан), а не
-верит модели на слово — это наш моат.
+Слоган (после ревью): **Sens doesn't trust worker evidence blindly. It verifies
+the evidence beneath model conclusions.**
+
+## Ключевые решения v1.1
+
+- **Двухосная верификация**: `claim_status` (inferred — всегда для
+  семантических выводов; verified — только для машинных предикатов:
+  file_exists/line_contains/pattern_count/url_contains_quote/hash_matches) и
+  `evidence_status` (verified/refuted/unverifiable).
+- **Evidence-рецепты**: брокер выдаёт рецепт (evidence_id, sha256,
+  observed_at) в момент реального чтения/докачки; воркер ссылается только на
+  рецепты; race исключён; ссылка на несуществующий рецепт отклоняется.
+- **Provider transport broker-owned**: ключ только в памяти брокера, HTTPS к
+  провайдеру делает брокер (provider proxy); воркер не имеет ключа, сети и
+  прямого FS-доступа.
+- **Worker requests, Broker permits and executes**: все привилегированные
+  тулы (read/glob/grep/web_fetch/web_search/sandbox write) исполняет брокер;
+  воркер — agent loop, выбор тулов, синтез.
+- **Coder v1 = patch producer**: песочница брокера (scope + минимальные
+  зависимые файлы), unified diff генерирует брокер; **run_tests НЕ в v1**
+  (allowlist не является OS-песочницей; настоящий isolation — отдельная
+  будущая capability). Патч применяет только primary.
+- **Async через MCP Tasks extension** (ext-tasks, 2026-07-28): CreateTaskResult
+  + tasks/get/update/cancel; consent — через input_required elicitation;
+  фолбэк для хостов без Tasks — sens_touch_status/sens_touch_cancel
+  (consent через status(job_id, consent:true) / await status `awaiting_consent`).
+- **Кумулятивные token-бюджеты** (не только output): max_total_input_tokens
+  50k, max_total_output_tokens 6k, max_context_tokens 24k,
+  max_tool_result_tokens 6k, max_single_tool_result_tokens 2.5k; usage —
+  суммарно по всем model calls.
+- **Role prompts — английские** (canonical, provider-neutral); objective —
+  на языке пользователя.
+- **Дефолтные перспективы opinions заморожены** (researcher/critic/reviewer
+  по 3 шт.; если primary передал perspectives — только они).
+- **sens_touch_check** — 7-й тул: чистые предикаты без LLM и трат.
+- Имена моделей: OpenRouter `deepseek/deepseek-v4-flash-0731` (пиним slug),
+  DeepSeek direct `deepseek-v4-flash` (legacy deepseek-chat не использовать).
+- Provider endpoint — пользовательская trust boundary, SSRF-политика к нему
+  НЕ применяется (в отличие от model-controlled web_fetch).
+- UI-предупреждение: «Remote Touch providers may receive portions of files
+  within the scope you delegate to workers».
 
 ## Не-цели
 
-- Модельно-управляемые действия вне скупа (чтение по allowlist, запись только
-  в песочницу кодера). Никаких `rm`, `git push`, деплоев, credentials,
-  продакшн-БД.
-- Применение патчей кодера к рабочему репозиторию автоматически. Воркер
-  предлагает — primary решает.
-- Бесконечные swarm и глубокая делегация: `max_depth = 1`.
-- Локальный хостинг моделей: воркеры v1 — удалённый API по ключу пользователя.
-- Скрытые траты: лимиты spend и явное согласие на дорогие вызовы обязательны.
-- Запуск произвольных команд для «проверки тестами» без явного флага.
-- Секреты в аргументах, логах, activity-записях и диагностике.
+- Исполнение команд/тестов в v1 (run_tests убран); настоящий OS sandbox —
+  1.4.x/1.5.
+- Применение патчей к рабочему дереву автоматически.
+- max_depth > 1, мультипровайдерный роутинг, adaptive router.
+- Восстановление job'ов после рестарта брокера.
+- Секреты/credentials/сеть у воркеров — никогда.
+- Голос/медиа (1.5.0), интеграция с UMELO (отдельный трек).
 
-## Слайс 0 — Контракты и фикстуры
+## Слайсы (TDD, гейты в docs/touch/touch-1.4.0-plan.md §20–21)
 
-- Заморозить схему `TaskPacket v1` (objective, role, scope, constraints,
-  deliverable, budget) и `WorkerResult v1` (claims + evidence + confidence +
-  risks + unresolved).
-- Роли v1: `researcher` (веб + материалы), `explorer` (read-only репозиторий),
-  `coder` (песочница + diff), `reviewer` (критический разбор), `critic`
-  (попытка опровергнуть). Все роли — файлы `roles/*.md` в конфиге Sens.
-- Тулы (глагольный стиль Sens): `sens_touch`, `sens_touch_parallel`,
-  `sens_touch_opinions`, `sens_touch_verify`, `sens_touch_status`,
-  `sens_touch_cancel`. Все вызовы — асинхронные (см. «Асинхронность v1»).
-  Сразу зарегистрировать в манифестах (урок watch/fetch).
-- Фикстуры: синтетический грязный репозиторий, файл с prompt-injection,
-  фикстура галлюцинированных claims (файл:строка не существуют), мок
-  OpenAI-совместимого провайдера, мок поискового провайдера.
+- **Слайс 0** — контракты v1.1 (TaskPacket, WorkerResult с двумя осями,
+  рецепты, 7 тулов, роли EN, манифесты), проверка MCP Tasks spec + client
+  matrix + актуальные slug'и моделей, фикстуры (грязный репо, injection,
+  несуществующий рецепт, мок провайдера, private-range, изменение файла
+  между шагами).
+- **Слайс 1** — TouchCoordinator: key holder, job store (capacity 2, TTL,
+  noStore), scheduler, кумулятивные бюджеты, consent; **provider proxy**;
+  **MCP Tasks мост** + фолбэк; IPC (model_request/tool_request/рецепты).
+- **Слайс 2** — воркер-brain (loop, feature-detect tool calling) +
+  broker-executed тулы (read/glob/grep, scope check, canonicalization) +
+  evidence-рецепты + claim verifier (предикаты).
+- **Слайс 3** — web_fetch/web_search в брокере, opinions (изоляция,
+  дефолтные перспективы, синтез), sens_touch_verify, sens_touch_check.
+- **Слайс 4** — coder: песочница (scope + зависимости), write-тул, diff
+  брокером, tests_required без исполнения.
+- **Слайс 5** — интеграционный гейт 1.4.0: E2E с реальным ключом,
+  explorer → opinions → coder → verify → check; бюджеты/отмена/consent
+  (оба пути); ключ не в логах/IPC; обновить docs/current-state.md.
 
-Гейт: существующие публичные тесты проходят, схемы и фикстуры в git.
+## Обязательные гейты
 
-## Слайс 1 — Broker-owned Touch runtime
-
-- `TouchCoordinator` в Rust-брокере: секция `touch` в config.json пользователя
-  (по образцу `eye`); ключ хранится в памяти брокера и передаётся воркеру
-  через IPC на время задания — никогда в аргументах, логах, activity.
-- Лимиты (редактируемые в конфиге): `max_workers_per_turn = 4`,
-  `max_parallel = 3`, `max_depth = 1`, `worker_max_steps = 15`,
-  `worker_timeout_s = 180`, `max_output_tokens = 1500`.
-- Spend-контроль: `max_spend_per_task` (≈ $0.50), `max_spend_per_day` (≈ $5),
-  `confirm_above` (≈ $0.20) — вызовы дороже требуют явного согласия.
-- Scheduler: capacity провайдера (по умолчанию 2 одновременных вызова),
-  очередь в брокере, отмена задания по образцу существующего cancellation.
-- Жизненный цикл `touch-worker.py` как у sight-worker (sidecar под брокером,
-  stateless, stdin-протокол).
-
-Гейт: тесты брокера + интеграция с мок-провайдером; тест «ключа нет в логах/
-аргументах/activity»; лимиты и отмена работают.
-
-## Слайс 2 — Воркер: agent loop с реальными тулами
-
-- `touch-worker.py`: маленький agent loop поверх OpenAI-совместимого
-  `/chat/completions` с tool calling; feature-detect tool calling у провайдера,
-  иначе честный текстовый режим без тулов.
-- Тулы воркера (разрешения выдаёт брокер по scope из TaskPacket):
-  `read`, `glob`, `grep` — bounded, read-only, allowlist путей;
-  `web_fetch(url)` — только https, отказ от private-range/redirect-политики
-  по образцу URL-reconstruction (переиспользовать существующий код сети);
-  `web_search(query)` — через конфигурируемый поисковый провайдер
-  (по умолчанию Tavily, адаптер под SerpAPI/Brave), без ключа поиска —
-  `web_fetch` явных URL работает, поиск честно недоступен.
-- `coder`: брокер создаёт изолированную песочницу (отдельный каталог, не
-  workspace), воркер пишет туда, возвращает unified diff + список файлов.
-  Применение патча к рабочему репозиторию — только решение primary.
-  `run_tests: true` — опциональный флаг с bounded-таймаутом и allowlist команд
-  (например, pytest/npm test в песочнице); результат помечается как measured.
-- Каждый claim несёт evidence: kind (file | web | tool), путь/URL, строка,
-  сниппет, метод. WorkerResult — всегда `inferred` в envelope, с пометкой
-  модели, роли, usage и cost estimate.
-
-Гейт: фикстуры path traversal, symlink, размер, кодировка, private-range
-URL, отмена; evidence из реальных тулов, а не из фантазий.
-
-## Слайс 3 — Совет мнений (swarm, bounded)
-
-- `sens_touch_opinions(objective, perspectives = 3)` — N изолированных
-  вызовов одной роли с разными перспективами (например, minimal-change /
-  scalable / failure-focused). Воркеры не видят ответы друг друга.
-- Опциональный шаг синтеза: один воркер-вызов сводит мнения (или primary
-  сводит сам — возвращаются сырые кандидаты).
-- Бюджеты: `max_candidates = 3`, суммарный spend = N × лимит задания.
-
-Гейт: фикстура изоляции (кандидаты не видят чужие ответы), детерминированные
-бюджеты, отмена параллельной группы.
-
-## Слайс 4 — Детерминированная проверка claims
-
-- Брокер проверяет каждый claim: файл существует, строка/паттерн совпадают,
-  URL докачан и содержит цитату, тест реально выполнен. Метка на claim:
-  `verified | refuted | unverifiable` + метод проверки.
-- `sens_touch_verify(candidate, criteria)` = ролевой ревью + детерминированные
-  проверки в одном вызове. Возвращает не «рецензент сказал ок», а «5 из 7
-  claims подтверждены, 1 опровергнут, 1 не проверяем».
-- Полный результат — в shared envelope: observed (факты проверки) отделён от
-  inferred (мнения модели).
-
-Гейт: фикстура галлюцинированных claims опровергается; реальные claims
-проходят; refuted-claims не попадают в «подтверждённое».
-
-## Слайс 5 — Интеграционный гейт 1.4.0
-
-- E2E с реальным ключом пользователя на одноразовом грязном репозитории:
-  explorer → совет мнений → coder-предложение → verify → envelope.
-- Проверки: бюджеты соблюдены, отмена работает, ключ отсутствует в логах и
-  activity, лимиты spend честно срабатывают.
-- Машинные и скриншотные evidence-записи, обновить `docs/current-state.md`
-  только по подтверждённому поведению.
-
-## Асинхронность v1
-
-Все тулы возвращают `job_id` немедленно и завершают MCP-вызов, не дожидаясь
-работы воркера. Дальнейшее — через `sens_touch_status(job_id)`.
-
-- Состояния job: `queued → running → complete | failed | cancelled`, плюс
-  `partial` при достижении бюджетных лимитов (таймаут / steps / spend).
-- `sens_touch_status` возвращает прогресс (события шагов воркера) и по
-  завершении — полный WorkerResult.
-- `sens_touch_cancel(job_id)` — отмена задания через существующий
-  cancellation-паттерн брокера.
-- Job-хранилище — broker-owned по образцу review-сессий 1.3.8: лимит
-  одновременных активных jobs (capacity провайдера, по умолчанию 2),
-  очередь, TTL готовых результатов, `noStore` очистка.
-- Параллельные группы (parallel/opinions) — один `job_id` на группу;
-  воркеры внутри группы планируются по capacity.
-- Латенция прозрачна: primary сам решает, ждать ли через поллинг или делать
-  что-то ещё между `status`-вызовами.
-
-## Совместимость и лицензия
-
-- Новые тулы и контракты не ломают существующие. Схемы — аддитивные.
-- Воркер — сетевой по своей природе (ключ пользователя), это единственное
-  исключение из локальности; согласие на сеть — через явную настройку
-  `touch.enabled` в конфиге пользователя (не по умолчанию).
+cargo fmt/clippy/test workspace; pytest воркера; тесты: ключ не в
+stdout/stderr/logs/activity/IPC/WorkerResult; воркер без сети; ссылка на
+несуществующий рецепт отклоняется; cumulative tokens; partial при лимитах;
+consent (Tasks и фолбэк); семантический claim не может стать verified;
+claims без рецептов — unverifiable.
