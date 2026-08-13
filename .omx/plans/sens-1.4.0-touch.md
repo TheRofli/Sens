@@ -39,9 +39,12 @@
   Tasks-ready (durable job_id, статусы, TTL). Нативный мост через
   OperationProcessor rmcp — отдельный пункт релизной упаковки (не блокирует
   dev-гейт; fallback sens_touch_status/cancel работает всегда).
-- **Публичная установка 1.4.0**: НЕ выпущена. Dev-линия не входит в
-  установщики до релизной упаковки (версии, tauri build, sidecar-деплой,
-  подписанный релиз по отмашке).
+- **Релизная упаковка (2026-08-13)**: версия 1.3.8 → 1.4.0 (Cargo.toml,
+  package.json, tauri.conf.json); sidecars/touch/ в bundle.resources;
+  in-app настройки Touch с выключателем (enabled=false по умолчанию) в
+  settings.rs + UI (RU/EN); discovery воркера под бандл-layout
+  (sidecars/touch/touch-worker.py). Локальная подписанная сборка
+  native:build пройдена; публикация — тег v1.4.0 → release.yml (Actions).
 
 ## Outcome
 
