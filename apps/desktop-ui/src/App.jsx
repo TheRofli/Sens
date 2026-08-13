@@ -109,6 +109,14 @@ const defaultCapabilitySettings = {
     { value: "whisper", label: "Whisper Small INT8 · 99 языков", description: "Широкий мультиязычный fallback" },
     { value: "remote", label: "OpenRouter API · онлайн", description: "Опциональная транскрипция через API" },
   ],
+  touch: {
+    enabled: false,
+    providerType: "openrouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "deepseek/deepseek-v4-flash-0731",
+    apiKey: "",
+    webSearchProvider: "none",
+  },
 };
 
 const capabilityMeta = {
@@ -781,7 +789,13 @@ export function App() {
     if (!nativeRuntime) return;
     invoke("capability_settings")
       .then((settings) => {
-        setCapabilitySettings(settings);
+        // Merge over the frontend defaults so a missing capability section
+        // (e.g. a legacy broker) can never crash the render.
+        setCapabilitySettings({
+          ...defaultCapabilitySettings,
+          ...settings,
+          touch: { ...defaultCapabilitySettings.touch, ...(settings.touch || {}) },
+        });
         invoke("hearing_model_status", { model: settings.hearing.model })
           .then(setHearingSetup)
           .catch((error) => setHearingSetup({
