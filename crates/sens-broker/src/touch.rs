@@ -556,6 +556,7 @@ impl Job {
             consent_request: self.consent_request.clone(),
             progress: Some(self.progress.clone()),
             result: self.result.clone(),
+            error: self.error.clone(),
         }
     }
 }
@@ -1532,6 +1533,11 @@ impl TouchExecutor {
             };
             if !canonical.starts_with(&prefix) {
                 return false;
+            }
+            // A scope entry without glob metacharacters names a path prefix
+            // (a directory or a single file): containment is the whole rule.
+            if !entry.contains('*') && !entry.contains('?') {
+                return true;
             }
             // Absolute patterns match the canonical path directly.
             let absolute_text = absolute.to_string_lossy().replace('\\', "/");

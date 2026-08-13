@@ -260,12 +260,12 @@ def run() -> int:
         send({"type": "failed", "error": "worker exceeded maxSteps without a final answer"})
         return 1
 
-    result = build_result(messages, role, model, limited_reason, max_steps)
+    result = build_result(messages, role, model, packet.get("jobId", ""), limited_reason, max_steps)
     send({"type": "complete", "result": result})
     return 0
 
 
-def build_result(messages, role, model, limited_reason, max_steps):
+def build_result(messages, role, model, job_id, limited_reason, max_steps):
     final_text = ""
     for message in reversed(messages):
         if message.get("role") == "assistant" and message.get("content"):
@@ -310,6 +310,7 @@ def build_result(messages, role, model, limited_reason, max_steps):
     status = "partial" if limited_reason else "complete"
     warnings = [f"limit reached: {limited_reason}"] if limited_reason else []
     return {
+        "jobId": job_id,
         "status": status,
         "role": role,
         "provider": "touch",

@@ -161,7 +161,6 @@ async fn worker_loop_with_mock_provider() {
     provider.kill().await.ok();
     let _ = provider.wait().await;
 
-    assert_eq!(final_status, "complete", "job must complete");
     let status_request = InvokeRequest::new(
         touch::TOUCH_CAPABILITY_ID,
         "status",
@@ -171,6 +170,11 @@ async fn worker_loop_with_mock_provider() {
         .invoke(&status_request)
         .await
         .expect("final status");
+    assert_eq!(
+        final_status, "complete",
+        "job must complete; full status: {}",
+        status.data
+    );
     let result = status
         .data
         .get("result")
@@ -186,7 +190,8 @@ async fn worker_loop_with_mock_provider() {
     assert_eq!(
         first.get("claimStatus").and_then(Value::as_str),
         Some("verified"),
-        "predicate claim from the worker may stay verified"
+        "predicate claim from the worker may stay verified; result: {}",
+        result
     );
     let evidence = first
         .get("evidence")

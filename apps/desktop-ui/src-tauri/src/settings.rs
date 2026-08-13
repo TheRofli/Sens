@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 pub struct CapabilitySettings {
     pub sight: SightSettings,
     pub hearing: HearingSettings,
+    pub touch: TouchSettings,
     pub sight_providers: Vec<SightProviderOption>,
     pub hearing_models: Vec<HearingModelOption>,
 }
@@ -81,6 +82,34 @@ impl std::fmt::Debug for HearingSettings {
     }
 }
 
+/// Sens 1.4.0 Touch: delegation to cheap worker models over a
+/// user-configured OpenAI-compatible provider. The provider key lives in the
+/// Eye config only, is masked in Debug, and is never logged.
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TouchSettings {
+    pub enabled: bool,
+    pub provider_type: String,
+    pub base_url: String,
+    pub model: String,
+    pub api_key: String,
+    pub web_search_provider: String,
+}
+
+impl std::fmt::Debug for TouchSettings {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TouchSettings")
+            .field("enabled", &self.enabled)
+            .field("provider_type", &self.provider_type)
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("api_key", &"[redacted]")
+            .field("web_search_provider", &self.web_search_provider)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SightProviderOption {
@@ -119,6 +148,11 @@ pub fn save(capability: &str, settings: Value) -> Result<CapabilitySettings, Str
             &speech_path,
             serde_json::from_value(settings)
                 .map_err(|error| format!("Некорректные настройки слуха: {error}"))?,
+        )?,
+        "touch" => save_touch_at(
+            &eye_path,
+            serde_json::from_value(settings)
+                .map_err(|error| format!("Некорректные настройки осязания: {error}"))?,
         )?,
         _ => return Err(format!("Неизвестная возможность: {capability}")),
     }
@@ -243,6 +277,59 @@ fn load_from_paths(eye_path: &Path, speech_path: &Path) -> Result<CapabilitySett
         },
         sight_providers,
         hearing_models: hearing_models(),
+        touch: TouchSettings {
+            enabled: eye
+                .get("touch")
+                .and_then(Value::as_object)
+                .and_then(|touch| touch.get("enabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            provider_type: eye
+                .get("touch")
+                .and_then(Value::as_object)
+                .and_then(|touch| touch.get("provider"))
+                .and_then(Value::as_object)
+                .and_then(|provider| provider.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("openrouter")
+                .to_owned(),
+            base_url: eye
+                .get("touch")
+                .and_then(Value::as_object)
+                .and_then(|touch| touch.get("provider"))
+                .and_then(Value::as_object)
+                .and_then(|provider| provider.get("baseUrl"))
+                .and_then(Value::as_str)
+                .unwrap_or("https://openrouter.ai/api/v1")
+                .to_owned(),
+            model: eye
+                .get("touch")
+                .and_then(Value::as_object)
+                .and_then(|touch| touch.get("provider"))
+                .and_then(Value::as_object)
+                .and_then(|provider| provider.get("model"))
+                .and_then(Value::as_str)
+                .unwrap_or("deepseek/deepseek-v4-flash-0731")
+                .to_owned(),
+            api_key: eye
+                .get("touch")
+                .and_then(Value::as_object)
+                .and_then(|touch| touch.get("provider"))
+                .and_then(Value::as_object)
+                .and_then(|provider| provider.get("apiKey"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            web_search_provider: eye
+                .get("touch")
+                .and_then(Value::as_object)
+                .and_then(|touch| touch.get("webSearch"))
+                .and_then(Value::as_object)
+                .and_then(|search| search.get("provider"))
+                .and_then(Value::as_str)
+                .unwrap_or("none")
+                .to_owned(),
+        },
     })
 }
 
@@ -341,6 +428,71 @@ fn save_hearing_at(path: &Path, settings: HearingSettings) -> Result<(), String>
         Value::String(settings.api_model_id.clone()),
     );
     write_json(path, &document)
+}
+
+/// Writes the `touch` section of the Eye config. Preserves unrelated fields
+/// (providers, vision, keep) and never logs the provider key.
+fn save_touch_at(path: &Path, settings: TouchSettings) -> Result<(), String> {
+    validate_touch(&settings)?;
+    let mut document = read_json(path)?;
+    let root = object_mut(&mut document, "Eye config")?;
+    let touch = root
+        .entry("touch")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "Touch settings must be an object".to_string())?;
+    touch.insert("enabled".into(), Value::Bool(settings.enabled));
+    let provider = touch
+        .entry("provider")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "Touch provider settings must be an object".to_string())?;
+    provider.insert("type".into(), Value::String(settings.provider_type.clone()));
+    provider.insert(
+        "baseUrl".into(),
+        Value::String(settings.base_url.trim().to_owned()),
+    );
+    provider.insert(
+        "model".into(),
+        Value::String(settings.model.trim().to_owned()),
+    );
+    provider.insert(
+        "apiKey".into(),
+        Value::String(settings.api_key.trim().to_owned()),
+    );
+    let search = touch
+        .entry("webSearch")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "Touch web search settings must be an object".to_string())?;
+    search.insert(
+        "provider".into(),
+        Value::String(settings.web_search_provider.clone()),
+    );
+    write_json(path, &document)
+}
+
+fn validate_touch(settings: &TouchSettings) -> Result<(), String> {
+    if !matches!(
+        settings.provider_type.as_str(),
+        "openrouter" | "deepseek" | "openai_compatible"
+    ) {
+        return Err("Тип провайдера должен быть openrouter, deepseek или openai_compatible".into());
+    }
+    let base = settings.base_url.trim();
+    if base.is_empty() || !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("Base URL должен начинаться с http:// или https://".into());
+    }
+    if settings.model.trim().is_empty() {
+        return Err("Название модели не может быть пустым".into());
+    }
+    if !matches!(
+        settings.web_search_provider.as_str(),
+        "none" | "tavily" | "serpapi" | "brave"
+    ) {
+        return Err("Поисковый провайдер должен быть none, tavily, serpapi или brave".into());
+    }
+    Ok(())
 }
 
 fn validate_sight(settings: &SightSettings) -> Result<(), String> {
@@ -950,5 +1102,83 @@ mod tests {
             assert_eq!(document["vision"]["visionPack"], "lite");
             assert_eq!(document["keep"], 7);
         }
+    }
+
+    #[test]
+    fn touch_save_round_trips_and_keeps_other_sections() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"provider":"local","providers":{},"vision":{"detail":"quick"},"keep":7}"#,
+        )
+        .expect("fixture");
+        save_touch_at(
+            &path,
+            TouchSettings {
+                enabled: true,
+                provider_type: "openrouter".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                model: "deepseek/deepseek-v4-flash-0731".into(),
+                api_key: "sk-or-secret".into(),
+                web_search_provider: "tavily".into(),
+            },
+        )
+        .expect("save");
+        let document = read_json(&path).expect("document");
+        assert_eq!(document["touch"]["enabled"], true);
+        assert_eq!(document["touch"]["provider"]["type"], "openrouter");
+        assert_eq!(document["touch"]["provider"]["apiKey"], "sk-or-secret");
+        assert_eq!(document["touch"]["webSearch"]["provider"], "tavily");
+        assert_eq!(document["keep"], 7);
+        assert_eq!(document["vision"]["detail"], "quick");
+
+        let speech = temp.path().join("speech.json");
+        fs::write(&speech, "{}").expect("speech fixture");
+        let loaded = load_from_paths(&path, &speech).expect("load");
+        assert!(loaded.touch.enabled);
+        assert_eq!(loaded.touch.model, "deepseek/deepseek-v4-flash-0731");
+
+        // The in-app kill switch: disabling Touch writes enabled=false.
+        let mut off = loaded.touch.clone();
+        off.enabled = false;
+        save_touch_at(&path, off).expect("save off");
+        let document = read_json(&path).expect("document");
+        assert_eq!(document["touch"]["enabled"], false);
+    }
+
+    #[test]
+    fn touch_defaults_to_disabled_without_a_section() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let eye_path = temp.path().join("config.json");
+        let speech_path = temp.path().join("speech.json");
+        fs::write(&eye_path, r#"{"provider":"local","providers":{}}"#).expect("fixture");
+        fs::write(&speech_path, "{}").expect("fixture");
+        let settings = load_from_paths(&eye_path, &speech_path).expect("load");
+        assert!(!settings.touch.enabled, "Touch must be off by default");
+        assert_eq!(settings.touch.model, "deepseek/deepseek-v4-flash-0731");
+        assert_eq!(settings.touch.web_search_provider, "none");
+    }
+
+    #[test]
+    fn touch_validation_rejects_bad_provider_url_and_search() {
+        let base = TouchSettings {
+            enabled: false,
+            provider_type: "openrouter".into(),
+            base_url: "https://openrouter.ai/api/v1".into(),
+            model: "m".into(),
+            api_key: String::new(),
+            web_search_provider: "none".into(),
+        };
+        let mut bad_type = base.clone();
+        bad_type.provider_type = "telepathy".into();
+        assert!(validate_touch(&bad_type).is_err());
+        let mut bad_url = base.clone();
+        bad_url.base_url = "ftp://bad".into();
+        assert!(validate_touch(&bad_url).is_err());
+        let mut bad_search = base.clone();
+        bad_search.web_search_provider = "google".into();
+        assert!(validate_touch(&bad_search).is_err());
+        assert!(validate_touch(&base).is_ok());
     }
 }

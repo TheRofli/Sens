@@ -11,6 +11,7 @@ import {
   IconDeviceFloppy,
   IconDownload,
   IconEye,
+  IconHandFinger,
   IconHeadphones,
   IconHome,
   IconInfoCircle,
@@ -132,6 +133,17 @@ const capabilityMeta = {
     accessKey: "cap.hearing.access",
     pageKickerKey: "cap.hearing.pageKicker",
     pageTitleKey: "cap.hearing.pageTitle",
+  },
+  touch: {
+    source: "Touch",
+    icon: IconHandFinger,
+    nameKey: "cap.touch.name",
+    descriptionKey: "cap.touch.description",
+    settingsDescriptionKey: "cap.touch.settingsDescription",
+    openSettingsKey: "cap.touch.openSettings",
+    accessKey: "cap.touch.access",
+    pageKickerKey: "cap.touch.pageKicker",
+    pageTitleKey: "cap.touch.pageTitle",
   },
 };
 
@@ -256,6 +268,8 @@ function HomeContent({ settings, speechRuntime, openCapability, openCapabilities
             <span className="capability-divider" />
             <CapabilityPill capability="hearing" enabled={settings.hearing.enabled} status={hearingState} onClick={() => openCapability("hearing")} />
             <span className="capability-divider" />
+            <CapabilityPill capability="touch" enabled={settings.touch.enabled} onClick={() => openCapability("touch")} />
+            <span className="capability-divider" />
             <button className="capability-overview" type="button" onClick={openCapabilities}><IconAdjustmentsHorizontal size={19} />{t("home.allCapabilities")}</button>
           </div>
         </section>
@@ -276,7 +290,9 @@ function CapabilityCard({ capability, enabled, settings, runtimeStatus, onOpen }
   const Icon = meta.icon;
   const summary = capability === "sight"
     ? `${providerDisplay(t, settings.provider, settings.provider)} · ${settings.model}`
-    : `${modelDisplay(t, settings.model, settings.model)} · ${settings.device.toUpperCase()}`;
+    : capability === "touch"
+      ? `${settings.providerType} · ${settings.model}`
+      : `${modelDisplay(t, settings.model, settings.model)} · ${settings.device.toUpperCase()}`;
   const state = capability === "hearing"
     ? hearingUiState(enabled, runtimeStatus)
     : { labelKey: enabled ? "state.readyUpper" : "state.offUpper", tone: enabled ? "ready" : "idle" };
@@ -299,6 +315,7 @@ function CapabilitiesContent({ settings, speechRuntime, onOpenCapability }) {
       <div className="detail-list">
         <CapabilityCard capability="sight" enabled={settings.sight.enabled} settings={settings.sight} onOpen={() => onOpenCapability("sight")} />
         <CapabilityCard capability="hearing" enabled={settings.hearing.enabled} settings={settings.hearing} runtimeStatus={speechRuntime} onOpen={() => onOpenCapability("hearing")} />
+        <CapabilityCard capability="touch" enabled={settings.touch.enabled} settings={settings.touch} onOpen={() => onOpenCapability("touch")} />
       </div>
       <aside className="future-sense-card">
         <div className="future-sense-card__icon"><IconSparkles size={24} /></div>
@@ -376,8 +393,31 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
 
       <div className="settings-grid">
         <section className="settings-group">
-          <div className="settings-group__heading"><span>01</span><div><h2>{t("group.model")}</h2><p>{t(capability === "sight" ? "group.model.sightSub" : "group.model.hearingSub")}</p></div></div>
-          {capability === "sight" ? (
+          <div className="settings-group__heading"><span>01</span><div><h2>{t("group.model")}</h2><p>{t(capability === "sight" ? "group.model.sightSub" : capability === "touch" ? "group.model.touchSub" : "group.model.hearingSub")}</p></div></div>
+          {capability === "touch" ? (
+            <>
+              <label className="setting-field">{t("field.touchProvider")}
+                <select value={draft.providerType} onChange={(event) => update("providerType", event.target.value)}>
+                  <option value="openrouter">OpenRouter</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="openai_compatible">{t("field.touchProviderCustom")}</option>
+                </select>
+                <small>{t("field.touchProviderHint")}</small>
+              </label>
+              <label className="setting-field">{t("field.touchModel")}
+                <input value={draft.model} onChange={(event) => update("model", event.target.value)} spellCheck="false" />
+                <small>{t("field.touchModelHint")}</small>
+              </label>
+              <label className="setting-field">{t("field.touchBaseUrl")}
+                <input value={draft.baseUrl} onChange={(event) => update("baseUrl", event.target.value)} spellCheck="false" />
+                <small>{t("field.touchBaseUrlHint")}</small>
+              </label>
+              <label className="setting-field">{t("field.apiKey")}
+                <input type="password" value={draft.apiKey} onChange={(event) => update("apiKey", event.target.value)} autoComplete="new-password" spellCheck="false" placeholder="sk-or-…" />
+                <small>{t("field.touchApiKeyHint")}</small>
+              </label>
+            </>
+          ) : capability === "sight" ? (
             <>
               <label className="setting-field">{t("field.provider")}
                 <select value={draft.provider} onChange={(event) => providerChanged(event.target.value)}>
@@ -429,8 +469,21 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
         </section>
 
         <section className="settings-group">
-          <div className="settings-group__heading"><span>02</span><div><h2>{t("group.quality")}</h2><p>{t("group.quality.sub")}</p></div></div>
-          {capability === "sight" ? (
+          <div className="settings-group__heading"><span>02</span><div><h2>{t("group.quality")}</h2><p>{t(capability === "touch" ? "group.quality.touchSub" : "group.quality.sub")}</p></div></div>
+          {capability === "touch" ? (
+            <>
+              <label className="setting-field">{t("field.touchSearch")}
+                <select value={draft.webSearchProvider} onChange={(event) => update("webSearchProvider", event.target.value)}>
+                  <option value="none">{t("field.touchSearchNone")}</option>
+                  <option value="tavily">Tavily</option>
+                  <option value="serpapi">SerpAPI</option>
+                  <option value="brave">Brave</option>
+                </select>
+                <small>{t("field.touchSearchHint")}</small>
+              </label>
+              <p className="sight-local-info">{t("touch.spendHint")}</p>
+            </>
+          ) : capability === "sight" ? (
             draft.provider === "local" ? (
               <>
                 <p className="sight-local-info">{t("sight.alwaysMax")}</p>
@@ -522,7 +575,9 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
 
       <section className="settings-toggles">
         <SettingsToggle label={t(meta.accessKey)} description={t("toggle.accessDesc")} checked={draft.enabled} onChange={(value) => update("enabled", value)} />
-        {capability === "sight" ? (
+        {capability === "touch" ? (
+          <p className="sight-local-info">{t("touch.toggleNetworkDesc")}</p>
+        ) : capability === "sight" ? (
           draft.provider === "local" ? (
             <SettingsToggle label={t("toggle.local")} description={t("toggle.localDesc")} checked disabled />
           ) : (
@@ -543,7 +598,7 @@ function CapabilitySettingsContent({ capability, data, speechRuntime, sightSetup
       </section>
 
       <div className="settings-actions">
-        <span>{t(capability === "hearing" ? "actions.hintHearing" : "actions.hintSight")}</span>
+        <span>{t(capability === "hearing" ? "actions.hintHearing" : capability === "touch" ? "actions.hintTouch" : "actions.hintSight")}</span>
         <button className="primary-button save-settings" type="button" disabled={saving} onClick={() => onSave(capability, draft)}><IconDeviceFloppy size={20} />{saving ? t("actions.saving") : t("actions.save")}</button>
       </div>
     </section>

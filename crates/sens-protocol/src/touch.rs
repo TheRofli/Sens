@@ -437,6 +437,9 @@ pub struct TouchStatusResponse {
     /// Full WorkerResult/CodingResult/opinions payload on terminal states.
     #[serde(default)]
     pub result: Option<Value>,
+    /// Failure/cancellation reason on failed/cancelled states.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 // --- Tool request contracts (sens_touch*) ---
@@ -689,6 +692,7 @@ mod tests {
             }),
             progress: None,
             result: None,
+            error: None,
         };
         let encoded = serde_json::to_string(&response).expect("encode");
         let decoded: TouchStatusResponse = serde_json::from_str(&encoded).expect("decode");

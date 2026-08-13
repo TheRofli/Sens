@@ -74,6 +74,11 @@ class MockProviderHandler(BaseHTTPRequestHandler):
             "has_tools": "tools" in body,
             "message_count": len(body.get("messages", [])),
             "last_user_content": str(body.get("messages", [{}])[-1].get("content"))[:200],
+            "marker_found": any(
+                EVIDENCE_MARKER in str(message.get("content") or "")
+                for message in body.get("messages", [])
+            ),
+            "extracted_id": extract_evidence_id(body.get("messages", [])),
         }
         with self.lock:
             with open(self.log_path, "a", encoding="utf-8") as handle:
@@ -139,7 +144,7 @@ class MockProviderHandler(BaseHTTPRequestHandler):
                         "index": 0,
                         "message": {
                             "role": "assistant",
-                            "content": entry.get("content", ""),
+                            "content": content,
                         },
                         "finish_reason": "stop",
                     }
