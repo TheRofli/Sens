@@ -265,7 +265,10 @@ impl TouchRuntimeConfig {
     pub fn discover() -> anyhow::Result<Self> {
         let sens_root = discover_sens_root();
         let python_executable = discover_python_executable(&sens_root);
-        let worker_script = discover_worker_script("touch-worker.py");
+        // The worker ships inside the sidecars/touch/ directory (bundle
+        // resources mirror the checkout layout), unlike the top-level
+        // sight-worker.py / hearing-worker.py entries.
+        let worker_script = discover_worker_script("touch").join("touch-worker.py");
         let eye_root = discover_eye_root();
         let mut config = Self {
             enabled: false,
